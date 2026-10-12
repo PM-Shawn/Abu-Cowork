@@ -31,6 +31,7 @@ import {
 } from '@/core/plugin/marketplace';
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import { refreshFetchedMarkets, removeMarket } from '@/core/plugin/marketSource';
+import { reportAppFailure } from '@/core/app/appFailure';
 import InstallDisclosureDialog, { type InstallPlanState } from './InstallDisclosureDialog';
 import MarketplaceEntryRow from './MarketplaceEntryRow';
 import InstalledPluginCard from './InstalledPluginCard';
@@ -526,6 +527,8 @@ export default function MarketplaceBrowser({
     />
   );
 
+  // The marketplaces being removed: one removal per marketplace at a time.
+  const removingMarketplaces = useRef(new Set<string>());
   // Removing a marketplace is asked first, by name. The answer acts on what is in the list at
   // that moment: a marketplace that has gone meanwhile is not removed again.
   const askToRemoveMarketplace = async (name: string) => {
@@ -536,10 +539,23 @@ export default function MarketplaceBrowser({
       tone: 'danger',
     });
     if (!confirmed || !mounted.current) return;
-    if (!usePluginStore.getState().marketplaces.some((m) => m.name === name)) return;
+    const listed = () => usePluginStore.getState().marketplaces.some((m) => m.name === name);
+    if (!listed() || removingMarketplaces.current.has(name)) return;
+    removingMarketplaces.current.add(name);
     removedMarketplace.current = true;
-    // The market leaves the list at once; a copy fetched by address is deleted after it.
-    void removeMarket(name, home);
+    try {
+      // A copy fetched by address is deleted first; the market then leaves the list.
+      await removeMarket(name, home);
+    } catch (error) {
+      reportAppFailure('remove market', error);
+      // The list follows the disk: a market that is still listed was not removed, and the user is told.
+      if (listed()) {
+        removedMarketplace.current = false;
+        addToast({ type: 'error', title: format(tb.pluginsRemoveMarketplaceFailed, { name }) });
+      }
+    } finally {
+      removingMarketplaces.current.delete(name);
+    }
   };
 
   // The page's side padding.

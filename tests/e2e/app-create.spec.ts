@@ -137,6 +137,34 @@ test.afterEach(async ({ browserName: _browserName }, testInfo) => {
   dataRoot = undefined;
 });
 
+test('创建应用 chosen on the extensions page lands in the creation conversation, with the caret in the message field', async () => {
+  dataRoot = createElectronDataRoot();
+  app = (await launchAbuElectron(dataRoot)).app;
+  const page: Page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await expect(page.getByTestId('app-switcher-trigger')).toBeVisible({ timeout: READY_TIMEOUT });
+  await dismissFirstRunOverlays(page);
+
+  await page.getByLabel('Main navigation').getByRole('button', { name: /^(扩展|Extensions)(\s.*)?$/ }).click();
+  const extensionsTabs = page.getByRole('main').getByRole('button', { name: /^(插件|Plugins)(\s.*)?$/ });
+  await expect(extensionsTabs).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(page.locator('[data-chat-composer]')).toHaveCount(0);
+
+  await page.getByTestId('app-switcher-trigger').click();
+  await page.getByTestId('app-switcher-create').click();
+
+  // The chat page replaces the extensions page, on the conversation that was just created.
+  const composer = page.locator('[data-chat-composer]');
+  await expect(composer).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(extensionsTabs).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '/abu-app-builder', exact: true })).toBeVisible();
+  await expect.poll(() => composer.evaluate((element) => element instanceof HTMLTextAreaElement ? element.value : element.textContent ?? '')).toMatch(/我想创建一个应用|I want to create an app/);
+  // The conversation in view is the creation conversation: its title heads the chat page.
+  await expect(page.getByRole('button', { name: /^(创建应用|Create app)\s/ })).toBeVisible();
+  await expect(composer).toBeFocused();
+  const appsRoot = path.join(dataRoot.appDataDir, 'Home', 'Abu Apps');
+  await expect.poll(() => (fs.existsSync(appsRoot) ? fs.readdirSync(appsRoot).length : 0)).toBe(1);
+});
+
 test('创建应用 previews the draft in the conversation and confirming adds the app and its new expert', async () => {
   dataRoot = createElectronDataRoot();
   mock = await startMock();

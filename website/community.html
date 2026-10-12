@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+    (function () {
+      try {
+        var pref = localStorage.getItem('abu-lang');
+        var target = pref || ((navigator.language || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
+        if (target === 'zh') location.replace('community.zh-CN.html');
+      } catch (e) {}
+    })();
+    </script>
+    <link rel="alternate" hreflang="en" href="community.html">
+    <link rel="alternate" hreflang="zh-CN" href="community.zh-CN.html">
+    <link rel="alternate" hreflang="x-default" href="community.html">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
+    <title>Abu Community — Join the Discord</title>
+    <meta name="description" content="Join the Abu Discord to talk with other users, open issues and contribute code on GitHub, or follow Abu's news on X.">
+    <link rel="icon" href="assets/abu-avatar-120.png" type="image/png">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400.css">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400-italic.css">
+    <link rel="stylesheet" href="assets/fonts/noto-serif-sc/500.css">
+    <link rel="stylesheet" href="site.css">
+    <link rel="stylesheet" href="enterprise.css">
+    <link rel="stylesheet" href="home.css">
+    <link rel="stylesheet" href="community.css">
+    <!-- Baidu Tongji -->
+    <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?01567fba26100539d5fb9f494c789f4d";
+      var s = document.getElementsByTagName("script")[0];
+      s.parentNode.insertBefore(hm, s);
+    })();
+    </script>
+</head>
+<body>
+<a class="skip" href="#main-content">Skip to main content</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="logo" href="index.html"><img src="assets/abu-avatar-120.png" width="30" height="30" alt="">Abu</a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html#preview">Preview</a>
+      <a href="index.html#abilities">Features</a>
+      <a href="index.html#scenes">Use cases</a>
+      <a href="index.html#tech">Architecture</a>
+      <a href="enterprise.html" data-new>Enterprise</a>
+      <a href="platform.html" data-new>Open Platform</a>
+      <a href="docs.html">Docs</a>
+      <a href="community.html" aria-current="page">Community</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="nav-lang" href="community.zh-CN.html" lang="zh-CN" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">中文</a>
+      <a class="btn btn-line btn-sm" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-fill btn-sm" href="index.html#start">Download</a>
+    </div>
+  </div>
+</header>
+
+<main id="main-content">
+
+  <div class="wrap e-hero c-hero">
+    <h1 class="h1">
+      <span class="rise"><span>Join the Abu community</span></span>
+    </h1>
+    <p class="lead fade" style="animation-delay: 420ms">Talk with other users on Discord, report problems and contribute on GitHub, or follow Abu's news.</p>
+  </div>
+
+  <section class="wrap c-first" id="group">
+    <div class="join fade" style="animation-delay: 560ms">
+      <div class="join-copy">
+        <h2 class="join-title">Talk with other Abu users on Discord</h2>
+        <p class="lead">The Abu server on Discord is where English-speaking users ask questions, share what they built and suggest features. Shawn, Abu's author, reads it.</p>
+        <div class="join-actions">
+          <a class="btn btn-fill" href="https://discord.gg/eY3zH3XGqE" target="_blank" rel="noopener">Join the Discord</a>
+        </div>
+      </div>
+      <figure class="qr">
+        <img src="assets/wechat-qr.png" width="448" height="448" alt="WeChat QR code of Shawn, Abu's author">
+        <figcaption class="eyebrow">Scan in WeChat · note “Abu”</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="github">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">GitHub</h2>
+      <p class="lead">Abu is free and open source. All of its code is in this repository.</p>
+      <a class="repo-line" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">PM-Shawn/Abu-Cowork<span class="stars" id="stars" hidden></span></a>
+    </div>
+    <div class="gh-grid">
+      <a class="cell reveal" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener"><span class="cell-name">Star</span><h3 class="h3">Star the repository</h3><p class="small">If Abu is useful to you, a star helps more people find it.</p></a>
+      <a class="cell reveal" href="https://github.com/PM-Shawn/Abu-Cowork/issues/new/choose" target="_blank" rel="noopener"><span class="cell-name">Issues</span><h3 class="h3">Report a problem, ask for a feature</h3><p class="small">Write up what went wrong or what you need as an issue, and the author will see it.</p></a>
+      <a class="cell reveal" href="https://github.com/PM-Shawn/Abu-Cowork/pulls" target="_blank" rel="noopener"><span class="cell-name">Pull requests</span><h3 class="h3">Change it yourself</h3><p class="small">Pull requests are welcome.</p></a>
+      <a class="cell reveal" href="https://github.com/PM-Shawn/Abu-Cowork/security/policy" target="_blank" rel="noopener"><span class="cell-name">Security</span><h3 class="h3">Found a vulnerability? Tell the author privately</h3><p class="small">Report security problems as the repository's security policy describes, not in a public issue.</p></a>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="follow">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">Follow the news</h2>
+    </div>
+    <ul class="channels c-channels reveal">
+      <li><a href="https://xhslink.com/m/8ruHynC0jPB" target="_blank" rel="noopener"><span class="channel-name">Xiaohongshu</span><span class="channel-account">Shawn的AI产品小记</span><span class="channel-desc">Usage tips and product news, in Chinese</span><span aria-hidden="true">→</span></a></li>
+      <li><span class="channel-row"><span class="channel-name">Official Account</span><span class="channel-account">Shawn的产品笔记</span><span class="channel-desc">Search this name in WeChat, in Chinese</span></span></li>
+      <li><a href="https://x.com/pmshawn_x" target="_blank" rel="noopener"><span class="channel-name">X</span><span class="channel-account">@pmshawn_x</span><span class="channel-desc">New releases and development progress</span><span aria-hidden="true">→</span></a></li>
+      <li><a href="https://discord.gg/eY3zH3XGqE" target="_blank" rel="noopener"><span class="channel-name">Discord</span><span class="channel-account">Abu</span><span class="channel-desc">The English-speaking community</span><span aria-hidden="true">→</span></a></li>
+    </ul>
+  </section>
+
+  <div class="finale" id="next" data-night>
+    <div class="aurora"></div>
+    <div class="wrap inner">
+      <span class="eyebrow">Get started</span>
+      <h2 class="h2 reveal">Hand Abu your first task</h2>
+      <div class="actions reveal">
+        <a class="btn btn-fill" href="index.html#start">Download Abu</a>
+        <a class="btn btn-line" href="docs.html">Read the docs</a>
+      </div>
+    </div>
+    <div class="wrap foot"><span>© 2026 Abu</span><a href="index.html">Home</a><a href="docs.html">Docs</a><a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a><a href="community.zh-CN.html" lang="zh-CN" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">中文</a></div>
+    <div class="wordmark" aria-hidden="true"><span class="it">Abu</span> 阿布</div>
+  </div>
+
+</main>
+
+<script src="site.js"></script>
+</body>
+</html>

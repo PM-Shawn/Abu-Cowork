@@ -278,7 +278,7 @@ export default function WorkspaceSection() {
                   onClick={() => setShowInstructionsModal(true)}
                   className={cn(
                     'flex w-full items-center gap-2 rounded-control bg-fill px-2 py-1 text-left text-ui-sm hover:bg-fill-hover',
-                    hasInstructions ? 'text-label' : 'text-label-tertiary'
+                    hasInstructions ? 'text-label' : 'text-label-secondary'
                   )}
                 >
                   <Icon icon={AppIcons.file} size="sm" />
@@ -290,7 +290,7 @@ export default function WorkspaceSection() {
                   onClick={() => setShowMemoryModal(true)}
                   className={cn(
                     'flex w-full items-center gap-2 rounded-control bg-fill px-2 py-1 text-left text-ui-sm hover:bg-fill-hover',
-                    hasMemory ? 'text-label' : 'text-label-tertiary'
+                    hasMemory ? 'text-label' : 'text-label-secondary'
                   )}
                 >
                   <Icon icon={AppIcons.thinking} size="sm" />

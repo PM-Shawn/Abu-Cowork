@@ -1,0 +1,43 @@
+/* Open platform page. Shared tokens and components live in site.css; the hero comes from enterprise.css, the step cards and cells from home.css. */
+
+/* What an app is made of: one annotated screenshot beside the list of parts */
+.anatomy { display: grid; grid-template-columns: 7fr 5fr; gap: clamp(28px, 4vw, 64px); align-items: start; }
+.anatomy-shot { position: sticky; top: 110px; }
+.mark, .part-no:not(:empty) { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; background: var(--brand); color: var(--brand-ink); font-size: 14px; font-weight: 600; line-height: 1; }
+.mark { position: absolute; z-index: 2; transform: translate(-50%, -50%); box-shadow: 0 0 0 4px var(--paper); }
+/* Each mark sits beside its element in the 1440 by 900 screenshot: 22px left of the home title, the scene card and the first example prompt, 22px right of the line naming the expert team, and at the right edge of the navigation. */
+.mark[data-mark="team"] { left: 68.06%; top: 65.8%; }
+.mark[data-mark="home"] { left: 34.2%; top: 30%; }
+.mark[data-mark="scene"] { left: 34.2%; top: 64.4%; }
+.mark[data-mark="template"] { left: 34.2%; top: 74%; }
+.mark[data-mark="nav"] { left: 16.9%; top: 17.1%; }
+.parts { border-top: 1px solid var(--ink); }
+.part { display: grid; grid-template-columns: 28px 1fr; column-gap: 16px; row-gap: 6px; padding: 20px 0; border-bottom: 1px solid var(--line); align-items: center; }
+.part .small { grid-column: 2; }
+
+/* The three apps that ship with Abu */
+.app-shots { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.app-shot { display: grid; gap: 10px; align-content: start; }
+.app-shot .shot-frame { border-radius: 12px; margin-bottom: 12px; }
+.app-shot .pills { margin-top: 6px; }
+
+/* Step cards: an excerpt of an app file in place of a picture, and inline code in the copy */
+.code-card { background: var(--paper); border-radius: 14px; box-shadow: var(--shadow-float); padding: 22px 24px; display: grid; gap: 14px; }
+.code-card pre { margin: 0; overflow-x: auto; font-family: var(--mono); font-size: 13px; line-height: 1.6; color: var(--ink); }
+/* The English step texts run past the line count that balancing covers, so the last line is kept from ending on one word. */
+:lang(en) .stack-card .copy p { text-wrap: pretty; }
+.stack-card .copy code { font-family: var(--mono); font-size: 0.9em; }
+/* The step pictures are client windows cut at their own edge; the radius follows the window's 18px corner. */
+.stack-card .art img.win-confirm { border-radius: 2.7% / 3.25%; }
+:lang(en) .stack-card .art img.win-confirm { border-radius: 2.7% / 3.16%; }
+.stack-card .art img.win-market { border-radius: 2.35% / 3.05%; }
+
+.connect { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.text-link { border-bottom: 1px solid var(--line-strong); padding-bottom: 1px; color: var(--ink); }
+.text-link:hover { border-bottom-color: var(--ink); }
+
+@media (max-width: 900px) {
+  .anatomy, .app-shots, .connect { grid-template-columns: 1fr; }
+  .anatomy-shot { position: static; }
+  .mark { width: 22px; height: 22px; font-size: 12px; box-shadow: 0 0 0 3px var(--paper); }
+}

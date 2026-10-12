@@ -9,6 +9,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { useToastStore } from '@/stores/toastStore';
 import { commitAppDraft, draftFor, draftRunLabel, readAppDraft, type AppDraftPreview } from '@/core/app/appDraft';
 import { effectiveRun, resolveText } from '@/core/app/appBinding';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { liveRefCatalog, resolveRun, type RefCatalog } from '@/core/app/appRefs';
 import { appHomeTitle } from '@/core/app/appRegistry';
 import { describeSceneRun } from '@/components/app/runLabel';
@@ -43,7 +44,8 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
   const apps = useAvailableApps();
   const addToast = useToastStore((s) => s.addToast);
   const [loaded, setLoaded] = useState<{ preview: AppDraftPreview; catalog: RefCatalog } | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // The draft could not be read; why goes to the console.
+  const [unreadable, setUnreadable] = useState(false);
   const [adding, setAdding] = useState(false);
   // One add per draft at a time; `adding` only shows it.
   const addingRef = useRef(false);
@@ -54,8 +56,12 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     let current = true;
     const catalog = liveRefCatalog();
     Promise.resolve().then(() => readAppDraft(draftFor(conversationId), catalog)).then(
-      (preview) => { if (current) { setLoaded({ preview, catalog }); setError(null); } },
-      (reason: unknown) => { if (current) setError(String(reason)); },
+      (preview) => { if (current) { setLoaded({ preview, catalog }); setUnreadable(false); } },
+      (reason: unknown) => {
+        if (!current) return;
+        reportAppFailure('draft preview', reason);
+        setUnreadable(true);
+      },
     );
     return () => { current = false; };
   }, [conversationId, toolCallId, addedAppId]);
@@ -68,12 +74,12 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
       </div>
     );
   }
-  if (error !== null) {
+  if (unreadable) {
     return (
       <div data-testid="app-draft-card" className="my-2">
         <InlineMessage tone="danger">
           <p className="font-medium">{t.appDraft.previewFailed}</p>
-          <p className="break-words text-ui-sm text-label-secondary">{error}</p>
+          <p className="break-words text-ui-sm text-label-secondary">{t.appDraft.previewFailedHint}</p>
         </InlineMessage>
       </div>
     );
@@ -95,7 +101,10 @@ export default function AppDraftCard({ conversationId, toolCallId }: { conversat
     commitAppDraft(conversationId)
       // The app is entered and its home replaces this conversation: the message field takes the focus the button had.
       .then(() => focusComposerAfterPageChange())
-      .catch((reason: unknown) => addToast({ type: 'error', title: t.appDraft.failed, message: String(reason) }))
+      .catch((reason: unknown) => {
+        reportAppFailure('add created app', reason);
+        addToast({ type: 'error', title: t.appDraft.failed, message: t.appDraft.failedHint });
+      })
       .finally(() => {
         addingRef.current = false;
         setAdding(false);

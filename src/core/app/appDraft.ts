@@ -19,9 +19,11 @@ import { useTeamStore } from '@/stores/teamStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useAppStore } from '@/stores/appStore';
 import { useAppDraftStore, type AppDraft } from '@/stores/appDraftStore';
+import { useSettingsStore } from '@/stores/settingsStore';
 import { addedAppId, appDir, saveAddedApp } from './appRecords';
 import { isUsersOwnAgent, isUsersOwnTeam, liveRefCatalog, resolveTarget, type RefCatalog } from './appRefs';
 import { refreshAddedApps } from './appSync';
+import { createGeneralShellConversation } from './generalShellConversation';
 
 /**
  * 「创建应用」 (docs/app-spec.md, product brief §6.7). The conversation writes
@@ -55,16 +57,24 @@ function randomId(): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** Start a creation conversation with its own draft folder, and open it. */
-export async function createAppDraft(): Promise<void> {
+/**
+ * Start a creation conversation with its own draft folder, and show it: the
+ * chat page comes into view with that conversation active.
+ *
+ * Creating an app is an activity of the general shell
+ * (`createGeneralShellConversation`). Nothing changes until the draft folder
+ * exists.
+ */
+export async function createAppDraft({ leaveApp }: { leaveApp: boolean }): Promise<void> {
   const id = randomId();
   const dir = joinPath(await homeDir(), APPS_FOLDER, id);
   await mkdir(dir, { recursive: true });
+  const conversationId = createGeneralShellConversation(dir, { leaveApp });
   const chat = useChatStore.getState();
-  const conversationId = chat.createConversation(dir);
   useAppDraftStore.getState().record(conversationId, { id, dir, createdAt: new Date().toISOString() });
   chat.renameConversation(conversationId, getI18n().appSwitcher.createConversation);
   chat.setPendingInput(getI18n().appSwitcher.createPrompt);
+  useSettingsStore.getState().setViewMode('chat');
 }
 
 export function draftFor(conversationId: string): AppDraft {

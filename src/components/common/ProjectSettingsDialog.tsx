@@ -245,7 +245,7 @@ export default function ProjectSettingsDialog({ open, onClose, projectId }: Proj
             </div>
 
             {/* Folder path (read-only) */}
-            <div className="flex items-center gap-2 rounded-control bg-fill px-3 py-2 text-ui-sm text-label-tertiary">
+            <div className="flex items-center gap-2 rounded-control bg-fill px-3 py-2 text-ui-sm text-label-secondary">
               <Icon icon={AppIcons.folderOpen} size="sm" />
               <span className="min-w-0 flex-1 truncate">{shown.workspacePath}</span>
               <span className="shrink-0">{format(t.project.conversationCount, { count: String(convCount) })}</span>

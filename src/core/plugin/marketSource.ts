@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { exists } from '@tauri-apps/plugin-fs';
 import { joinPath, normalizeSeparators } from '@/utils/pathUtils';
 import { usePluginStore, type MarketplaceRef } from '@/stores/pluginStore';
 
@@ -52,9 +53,21 @@ export async function refreshFetchedMarkets(home: string): Promise<void> {
   }
 }
 
-/** Remove a market from the list, and its fetched copy when it was added by address. */
+/**
+ * Remove a market: its fetched copy first when it was added by address, then
+ * its place in the list. The list follows the disk: when the copy cannot be
+ * deleted, the market stays listed exactly while its folder is still there,
+ * and the failure goes to the caller, who tells the user.
+ */
 export async function removeMarket(name: string, home: string): Promise<void> {
   const market = usePluginStore.getState().marketplaces.find((item) => item.name === name);
+  if (market && isFetchedMarket(market, home)) {
+    try {
+      await invoke('market_source_remove', { name });
+    } catch (error) {
+      if (!(await exists(market.dir))) usePluginStore.getState().removeMarketplace(name);
+      throw error;
+    }
+  }
   usePluginStore.getState().removeMarketplace(name);
-  if (market && isFetchedMarket(market, home)) await invoke('market_source_remove', { name });
 }

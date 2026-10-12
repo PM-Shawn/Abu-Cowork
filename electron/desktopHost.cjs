@@ -358,7 +358,8 @@ async function dialogMessage(event, a) {
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Every local path the renderer asks to open goes through this opener, which
+ * Every local path and every URL the renderer asks to open goes through this
+ * opener. It hands a URL to the system only when its scheme is allowed, and it
  * refuses a target the system would run (see openPathPolicy.cjs).
  */
 const opener = createOpener({ shell });

@@ -215,7 +215,7 @@ export function OverlaySection() {
           trigger={<Button>Viewer window</Button>}
         >
           <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-            <div role="img" aria-label="Placeholder image" className="flex h-full max-h-80 w-full max-w-xl items-center justify-center rounded-panel bg-fill text-label-tertiary">
+            <div role="img" aria-label="Placeholder image" className="flex h-full max-h-80 w-full max-w-xl items-center justify-center rounded-panel bg-fill text-label-secondary">
               <Icon icon={AppIcons.imageGen} size="lg" />
             </div>
           </div>

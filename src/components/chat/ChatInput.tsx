@@ -29,6 +29,7 @@ import { getBaseName, IMAGE_MIME_MAP } from '@/utils/pathUtils';
 import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
 import { noteComposerDraft, noteComposerKey } from '@/components/chat/composerActivity';
+import { focusComposerFromWindow } from '@/components/chat/composerFocus';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
@@ -1739,7 +1740,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
     setReferences(nextDraft.references);
     setSelectedSkill(nextDraft.selectedSkill);
     setSelectedAgent(nextDraft.selectedAgent);
-    textareaRef.current?.focus();
+    // What refused the send may have opened a layer (the model picker, the settings window),
+    // and the user may have moved on to another control while the answer was on its way.
+    focusComposerFromWindow();
   };
 
   const handleSend = () => {

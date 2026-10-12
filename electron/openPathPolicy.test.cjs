@@ -8,6 +8,7 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const {
   OPEN_REFUSED_RUNS_BY_DEFAULT,
+  OPEN_REFUSED_URL_SCHEME,
   createOpener,
   resolveOpenTarget,
 } = require('./openPathPolicy.cjs');
@@ -214,11 +215,54 @@ test('a Windows drive path handed over as a URL is judged as a local path', asyn
   assert.deepEqual(shell.calls, [{ openPath: 'C:\\w\\report.pdf' }]);
 });
 
-test('any other URL goes to the shell unchanged', async () => {
-  const shell = recordingShell();
-  const opener = createOpener({ shell });
-  for (const url of ['https://example.com/setup.exe', 'mailto:someone@example.com', 'x-apple.systempreferences:com.apple.preference.security', 'chrome://extensions']) {
-    await opener.openUrl(url);
+const MACOS_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
+
+test('a web or mail URL goes to the shell unchanged, on every platform', async () => {
+  const urls = ['https://example.com/setup.exe', 'http://127.0.0.1:11434/', 'HTTPS://Example.com/Docs', 'mailto:someone@example.com'];
+  for (const platform of ['darwin', 'win32', 'linux']) {
+    const shell = recordingShell();
+    const opener = createOpener({ shell, platform });
+    for (const url of urls) assert.equal(await opener.openUrl(url), null);
+    assert.deepEqual(shell.calls.map((call) => call.openExternal), urls);
   }
-  assert.deepEqual(shell.calls.map((call) => call.openExternal), ['https://example.com/setup.exe', 'mailto:someone@example.com', 'x-apple.systempreferences:com.apple.preference.security', 'chrome://extensions']);
 });
+
+test('a System Settings URL goes to the shell on macOS', async () => {
+  const shell = recordingShell();
+  await createOpener({ shell, platform: 'darwin' }).openUrl(MACOS_SETTINGS_URL);
+  assert.deepEqual(shell.calls, [{ openExternal: MACOS_SETTINGS_URL }]);
+});
+
+for (const platform of ['win32', 'linux']) {
+  test(`refuses a System Settings URL on ${platform}`, async () => {
+    const shell = recordingShell();
+    await assert.rejects(createOpener({ shell, platform }).openUrl(MACOS_SETTINGS_URL), { message: OPEN_REFUSED_URL_SCHEME });
+    assert.deepEqual(shell.calls, []);
+  });
+}
+
+for (const url of [
+  'smb://fileserver/share',
+  'ftp://example.com/setup.exe',
+  'chrome://extensions',
+  'vscode://file/etc/hosts',
+  'ms-msdt:/id PCWDiagnostic',
+  'search-ms:query=report&crumb=location:%5C%5Cfileserver%5Cshare',
+  'ms-settings:privacy',
+  'x-apple.systempreferences.other:com.apple.preference.security',
+  'tel:+15550100',
+  'javascript:alert(1)',
+  'data:text/html,<p>page</p>',
+  'blob:https://example.com/5b1d2a50-6f4b-4a2a-9d55-3f1f0a7a2c11',
+  'about:blank',
+  'SMB://fileserver/share',
+  'https://',
+]) {
+  test(`refuses ${JSON.stringify(url)} and the shell is never asked`, async () => {
+    for (const platform of ['darwin', 'win32', 'linux']) {
+      const shell = recordingShell();
+      await assert.rejects(createOpener({ shell, platform }).openUrl(url), { message: OPEN_REFUSED_URL_SCHEME });
+      assert.deepEqual(shell.calls, []);
+    }
+  });
+}

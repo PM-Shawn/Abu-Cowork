@@ -128,7 +128,7 @@ function InvalidMemberText({ label, reason }: { label: string; reason: string })
   return (
     <span className="min-w-0 flex-1">
       <span className="block truncate text-ui text-danger">{label}</span>
-      <span className="block truncate text-caption text-label-tertiary">{reason}</span>
+      <span className="block truncate text-caption text-label-secondary">{reason}</span>
     </span>
   );
 }
@@ -459,7 +459,7 @@ function TeamEditDialog({ open, onClose, team, onSwitchToMembers, onSaved, onClo
         <div className={`flex items-center justify-between gap-3 ${GROUP_BOX}`}>
           <div className="min-w-0">
             <div className="text-ui text-label">{t.team.fieldPlanApproval}</div>
-            <div className="text-caption text-label-tertiary">{t.team.fieldPlanApprovalHint}</div>
+            <div className="text-caption text-label-secondary">{t.team.fieldPlanApprovalHint}</div>
           </div>
           <Switch checked={requireApproval} onCheckedChange={setRequireApproval} aria-label={t.team.fieldPlanApproval} />
         </div>

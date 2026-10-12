@@ -77,7 +77,7 @@ const PdfToolbar = memo(function PdfToolbar({ currentPage, numPages, scale, fitW
         <IconButton size="sm" icon={AppIcons.rotateRight} label={t.panel.pdfRotate} onClick={onRotate} />
         <div className="mx-1 h-4 w-px bg-separator" />
         <IconButton size="sm" icon={AppIcons.zoomOut} label={t.panel.pdfZoomOut} onClick={() => onZoom(-1)} disabled={!fitWidth && scale <= PDF_SCALE_MIN} />
-        <span className="min-w-12 text-center text-caption tabular-nums text-label-tertiary">
+        <span className="min-w-12 text-center text-caption tabular-nums text-label-secondary">
           {fitWidth ? t.panel.pdfFit : `${Math.round(scale * 100)}%`}
         </span>
         <IconButton size="sm" icon={AppIcons.zoomIn} label={t.panel.pdfZoomIn} onClick={() => onZoom(1)} disabled={!fitWidth && scale >= PDF_SCALE_MAX} />

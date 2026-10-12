@@ -44,6 +44,7 @@ import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import { useAppStore } from '@/stores/appStore';
 import { useAppAddFlowStore } from '@/stores/appAddFlowStore';
 import { usePluginStore, type MarketplaceRef } from '@/stores/pluginStore';
+import { useToastStore } from '@/stores/toastStore';
 import AppMarketDialog from './AppMarketDialog';
 
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
@@ -69,7 +70,7 @@ const item = (market: MarketplaceRef, name: string, more: Partial<AppListing> = 
 const recruiting = item(official, 'recruiting', { name: '招聘', description: '筛简历、约面试', uses: ['招聘专家团'] });
 const contracts = item(acme, 'contracts', { name: '合同审阅', version: '2.0.0', entry: { name: 'contracts', source: { kind: 'relative', path: './apps/contracts' }, version: '2.0.0' } });
 const future = item(acme, 'future', { name: '明年的应用', needsUpgrade: true });
-const broken = item(acme, 'broken', { name: '写坏的应用', invalid: 'home.modes is missing' });
+const broken = item(acme, 'broken', { name: '写坏的应用', invalid: true });
 const listing = (listings: AppListing[], failures: AppMarketListing['failures'] = []): AppMarketListing => ({ listings, failures });
 const entry = (target: AppListing) => document.querySelector<HTMLElement>(`[data-testid="app-market-entry"][data-app-id="${target.appId}"]`)!;
 
@@ -183,15 +184,16 @@ describe('AppMarketDialog', () => {
     expect(within(entry(future)).getByTestId('app-market-needs-upgrade')).toHaveTextContent(copy().needsUpgrade);
     expect(within(entry(future)).getByTestId('app-market-use')).toBeDisabled();
     expect(entry(broken)).toHaveTextContent(copy().invalidApp);
-    expect(within(entry(broken)).getByText(copy().invalidApp)).toHaveAttribute('title', 'home.modes is missing');
+    // What the parser said about the file is for the console: the card carries none of it.
+    expect(within(entry(broken)).getByText(copy().invalidApp)).not.toHaveAttribute('title');
     expect(within(entry(broken)).getByTestId('app-market-use')).toBeDisabled();
   });
 
-  it('announces a market that cannot be read, by name, with the reason', async () => {
-    vi.mocked(loadAppListings).mockResolvedValue(listing([recruiting], [{ market: acme, message: 'No marketplace manifest' }]));
+  it('announces a market that cannot be read, by name, with what to do', async () => {
+    vi.mocked(loadAppListings).mockResolvedValue(listing([recruiting], [{ market: acme }]));
     render(<AppMarketDialog />);
     open();
-    expect(await screen.findByRole('alert')).toHaveTextContent('acme: No marketplace manifest');
+    expect(await screen.findByRole('alert')).toHaveTextContent(format(copy().marketUnreadable, { name: 'acme' }));
   });
 
   it('filters by what is typed in the search field, and starts with an empty search every time it opens', async () => {
@@ -318,6 +320,59 @@ describe('AppMarketDialog', () => {
       fireEvent.click(confirmButton());
       await flush();
       await waitFor(() => expect(screen.getByTestId('app-market-add-market')).toHaveFocus());
+    });
+
+    describe('a market whose fetched copy cannot be deleted', () => {
+      const remove = async () => {
+        fireEvent.click(removeButton());
+        await flush();
+        fireEvent.click(confirmButton());
+        await flush();
+      };
+
+      it('says so in a notice with what to do, and sends the host\'s reason to the console only', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        useToastStore.setState({ toasts: [] });
+        vi.mocked(removeMarket).mockRejectedValueOnce(new Error('[not_a_market] EBUSY: resource busy or locked, rmdir /Users/testuser/.abu/markets/acme'));
+        await shown();
+        await remove();
+
+        await waitFor(() => expect(useToastStore.getState().toasts).toHaveLength(1));
+        const [toast] = useToastStore.getState().toasts;
+        expect(toast).toMatchObject({ type: 'error', title: format(getI18n().toolbox.pluginsRemoveMarketplaceFailed, { name: 'acme' }) });
+        expect(JSON.stringify(toast)).not.toContain('EBUSY');
+        expect(warn).toHaveBeenCalledWith('[app] remove market failed:', '[not_a_market] EBUSY: resource busy or locked, rmdir /Users/testuser/.abu/markets/acme');
+        // The market is still listed, with its button, and can be removed again.
+        expect(removeButton()).toBeInTheDocument();
+        await remove();
+        expect(removeMarket).toHaveBeenCalledTimes(2);
+        warn.mockRestore();
+        useToastStore.setState({ toasts: [] });
+      });
+
+      it('says nothing when the market left the list all the same', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        useToastStore.setState({ toasts: [] });
+        vi.mocked(removeMarket).mockImplementationOnce(async () => {
+          usePluginStore.setState({ marketplaces: [official] });
+          throw new Error('[not_a_market] unsafe market name');
+        });
+        await shown();
+        await remove();
+        await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+        expect(useToastStore.getState().toasts).toEqual([]);
+        warn.mockRestore();
+      });
+
+      it('asks the host once when 移除 is answered again while the copy is being deleted', async () => {
+        let finish!: () => void;
+        vi.mocked(removeMarket).mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve; }));
+        await shown();
+        await remove();
+        await remove();
+        expect(removeMarket).toHaveBeenCalledTimes(1);
+        await act(async () => { finish(); });
+      });
     });
 
     describe('a press on the question', () => {

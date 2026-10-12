@@ -14,6 +14,7 @@ import TopTabNav, { type TopTabNavItem } from '@/components/toolbox/TopTabNav';
 import ToolboxCreateMenu from '@/components/toolbox/ToolboxCreateMenu';
 import PluginsTab from '@/components/toolbox/plugins/PluginsTab';
 import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
+import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { useToastStore } from '@/stores/toastStore';
 import PluginUpdateBadge from '@/components/common/PluginUpdateBadge';
 import SourceSubNav from '@/components/toolbox/SourceSubNav';
@@ -56,6 +57,7 @@ function ExtensionsView() {
   const setSource = useExtensionSourceStore(s => s.setSource);
 
   const creatingPlugin = usePluginAuthorStore(s => s.creating);
+  const { allowExit } = useEnterpriseAppPolicy();
   const [pluginAddTrigger, setPluginAddTrigger] = useState(0);
   const [mcpAddFormOpen, setMcpAddFormOpen] = useState(false);
   const [skillUploadModalOpen, setSkillUploadModalOpen] = useState(false);
@@ -183,7 +185,7 @@ function ExtensionsView() {
       createControl = <ToolboxCreateMenu triggerTestId="plugin-create-trigger" menuTestId="plugin-create-menu" items={[
         // The new package lands under 「我的」 — go there, or the create reads
         // as a create that did nothing.
-        { label: t.toolbox.pluginsCreate, disabled: creatingPlugin, onSelect: () => { void usePluginAuthorStore.getState().create().then(() => setSource('plugins', 'mine')).catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
+        { label: t.toolbox.pluginsCreate, disabled: creatingPlugin, onSelect: () => { void usePluginAuthorStore.getState().create({ leaveApp: allowExit }).then(() => setSource('plugins', 'mine')).catch(error => useToastStore.getState().addToast({ type: 'error', title: t.toolbox.plugins, message: String(error) })); } },
         { label: t.toolbox.pluginsAddMarketplace, onSelect: () => setPluginAddTrigger(value => value + 1) },
       ]} />;
     }

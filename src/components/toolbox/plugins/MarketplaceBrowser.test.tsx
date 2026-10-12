@@ -108,6 +108,9 @@ import { readInstalledResult, type InstalledPlugin } from '@/core/plugin/install
 import { format, getI18n } from '@/i18n';
 import type { Marketplace, MarketplaceEntry } from '@/core/plugin/marketplace';
 import { usePluginStore } from '@/stores/pluginStore';
+import { useToastStore } from '@/stores/toastStore';
+import { invoke } from '@tauri-apps/api/core';
+import { exists } from '@tauri-apps/plugin-fs';
 import { loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import MarketplaceBrowser from './MarketplaceBrowser';
 
@@ -898,6 +901,59 @@ describe('MarketplaceBrowser: controls, messages and where the focus goes', () =
     await answer(tb().pluginsRemoveMarketplace);
     expect(removeMarketplace).toHaveBeenCalledExactlyOnceWith('second');
     usePluginStore.setState(usePluginStore.getInitialState());
+  });
+
+  describe('a marketplace added by address whose copy cannot be deleted', () => {
+    const fetched = [{ name: 'official', dir: '/m/official' }, { name: 'second', dir: '/Users/tester/.abu/markets/second' }];
+    const loadFetched = () => vi.mocked(loadMarketplaceFromDir).mockImplementation(async (dir) => (dir === fetched[1].dir ? second : marketplace));
+
+    it('says so in a notice with what to do, keeps it in the list, and sends the host\'s reason to the console only', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      loadFetched();
+      useToastStore.setState({ toasts: [] });
+      usePluginStore.setState({ marketplaces: fetched });
+      vi.mocked(invoke).mockImplementation(async (command) => {
+        if (command === 'market_source_remove') throw new Error('[not_a_market] EBUSY: resource busy or locked, rmdir /Users/tester/.abu/markets/second');
+        return null;
+      });
+      vi.mocked(exists).mockResolvedValue(true);
+      renderBrowser();
+      await screen.findByText('only-here');
+      fireEvent.click(removeButton());
+      await answer(tb().pluginsRemoveMarketplace);
+
+      await waitFor(() => expect(useToastStore.getState().toasts).toHaveLength(1));
+      const [toast] = useToastStore.getState().toasts;
+      expect(toast).toMatchObject({ type: 'error', title: format(tb().pluginsRemoveMarketplaceFailed, { name: 'second' }) });
+      expect(JSON.stringify(toast)).not.toContain('EBUSY');
+      expect(usePluginStore.getState().marketplaces.map((m) => m.name)).toEqual(['official', 'second']);
+      expect(warn).toHaveBeenCalledWith('[app] remove market failed:', '[not_a_market] EBUSY: resource busy or locked, rmdir /Users/tester/.abu/markets/second');
+      warn.mockRestore();
+      vi.mocked(invoke).mockReset();
+      vi.mocked(exists).mockReset();
+      useToastStore.setState({ toasts: [] });
+      usePluginStore.setState(usePluginStore.getInitialState());
+    });
+
+    it('asks the host once when 移除 is answered again while the copy is being deleted', async () => {
+      loadFetched();
+      usePluginStore.setState({ marketplaces: fetched });
+      const deleting = makeDeferred<null>();
+      vi.mocked(invoke).mockImplementation((command) => (command === 'market_source_remove' ? deleting.promise : Promise.resolve(null)));
+      renderBrowser();
+      await screen.findByText('only-here');
+      fireEvent.click(removeButton());
+      await answer(tb().pluginsRemoveMarketplace);
+      // The market is still listed while its copy is deleted, with its button.
+      fireEvent.click(removeButton());
+      await answer(tb().pluginsRemoveMarketplace);
+      expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === 'market_source_remove')).toHaveLength(1);
+
+      await act(async () => { deleting.resolve(null); });
+      expect(usePluginStore.getState().marketplaces.map((m) => m.name)).toEqual(['official']);
+      vi.mocked(invoke).mockReset();
+      usePluginStore.setState(usePluginStore.getInitialState());
+    });
   });
 
   it('after a marketplace is removed the focus goes to the toolbar, not to the next marketplace\'s Remove button', async () => {

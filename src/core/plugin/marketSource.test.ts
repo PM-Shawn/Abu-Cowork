@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
+import { exists } from '@tauri-apps/plugin-fs';
 import { usePluginStore } from '@/stores/pluginStore';
 import { isFetchedMarket, isMarketAddress, marketAddFailure, refreshFetchedMarkets, removeMarket } from './marketSource';
 
@@ -7,6 +8,7 @@ const home = '/home/u';
 
 beforeEach(() => {
   vi.mocked(invoke).mockReset();
+  vi.mocked(exists).mockReset();
   usePluginStore.setState({
     marketplaces: [
       { name: 'abu-official', dir: '/app/builtin-plugin-market', builtin: true },
@@ -54,5 +56,35 @@ describe('marketSource', () => {
     await removeMarket('lawyer-market', home);
     expect(vi.mocked(invoke).mock.calls).toEqual([['market_source_remove', { name: 'lawyer-market' }]]);
     expect(usePluginStore.getState().marketplaces.map((market) => market.name)).toEqual(['abu-official']);
+  });
+
+  describe('a fetched copy that cannot be deleted', () => {
+    const names = () => usePluginStore.getState().marketplaces.map((market) => market.name);
+    const failure = new Error('[not_a_market] EBUSY: resource busy or locked, rmdir /home/u/.abu/markets/lawyer-market');
+
+    it('keeps the market in the list while its folder is still on disk, and hands the failure to the caller', async () => {
+      vi.mocked(invoke).mockRejectedValue(failure);
+      vi.mocked(exists).mockResolvedValue(true);
+      await expect(removeMarket('lawyer-market', home)).rejects.toBe(failure);
+      expect(exists).toHaveBeenCalledExactlyOnceWith('/home/u/.abu/markets/lawyer-market');
+      expect(names()).toEqual(['abu-official', 'lawyer-market', 'my-folder']);
+    });
+
+    it('takes the market off the list when its folder is gone all the same, and still hands the failure on', async () => {
+      vi.mocked(invoke).mockRejectedValue(failure);
+      vi.mocked(exists).mockResolvedValue(false);
+      await expect(removeMarket('lawyer-market', home)).rejects.toBe(failure);
+      expect(names()).toEqual(['abu-official', 'my-folder']);
+    });
+
+    it('keeps the market in the list until its copy has been deleted', async () => {
+      let finish!: () => void;
+      vi.mocked(invoke).mockReturnValue(new Promise((resolve) => { finish = () => resolve(null); }));
+      const removing = removeMarket('lawyer-market', home);
+      expect(names()).toContain('lawyer-market');
+      finish();
+      await removing;
+      expect(names()).toEqual(['abu-official', 'my-folder']);
+    });
   });
 });

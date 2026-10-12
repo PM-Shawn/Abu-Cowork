@@ -4,10 +4,12 @@ import { cn } from '@/lib/utils';
 import { GENERAL_APP_ID, type AppDefinition } from '@/types/app';
 import { useAppStore, useAvailableApps, useSelectedApp } from '@/stores/appStore';
 import { createAppDraft } from '@/core/app/appDraft';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { useToastStore } from '@/stores/toastStore';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { removeApp } from '@/core/app/appSync';
 import AppLogo from '@/components/app/AppLogo';
+import { focusComposerAfterPageChange } from '@/components/chat/composerFocus';
 import { Button } from '@/components/ds/button';
 import { useConfirm } from '@/components/ds/confirm-context';
 import { Icon } from '@/components/ds/icon';
@@ -66,8 +68,15 @@ export default function AppSwitcher({ className }: { className?: string }) {
     if (appId === selected.appId) return;
     enterApp(appId);
   };
+  // Creating an app happens in the general shell: the shell leaves the app, unless the
+  // organization keeps the employee in it, and the creation conversation replaces the page in view.
   const createApp = () => {
-    void createAppDraft().catch((error) => addToast({ type: 'error', title: t.appSwitcher.create, message: String(error) }));
+    void createAppDraft({ leaveApp: allowExit })
+      .then(() => focusComposerAfterPageChange())
+      .catch((error) => {
+        reportAppFailure('create app', error);
+        addToast({ type: 'error', title: t.appSwitcher.createFailed, message: t.appSwitcher.createFailedHint });
+      });
   };
   // The app as the store holds it now: what a removal acts on.
   const addedNow = (appId: string) => useAppStore.getState().addedApps.find((app) => app.appId === appId);
@@ -89,7 +98,8 @@ export default function AppSwitcher({ className }: { className?: string }) {
       }
       await removeApp(appId);
     } catch (error) {
-      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: String(error) });
+      reportAppFailure('remove app', error);
+      addToast({ type: 'error', title: t.appSwitcher.removeFailed, message: t.appSwitcher.removeFailedHint });
     } finally {
       removing.current.delete(appId);
     }

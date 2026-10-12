@@ -101,6 +101,8 @@ Set the global default under **Settings → Security → Default Permission Mode
 
 A permission mode is not a global safety off-switch. Sandbox rules, protected paths, dangerous-command checks, content scanning, and operating-system permissions still apply independently.
 
+> **The sandbox is advisory on Windows.** macOS uses Seatbelt, where the system itself confines a shell command's file access; Windows has no equivalent — PowerShell's ConstrainedLanguage restricts in-process language features, not file access. Network isolation works the same way: it is applied through environment variables, so a command that bypasses the proxy still reaches the network, and on Windows the toggle is not exposed in Settings and is off by default. Protected paths, dangerous-command detection, and permission-mode confirmations are unaffected — those still apply.
+
 ### Execution plans
 
 When a plan includes high-risk steps such as deletion, overwrite, sending, publishing, or installation, Abu presents an **Execution Plan** and waits for approval. Approving a plan allows work to continue under that plan; it does not permanently authorize every downstream result. Abu may still ask immediately before a consequential action.
@@ -180,6 +182,44 @@ On macOS, two separate permissions are required:
 Use Abu's setup guide to open System Settings, then return to Abu for an automatic recheck. Development builds may appear as Electron in the permission list; installed releases appear as Abu.
 
 Computer Use remains subject to sensitive-app blocking, dangerous-key interception, permission modes, and confirmation for consequential results. After you disable Computer Use, neither the model nor a background task can turn it back on.
+
+## Apps
+
+An app is Abu prepared for one line of work: its own home page, a few groups of scenes, who handles each scene (an expert team, an expert or a skill), and its own navigation. The **app switcher** at the top of the sidebar reads **Discover apps** in the general shell and shows the app's name once you are inside one.
+
+### Add an app and start working
+
+- Choose **See more** in the switcher to open the **App market**. Each app shows its name, a line about it, and the teams, experts and skills it **Uses**. Three apps ship with Abu in the official market: **Recruiting**, **Finance reconciliation** and **Content creation**.
+- Click **Use**. When the app needs plugins this computer does not have yet, a review screen lists them under **Installed along with it**, with the experts, teams, skills and connector settings they bring; when the app has web pages, the screen lists **This app opens these websites inside Abu**. After **Confirm** the app appears under **My apps** in the switcher and its home page opens. An app that needs nothing installed opens straight away.
+- The home page starts with the app's name and a line about it, then its modes and scenes. Opening a scene shows a few sample prompts; clicking one puts the text into the composer, where you can edit it before sending. Each scene card says who handles it.
+- When a connector the app needs is not connected yet, the home page offers **Connect** and **Not now**.
+- Inside an app, the **Experts** page shows **This app** — the experts and teams the app uses — by default; switch to **All** to see everything.
+- The sidebar navigation follows the app's definition. The app's own web page opens in the main area and stays on the sites the app declared; links elsewhere open in the system browser.
+
+### Add a market
+
+- When someone gives you a market address, click **Add market** in the app market and enter it. The market's apps appear in the app market, and the market itself under **Added markets**. You can also pick a folder on this computer. The plugin market and the app market share the same list of markets.
+- When adding fails, the message says why: **This address needs a login**, **There is no market at this address**, or **A market with this name already exists; contact whoever gave you the address**.
+- **Remove** next to a market under **Added markets** warns that **Apps added from this market will no longer get updates**; apps you already added keep working.
+- When the market has a newer version of an app, **Update** appears next to it and follows the same steps as **Use**. When the app needs a newer Abu, it shows **Update Abu first**.
+- Developers can also add an app folder directly with **Add from folder**.
+
+### When something an app uses is gone
+
+- You uninstalled a plugin the app uses: opening an affected scene shows the review screen with the plugin under **Installed along with it**; after confirming, the sample prompt starts.
+- You deleted one of your own experts or teams the app uses: the scene card says **… is no longer available**, and its sample prompts cannot be clicked.
+- Uninstalling a plugin or deleting your own expert or team shows **Used by the app …** in the confirmation.
+
+### Remove an app, and its conversations
+
+- Hover over an app in the switcher and click **Remove**. Only the app goes; its experts, teams, skills and plugins stay. Click **General** to return to the general shell.
+- A conversation started inside an app carries the app's mark and can be reopened from the conversation list whichever app is current. After the app is removed the conversation still opens and says the app was removed; **Add it** adds the app again so you can continue.
+
+### Build your own app
+
+Choose **Create app** in the switcher and describe, in the conversation, who the app is for, which groups of scenes it offers and who handles each. Abu uses the experts and teams you already have first and creates new ones only when needed. When it is done, an **App preview** appears in the conversation: the home, who handles each scene, **Experts to be created** and **Expert teams to be created**. **Confirm** adds the new experts and teams to your own on the **Experts** page, puts the app in the switcher and opens its home page; **Modify** lets you say what to change.
+
+An app you made lives only on this computer. Removing it first warns that **You made this app yourself; once removed it cannot be added back**. The rules for making and publishing apps are in the [app spec](app-spec.md) (in Chinese).
 
 ## Toolbox: Skills, Agents, and Connectors
 
@@ -299,3 +339,6 @@ Open **Settings → Preferences**. Choose Simplified Chinese, English, or Follow
 ---
 
 If the issue remains, file a reproducible report in [GitHub Issues](https://github.com/PM-Shawn/Abu-Cowork/issues). Do not publish API keys, access tokens, internal addresses, or diagnostic material containing confidential information.
+
+
+[Personal plugins: creation and maintenance (Chinese)](https://github.com/PM-Shawn/Abu-Cowork/blob/main/PLUGINS.zh-CN.md)

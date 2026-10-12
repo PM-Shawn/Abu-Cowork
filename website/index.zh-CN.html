@@ -17,701 +17,284 @@
     <link rel="alternate" hreflang="zh-CN" href="index.zh-CN.html">
     <link rel="alternate" hreflang="x-default" href="index.html">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
     <title>Abu (阿布) - 你的 AI 桌面办公搭子</title>
-    <meta name="description" content="本地运行的 AI 桌面办公助手，你说需求，阿布干活。读文件、跑命令、写文档、做报表，全在本地完成。">
-    <link rel="stylesheet" href="style.css">
-    <link rel="icon" href="assets/abu-avatar.png" type="image/png">
+    <meta name="description" content="开源免费的 AI 桌面办公助手，用你自己的模型。说出你要的结果，阿布在你的电脑上读文件、开浏览器、操作软件，做完把文件交给你。">
+    <link rel="icon" href="assets/abu-avatar-120.png" type="image/png">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400.css">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400-italic.css">
+    <link rel="stylesheet" href="assets/fonts/noto-serif-sc/500.css">
+    <link rel="stylesheet" href="site.css">
+    <link rel="stylesheet" href="home.css">
+    <!-- Baidu Tongji -->
+    <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?01567fba26100539d5fb9f494c789f4d";
+      var s = document.getElementsByTagName("script")[0];
+      s.parentNode.insertBefore(hm, s);
+    })();
+    </script>
 </head>
 <body>
-    <!-- Navigation -->
-    <nav class="navbar" id="navbar">
-        <div class="container nav-container">
-            <a href="#" class="nav-brand">
-                <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo">
-                <span class="nav-title">Abu <span class="nav-title-cn">阿布</span></span>
-            </a>
-            <div class="nav-links" id="navLinks">
-                <a href="#features" class="nav-link">功能</a>
-                <a href="#screenshots" class="nav-link">预览</a>
-                <a href="#use-cases" class="nav-link">场景</a>
-                <a href="#tech" class="nav-link">架构</a>
-                <a href="enterprise.zh-CN.html" class="nav-link nav-link-hot" aria-label="企业版，热门">企业版<span class="nav-hot-flame" aria-hidden="true">🔥</span></a>
-                <a href="docs.zh-CN.html" class="nav-link">文档</a>
-                <a href="#social" class="nav-link">社区</a>
-                <a href="index.html" class="nav-lang" aria-label="Switch to English" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">
-                    <svg class="nav-lang-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                    English
-                </a>
-                <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="nav-link nav-github">
-                    <svg class="icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-                    GitHub
-                </a>
-            </div>
-            <button class="nav-toggle" id="navToggle" aria-label="打开导航菜单" aria-controls="navLinks" aria-expanded="false">
-                <span></span><span></span><span></span>
-            </button>
-        </div>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="logo" href="#top"><img src="assets/abu-avatar-120.png" width="30" height="30" alt="">Abu 阿布</a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="#preview">预览</a>
+      <a href="#abilities">能力</a>
+      <a href="#scenes">场景</a>
+      <a href="#tech">架构</a>
+      <a href="enterprise.zh-CN.html" data-new>企业版</a>
+      <a href="platform.zh-CN.html" data-new>开放平台</a>
+      <a href="docs.zh-CN.html">文档</a>
+      <a href="community.zh-CN.html">社区</a>
     </nav>
+    <div class="nav-cta">
+      <a class="nav-lang" href="index.html" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">EN</a>
+      <a class="btn btn-line btn-sm" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-fill btn-sm" href="#start">下载</a>
+    </div>
+  </div>
+</header>
 
-    <!-- Hero Section -->
-    <section class="hero">
-        <div class="container">
-            <div class="mascot-wrapper">
-                <img src="assets/abu-avatar.png" alt="Abu 阿布" class="mascot">
-            </div>
-            <h1>交给阿布就行啦</h1>
-            <p class="tagline">本地运行的 AI 桌面办公助手<br>你说需求，阿布干活 — 读文件、跑命令、写文档、做报表</p>
-            <div class="hero-buttons">
-                <div class="download-dropdown" id="downloadDropdown">
-                    <button class="btn btn-primary dl-trigger" id="dlChevron" aria-expanded="false">
-                        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                        <span id="dlPrimaryLabel">下载最新版</span>
-                        <svg class="dl-chevron-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-                    </button>
-                    <div class="dl-menu" id="dlMenu" hidden>
-                        <a href="/" id="dlMacSilicon" class="dl-menu-item" target="_blank" rel="noopener" aria-disabled="true">
-                            <svg class="dl-menu-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
-                            <div class="dl-menu-info">
-                                <span class="dl-menu-name">macOS Apple Silicon</span>
-                                <span class="dl-menu-sub">dmg · M 系列芯片</span>
-                            </div>
-                        </a>
-                        <a href="/" id="dlMacIntel" class="dl-menu-item" target="_blank" rel="noopener" aria-disabled="true">
-                            <svg class="dl-menu-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
-                            <div class="dl-menu-info">
-                                <span class="dl-menu-name">macOS Intel</span>
-                                <span class="dl-menu-sub">dmg · x86_64</span>
-                            </div>
-                        </a>
-                        <a href="/" id="dlWindows" class="dl-menu-item" target="_blank" rel="noopener" aria-disabled="true">
-                            <svg class="dl-menu-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M0 3.449L9.75 2.1v9.451H0m10.949-9.602L24 0v11.4H10.949M0 12.6h9.75v9.451L0 20.699M10.949 12.6H24V24l-12.9-1.801"/></svg>
-                            <div class="dl-menu-info">
-                                <span class="dl-menu-name">Windows</span>
-                                <span class="dl-menu-sub">exe · x64</span>
-                            </div>
-                        </a>
-                        <div class="dl-menu-footer">
-                            <a href="docs.zh-CN.html#installation">安装帮助</a>
-                        </div>
-                    </div>
-                </div>
-                <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="btn btn-secondary">
-                    <svg class="icon" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-                    Star on GitHub
-                </a>
-            </div>
-            <div class="hero-meta">
-                <span class="meta-item">
-                    <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
-                    macOS / Windows
-                </span>
-                <span class="meta-item">
-                    <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
-                    本地优先，数据不上传
-                </span>
-                <span class="meta-item">
-                    <svg class="icon-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
-                    开源免费
-                </span>
-            </div>
-            <div class="hero-visual">
-                <img src="assets/hero-plan-mode.png" alt="Abu 阿布 产品界面 — 计划模式：高风险任务先出计划，确认才动手" class="hero-shot" loading="lazy">
-            </div>
+<main id="top">
+
+  <div class="hero" id="hero">
+    <div class="hero-copy" id="heroCopy">
+      <h1 class="hero-title">
+        <span class="row"><span>交给阿布就行啦<span class="punct">！</span></span></span>
+      </h1>
+      <div class="sr">开源免费，用你自己的模型：DeepSeek、智谱、Kimi、通义、豆包、Ollama</div>
+      <p class="hero-claim fade" style="animation-delay: 520ms" aria-hidden="true">
+        <mark class="hl">开源免费</mark><span>，用你自己的</span>
+        <span class="rotor" id="rotor"><span class="rotor-list" id="rotorList"><span data-more=" 等">DeepSeek</span><span>智谱</span><span>Kimi</span><span>通义</span><span>豆包</span><span>Ollama</span></span></span>
+      </p>
+      <p class="lead hero-sub fade" style="animation-delay: 620ms">说出你要的结果。阿布在你的电脑上读文件、开浏览器、操作软件，做完把文件交给你。</p>
+      <div class="hero-actions fade" style="animation-delay: 720ms">
+        <a class="btn btn-fill" href="#start">免费下载</a>
+        <a class="btn btn-line" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub<span class="stars" id="stars" hidden></span></a>
+      </div>
+      <p class="eyebrow hero-meta fade" style="animation-delay: 820ms"><span data-release-line hidden><span data-release-version></span> · </span>macOS / Windows</p>
+    </div>
+
+    <!-- A whole-window screenshot of the client; its top edge shows in the first screen. -->
+    <div class="hero-window" id="heroWindow">
+      <div class="shot-frame">
+        <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="assets/shots/hero-window-dark-1440.webp 1440w, assets/shots/hero-window-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), min(1240px, calc(100vw - 48px))">
+          <img src="assets/shots/hero-window-light.webp" srcset="assets/shots/hero-window-light-1440.webp 1440w, assets/shots/hero-window-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), min(1240px, calc(100vw - 48px))" alt="阿布客户端：一条已完成的任务，左边是任务列表，中间是用户的要求、结果表格和生成的文件，右边是任务摘要" width="1440" height="1040">
+        </picture>
+      </div>
+    </div>
+  </div>
+
+  <div class="manifesto" id="manifesto" data-night>
+    <div class="manifesto-pin">
+      <div class="aurora" id="aurora"></div>
+      <svg class="grain" aria-hidden="true"><filter id="n"><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" stitchTiles="stitch"/></filter><rect width="100%" height="100%" filter="url(#n)"/></svg>
+      <span class="eyebrow">Abu, <span class="it">your desktop coworker</span></span>
+      <p class="manifesto-text" id="manifestoText" data-text="不用订阅。|接入你自己的模型，|DeepSeek、智谱、Kimi、通义、豆包，|本机的 Ollama 也可以。"></p>
+    </div>
+  </div>
+
+  <section class="pad wrap" id="preview">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">产品预览</h2>
+    </div>
+    <div class="tabs reveal" role="group" aria-label="选择要看的画面">
+      <button class="tab" type="button" aria-pressed="true" data-shot="b-done-steps-light" data-note="阿布读了哪些文件、执行了哪些命令，每一步都留在对话里。">任务执行</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="b-done-preview-light" data-note="生成的文件直接在右侧打开预览，不用切到别的软件。">结果与文件</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="c-plan-approval-light" data-note="阿布要移动或者删除文件之前，会把计划列出来，等你批准。">执行计划</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="d-question-light" data-note="需要你做决定的时候，阿布会弹出选项卡片，你点一下就能回答。">交互式提问</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="e-command-approval-light" data-note="阿布执行有风险的命令之前，会先弹出确认窗口。">操作确认</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="f-skills-light" data-note="技能教阿布怎么做某一类事。你可以安装现成的，也可以自己创建。">技能</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="f-expert-teams-light" data-note="几位专家组成专家团，分头完成一件大事。">专家团</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="f-connectors-light" data-note="阿布通过连接器使用数据库、搜索引擎、GitHub 这些外部服务。">连接器</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="g-schedules-light" data-note="到了设定的时间，阿布自动开始工作，例如每周一早上 9 点写周报。">定时任务</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="h-settings-models-light" data-note="云端的模型服务和本机模型都可以接入，用的是你自己的账号。">模型设置</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="h-settings-security-light" data-note="阿布能访问哪些文件夹、哪些操作要先问你，都在这里设置。">安全设置</button>
+      <button class="tab" type="button" aria-pressed="false" data-shot="b-done-summary-dark" data-note="外观可以跟随系统，也可以固定为浅色或深色。">深色外观</button>
+    </div>
+    <p class="small tab-note" id="tabNote" aria-live="polite">阿布读了哪些文件、执行了哪些命令，每一步都留在对话里。</p>
+    <div class="shot-frame gallery reveal" id="gallery">
+      <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="assets/shots/b-done-steps-dark-1440.webp 1440w, assets/shots/b-done-steps-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 48px), 1240px">
+        <img class="is-on" src="assets/shots/b-done-steps-light.webp" srcset="assets/shots/b-done-steps-light-1440.webp 1440w, assets/shots/b-done-steps-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 48px), 1240px" data-shot="b-done-steps-light" alt="阿布客户端画面：任务执行" width="1440" height="900" loading="lazy">
+      </picture>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="how">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">阿布怎么干活</h2>
+    </div>
+    <div class="stack">
+      <article class="stack-card">
+        <div class="copy"><span class="num">1</span><h3 class="h3">只说你要的结果</h3><p>像交代同事一样写一句话：要做什么、用哪些材料、最后要什么文件。怎么做由阿布自己规划。</p></div>
+        <div class="art"><img src="assets/shots/step-1-ask.webp" width="800" height="500" alt="阿布的新任务页：输入框里写着一句话，要求把 12 个月的报销表合并成一张、按部门汇总" loading="lazy"></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">2</span><h3 class="h3">动手之前，先给你看计划</h3><p>要删除、覆盖、发送或者安装的时候，阿布把每一步列出来。你批准了，它才开始。</p></div>
+        <div class="art"><img src="assets/shots/step-2-plan.webp" width="840" height="525" alt="对话里展开的执行计划：用户说要整理下载文件夹，阿布列出四步，等待确认" loading="lazy"></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">3</span><h3 class="h3">拿不准的地方，它会问你</h3><p>信息不够的时候阿布不会自己猜。它弹出几个选项，你点一下，它接着做。</p></div>
+        <div class="art"><img src="assets/shots/step-3-question.webp" width="904" height="610" alt="提问卡片：这份周报给谁看？选项有直属领导、项目组、客户" loading="lazy"></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">4</span><h3 class="h3">文件直接放进你的文件夹</h3><p>表格、文档、PPT 保存在你选的文件夹里，打开就能用。阿布读过哪些文件、执行过哪些命令，对话里都查得到。</p></div>
+        <div class="art"><img src="assets/shots/step-4-file.webp" width="1440" height="900" alt="阿布的完整窗口：左边对话里有结果表格和文件卡片「报销汇总」，右边打开了这份表格的预览" loading="lazy"></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="abilities">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">核心能力</h2>
+    </div>
+    <div class="bento">
+      <article class="cell reveal"><span class="cell-name">自主任务执行</span><h3 class="h3">一件事从头做到交付</h3><p class="small">阿布自己规划步骤，读文件、执行命令、写出结果。中间不需要你一步一步地指挥。</p></article>
+      <article class="cell reveal"><span class="cell-name">技能系统</span><h3 class="h3">做 PPT、做表格、写报告，都有现成技能</h3><p class="small">内置的技能覆盖 Office 文档、设计、浏览网页和开发。你可以安装别人做好的技能，也可以自己写。</p></article>
+      <article class="cell reveal"><span class="cell-name">电脑操控</span><h3 class="h3">它能操作你电脑上的软件</h3><p class="small">没有接口的软件，阿布看着屏幕，用鼠标和键盘替你操作。</p></article>
+      <article class="cell reveal"><span class="cell-name">连接器</span><h3 class="h3">接上 GitHub、Notion 和数据库</h3><p class="small">阿布通过 MCP 标准使用这些外部服务，直接查数据、建页面、提 Issue。</p></article>
+      <article class="cell reveal"><span class="cell-name">自动化</span><h3 class="h3">每周一 9 点，周报已经写好</h3><p class="small">你设置好时间，阿布到点自己开始。文件有变化、收到 IM 消息的时候，它也可以自动开工。需要阿布开着、电脑没有休眠。</p></article>
+      <article class="cell reveal"><span class="cell-name">自进化</span><h3 class="h3">做过一遍的流程，下次一句话</h3><p class="small">阿布做完一套复杂流程之后，会提议把它存成技能，并且写好草稿。你审阅通过以后，下次说一句话就能重做。</p></article>
+      <article class="cell reveal"><span class="cell-name">专家团</span><h3 class="h3">一件大事，交给一个专家团</h3><p class="small">产品经理、工程师、设计师、测试各做各的部分，同时推进，最后汇总成一份结果。</p></article>
+      <article class="cell reveal"><span class="cell-name">计划模式</span><h3 class="h3">删除、覆盖之前，等你批准</h3><p class="small">阿布先列出分步计划，你点「确认执行」它才开始。等你批准的这段时间，它只读取、不改动。</p></article>
+      <article class="cell reveal"><span class="cell-name">交互式提问</span><h3 class="h3">点一下，就回答了它的问题</h3><p class="small">需要你做决定的时候，阿布在输入框上方弹出选项卡片。卡片支持单选和多选，你也可以自己填写。</p></article>
+    </div>
+    <div class="more reveal">
+      <span class="eyebrow">更多能力</span>
+      <div class="pills"><span class="pill">主题切换</span><span class="pill">实验室 · 桌宠</span><span class="pill">IM 频道集成</span><span class="pill">多模型支持</span><span class="pill">项目管理</span><span class="pill">对话分享</span><span class="pill">智能通知</span><span class="pill">性格系统 Soul</span><span class="pill">内容安全扫描</span><span class="pill">诊断面板</span><span class="pill">沙箱安全</span></div>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="scenes">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">使用场景</h2>
+    </div>
+    <div class="ledger">
+      <div class="ledger-row reveal"><span class="eyebrow">财务</span><span class="what">把 12 个月的报销表合并成一张，按部门汇总</span><span class="got">一份带汇总页的 Excel</span></div>
+      <div class="ledger-row reveal"><span class="eyebrow">运营</span><span class="what">每周一早上 9 点读取上周的数据表，写成周报</span><span class="got">周报自动出现在指定文件夹</span></div>
+      <div class="ledger-row reveal"><span class="eyebrow">行政</span><span class="what">把下载文件夹里的合同按公司名称归类、统一改名</span><span class="got">几百个文件各归各位</span></div>
+      <div class="ledger-row reveal"><span class="eyebrow">学生</span><span class="what">读完 20 篇论文，整理成对比表格</span><span class="got">一张列出方法、数据、结论的表</span></div>
+      <div class="ledger-row reveal"><span class="eyebrow">产品经理</span><span class="what">把会议转写的文字整理成纪要和待办清单</span><span class="got">一份可以直接发出去的纪要</span></div>
+      <div class="ledger-row reveal"><span class="eyebrow">开发者</span><span class="what">审查一个 PR，列出问题并给出修改建议</span><span class="got">一份逐文件的审查意见</span></div>
+    </div>
+    <p class="eyebrow note">以上是示例场景</p>
+  </section>
+
+  <section class="pad voices" id="voices">
+    <div class="wrap head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">用户反馈</h2>
+    </div>
+    <div class="marquee" id="rowA">
+      <blockquote class="quote is-brand">阿布很好用，已经用阿布做了个日历定制打印网站</blockquote>
+      <blockquote class="quote">轻量快速，使用起来很顺手</blockquote>
+      <blockquote class="quote">阿布帮我们公司交付了好几个项目</blockquote>
+      <blockquote class="quote">可以自己动手 DIY 改代码</blockquote>
+    </div>
+    <div class="marquee rev" id="rowB">
+      <blockquote class="quote">我经常向客户推广阿布</blockquote>
+      <blockquote class="quote">软件开发的很不错！</blockquote>
+      <blockquote class="quote">一个人开发出阿布，太牛了</blockquote>
+      <blockquote class="quote">感谢，工具做的很棒</blockquote>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="safe">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">安全</h2>
+      <p class="lead">阿布在你的电脑上运行。它能访问哪些文件夹、哪些操作要先问你，都由你决定。</p>
+    </div>
+    <div class="safe">
+      <div class="facts">
+        <div class="fact reveal"><span class="n">a</span><h3 class="h3">文件留在你的电脑上</h3><p class="small">对话、文件和模型密钥都保存在本机。</p></div>
+        <div class="fact reveal"><span class="n">b</span><h3 class="h3">你决定它能进哪些文件夹</h3><p class="small">阿布要往你选的文件夹之外写入，需要你先同意。</p></div>
+        <div class="fact reveal"><span class="n">c</span><h3 class="h3">动手之前先问你</h3><p class="small">删除、覆盖、发送之前，阿布会停下来等你确认。</p></div>
+        <div class="fact reveal"><span class="n">d</span><h3 class="h3">代码公开，谁都可以检查</h3><p class="small">阿布的全部代码在 GitHub 上开源。</p></div>
+      </div>
+      <div class="safe-art reveal"><img class="crop" src="assets/shots/e-command-approval-window-light.webp" width="448" height="280" alt="操作确认窗口：阿布在执行一条删除命令之前请你确认" loading="lazy"></div>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="tech">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">技术架构</h2>
+    </div>
+    <div class="spec">
+      <div class="spec-row reveal"><span class="eyebrow">桌面框架</span><span class="spec-value">Electron</span><span class="spec-detail">Electron 主进程 + 原生组件，兼顾桌面集成与安全边界</span></div>
+      <div class="spec-row reveal"><span class="eyebrow">前端</span><span class="spec-value">React + TypeScript</span><span class="spec-detail">Vite 构建，TailwindCSS</span></div>
+      <div class="spec-row reveal"><span class="eyebrow">AI 集成</span><span class="spec-value">多模型任务执行</span><span class="spec-detail">工具调用 + 技能 + 连接器</span></div>
+      <div class="spec-row reveal"><span class="eyebrow">安全</span><span class="spec-value">沙箱隔离</span><span class="spec-detail">系统沙箱 + 路径保护 + 命令检查</span></div>
+      <div class="spec-row reveal"><span class="eyebrow">数据</span><span class="spec-value">本地优先</span><span class="spec-detail">所有数据和 API Key 存储在本地</span></div>
+      <div class="spec-row reveal"><span class="eyebrow">扩展</span><span class="spec-value">可扩展工具箱</span><span class="spec-detail">技能 + 代理 + 连接器按需扩展</span></div>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="community">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">加入社区</h2>
+    </div>
+    <div class="join reveal">
+      <div class="join-copy">
+        <h3 class="join-title">加作者微信，进阿布用户群</h3>
+        <p class="lead">扫右边的二维码添加阿布作者 Shawn 的微信，备注「Abu」，他会把你拉进用户交流群。使用中的问题和想要的功能，可以直接在群里说。</p>
+        <ul class="channels">
+          <li><a href="https://xhslink.com/m/8ruHynC0jPB" target="_blank" rel="noopener"><span class="channel-name">小红书</span><span class="channel-account">Shawn的AI产品小记</span><span class="channel-desc">使用技巧和产品动态</span><span aria-hidden="true">→</span></a></li>
+          <li><span class="channel-row"><span class="channel-name">公众号</span><span class="channel-account">Shawn的产品笔记</span><span class="channel-desc">在微信里搜索这个名字</span></span></li>
+          <li><a href="https://x.com/pmshawn_x" target="_blank" rel="noopener"><span class="channel-name">X</span><span class="channel-account">@pmshawn_x</span><span class="channel-desc">新版本和开发进展</span><span aria-hidden="true">→</span></a></li>
+          <li><a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener"><span class="channel-name">GitHub</span><span class="channel-account">PM-Shawn/Abu-Cowork</span><span class="channel-desc">Star、提 Issue、贡献代码</span><span aria-hidden="true">→</span></a></li>
+          <li><a href="https://discord.gg/eY3zH3XGqE" target="_blank" rel="noopener"><span class="channel-name">Discord</span><span class="channel-account">Abu</span><span class="channel-desc">英文社区</span><span aria-hidden="true">→</span></a></li>
+        </ul>
+      </div>
+      <figure class="qr">
+        <img src="assets/wechat-qr.png" width="448" height="448" alt="阿布作者 Shawn 的微信二维码" loading="lazy">
+        <figcaption class="eyebrow">微信扫一扫 · 备注 Abu</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <div class="finale" id="start" data-night>
+    <div class="aurora"></div>
+    <div class="wrap inner">
+      <span class="eyebrow">开始使用</span>
+      <h2 class="h2 reveal">把第一件事交给阿布</h2>
+      <div class="hero-actions reveal">
+        <div class="dl" id="downloadDropdown">
+          <button class="btn btn-fill dl-trigger" type="button" id="dlChevron" aria-expanded="false" aria-controls="dlMenu"><span id="dlPrimaryLabel">下载 macOS 版</span></button>
+          <div class="dl-menu" id="dlMenu" hidden>
+            <a href="/" id="dlMacSilicon" class="dl-item" target="_blank" rel="noopener" aria-disabled="true"><span class="dl-name">macOS Apple Silicon</span><span class="dl-sub">dmg · M 系列芯片</span></a>
+            <a href="/" id="dlMacIntel" class="dl-item" target="_blank" rel="noopener" aria-disabled="true"><span class="dl-name">macOS Intel</span><span class="dl-sub">dmg · x86_64</span></a>
+            <a class="dl-help" href="docs.zh-CN.html#installation">安装帮助</a>
+          </div>
         </div>
-    </section>
+        <a href="/" id="dlWindows" class="btn btn-line" target="_blank" rel="noopener" aria-disabled="true">下载 Windows 版</a>
+      </div>
+      <p class="small"><span data-release-line hidden><span data-release-version></span> · </span>安装之后配置一个模型，选一个文件夹，告诉阿布你要什么</p>
+      <a class="small finale-link" href="community.zh-CN.html">遇到问题？加作者微信进用户群 →</a>
+    </div>
+    <div class="wrap foot"><span>© 2026 Abu 阿布</span><a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a><a href="#community">微信交流群</a><a href="https://xhslink.com/m/8ruHynC0jPB" target="_blank" rel="noopener">小红书</a><a href="#community">公众号</a><a href="https://x.com/pmshawn_x" target="_blank" rel="noopener">X</a><a href="index.html" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">English</a></div>
+    <div class="wordmark" aria-hidden="true"><span class="it">Abu</span> 阿布</div>
+  </div>
 
-    <!-- 最新更新（内容来自 Electron 发布元数据，加载到才显示） -->
-    <section class="whatsnew" id="whatsnew" hidden>
-        <div class="container">
-            <details>
-                <summary>最新更新<span class="wn-ver" id="wnVersion"></span></summary>
-                <div class="wn-body" id="wnBody"></div>
-                <a class="wn-more" href="https://github.com/PM-Shawn/Abu-Cowork/releases" target="_blank" rel="noopener">全部版本 →</a>
-            </details>
-        </div>
-    </section>
+</main>
 
-    <!-- Features Section -->
-    <section class="features" id="features">
-        <div class="container">
-            <h2>核心能力</h2>
-            <p class="section-desc">不只是聊天，能自主规划、调用工具、完成复杂任务</p>
-            <div class="feature-grid">
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
-                    </div>
-                    <h3>自进化</h3>
-                    <p>跑完复杂流程后，阿布主动提议「固化成技能」，一键生成草稿，审阅上架后下次直接调用。越用越专属于你的工作流。</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                    </div>
-                    <h3>自主任务执行</h3>
-                    <p>自主规划任务、调用工具、读写文件、执行命令，完成复杂工作流。</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-                    </div>
-                    <h3>技能系统</h3>
-                    <p>覆盖 Office 文档、设计创作、浏览器自动化、开发辅助等场景，支持安装、自定义和持续沉淀。</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
-                    </div>
-                    <h3>连接器</h3>
-                    <p>通过 MCP 标准连接数据库、搜索引擎、GitHub 等外部服务，在工具箱统一管理。</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
-                    </div>
-                    <h3>自动化</h3>
-                    <p>用定时任务和监听事件响应 HTTP、文件变化、时间或 IM 消息；Abu 运行且电脑唤醒时执行。</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><circle cx="12" cy="10" r="3"/><path d="M7 21l2-3h6l2 3"/></svg>
-                    </div>
-                    <h3>电脑操控</h3>
-                    <p>截屏识别 + 键鼠控制，让阿布直接操作桌面应用，像真人一样完成任务。</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 11l3 3L20 6"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-                    </div>
-                    <h3>计划模式</h3>
-                    <p>涉及删除、覆盖、发送、安装等高风险步骤时，阿布先出分步计划，你点「确认执行」才动手；待批期间只跑只读操作。</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-                    </div>
-                    <h3>交互式提问</h3>
-                    <p>需要你拍板时，阿布在输入框上方弹出选项卡片，单选 / 多选皆可，也能填「其他」自定义，不用在长文字里找问题。</p>
-                </div>
-                <div class="feature-card">
-                    <div class="feature-icon">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                    </div>
-                    <h3>多代理协作</h3>
-                    <p>主代理可以把边界清楚的子任务交给其他代理，独立推进并汇总结果。</p>
-                </div>
-                <div class="more-caps">
-                    <span class="more-caps-label">更多能力</span>
-                    <div class="more-caps-list">
-                        <span class="more-cap">主题切换</span>
-                        <span class="more-cap">实验室 · 桌宠</span>
-                        <span class="more-cap">IM 频道集成</span>
-                        <span class="more-cap">多模型支持</span>
-                        <span class="more-cap">项目管理</span>
-                        <span class="more-cap">对话分享</span>
-                        <span class="more-cap">智能通知</span>
-                        <span class="more-cap">性格系统 Soul</span>
-                        <span class="more-cap">内容安全扫描</span>
-                        <span class="more-cap">诊断面板</span>
-                        <span class="more-cap">沙箱安全</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Screenshots Section -->
-    <section class="screenshots" id="screenshots">
-        <div class="container">
-            <h2>产品预览</h2>
-            <p class="section-desc">简洁直观的界面，强大灵活的能力</p>
-            <div class="screenshot-tabs">
-                <button class="screenshot-tab active" data-tab="execution">智能执行</button>
-                <button class="screenshot-tab" data-tab="extension">连接 & 扩展</button>
-                <button class="screenshot-tab" data-tab="automation">自动驾驶</button>
-                <button class="screenshot-tab" data-tab="security">安全 & 配置</button>
-            </div>
-            <div class="screenshot-panels">
-                <div class="screenshot-panel active" data-panel="execution">
-                    <div class="showcase">
-                        <div class="showcase-list">
-                            <button class="showcase-item active" data-img="assets/screenshot-plan-mode.png" data-cap="高风险任务先出计划，你点确认才动手">计划模式</button>
-                            <button class="showcase-item" data-img="assets/screenshot-ask-question.png" data-cap="需要你拍板时弹出选项卡片，单选 / 多选">交互式提问</button>
-                            <button class="showcase-item" data-img="assets/screenshot-welcome.png" data-cap="自然语言输入，对话即指令">欢迎页</button>
-                            <button class="showcase-item" data-img="assets/screenshot-execution.png" data-cap="自主规划步骤，调用工具完成复杂任务">任务执行</button>
-                            <button class="showcase-item" data-img="assets/screenshot-permission.png" data-cap="文件访问需用户授权，安全可控">权限控制</button>
-                        </div>
-                        <div class="showcase-view">
-                            <img class="showcase-img" src="assets/screenshot-plan-mode.png" alt="计划模式" loading="lazy">
-                            <p class="showcase-caption">计划模式 · 高风险任务先出计划，你点确认才动手</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="screenshot-panel" data-panel="extension">
-                    <div class="showcase">
-                        <div class="showcase-list">
-                            <button class="showcase-item active" data-img="assets/screenshot-im-chat.png" data-cap="在飞书 / 钉钉中 @阿布 即可交互">IM 频道对话</button>
-                            <button class="showcase-item" data-img="assets/screenshot-skills.png" data-cap="技能支持安装、自定义和持续沉淀">技能</button>
-                            <button class="showcase-item" data-img="assets/screenshot-mcp.png" data-cap="一键接入 Playwright、GitHub 等外部工具">MCP 连接器</button>
-                        </div>
-                        <div class="showcase-view">
-                            <img class="showcase-img" src="assets/screenshot-im-chat.png" alt="IM 频道对话" loading="lazy">
-                            <p class="showcase-caption">IM 频道对话 · 在飞书 / 钉钉中 @阿布 即可交互</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="screenshot-panel" data-panel="automation">
-                    <div class="showcase">
-                        <div class="showcase-list">
-                            <button class="showcase-item active" data-img="assets/screenshot-multi-agent.png" data-cap="主代理分派子任务，进度与结果集中可见">多代理协作</button>
-                            <button class="showcase-item" data-img="assets/screenshot-schedule-create.png" data-cap="Cron 定时执行，让阿布每天自动工作">定时任务</button>
-                            <button class="showcase-item" data-img="assets/screenshot-triggers.png" data-cap="HTTP、文件变更、IM 消息等事件自动触发">触发器 / 值班</button>
-                            <button class="showcase-item" data-img="assets/screenshot-memory.png" data-cap="记住你的偏好和工作习惯">个人记忆</button>
-                        </div>
-                        <div class="showcase-view">
-                            <img class="showcase-img" src="assets/screenshot-multi-agent.png" alt="多 Agent 并行" loading="lazy">
-                            <p class="showcase-caption">多代理协作 · 主代理分派子任务，进度与结果集中可见</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="screenshot-panel" data-panel="security">
-                    <div class="showcase">
-                        <div class="showcase-list">
-                            <button class="showcase-item active" data-img="assets/screenshot-pet.png" data-cap="桌面浮窗常驻，活动条实时显示阿布状态">桌宠 · 活动通知条</button>
-                            <button class="showcase-item" data-img="assets/screenshot-theme.png" data-cap="亮色 / 暗色 / 跟随系统一键切换">主题切换</button>
-                            <button class="showcase-item" data-img="assets/screenshot-labs.png" data-cap="打磨中的新功能，按需开启（当前：桌宠）">实验室（Labs）</button>
-                            <button class="showcase-item" data-img="assets/screenshot-soul.png" data-cap="三档主动度预设 + SOUL.md 自定义语气与回复风格">性格系统（Soul）</button>
-                            <button class="showcase-item" data-img="assets/screenshot-diagnostic.png" data-cap="模型 / 连接器 / 技能 / 网络一键自检 + 诊断包导出">诊断面板</button>
-                            <button class="showcase-item" data-img="assets/screenshot-security-scan.png" data-cap="120+ 类风险拦截，三档权限模式按场景调节">内容安全扫描</button>
-                        </div>
-                        <div class="showcase-view">
-                            <img class="showcase-img" src="assets/screenshot-pet.png" alt="桌宠 · 活动通知条" loading="lazy">
-                            <p class="showcase-caption">桌宠 · 活动通知条 · 桌面浮窗常驻，活动条实时显示阿布状态</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Use Cases Section -->
-    <section class="use-cases" id="use-cases">
-        <div class="container">
-            <h2>使用场景</h2>
-            <p class="section-desc">无论你是职场人、学生还是开发者，阿布都能帮到你</p>
-            <div class="use-case-grid">
-                <div class="use-case-card">
-                    <div class="use-case-header">
-                        <div class="use-case-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2" ry="2"/><polyline points="16 21 12 17 8 21"/></svg>
-                        </div>
-                        <h3>通用办公</h3>
-                    </div>
-                    <div class="use-case-examples">
-                        <div class="example-item">"帮我整理桌面，按文件类型分类到不同文件夹"</div>
-                        <div class="example-item">"找出下载文件夹里超过 100MB 的文件"</div>
-                    </div>
-                </div>
-                <div class="use-case-card">
-                    <div class="use-case-header">
-                        <div class="use-case-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
-                        </div>
-                        <h3>数据处理</h3>
-                    </div>
-                    <div class="use-case-examples">
-                        <div class="example-item">"把这几个 CSV 文件合并成一个 Excel"</div>
-                        <div class="example-item">"统计这个文件夹里所有表格的行数和列数"</div>
-                    </div>
-                </div>
-                <div class="use-case-card">
-                    <div class="use-case-header">
-                        <div class="use-case-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                        </div>
-                        <h3>内容创作</h3>
-                    </div>
-                    <div class="use-case-examples">
-                        <div class="example-item">"帮我写一份本周的项目周报"</div>
-                        <div class="example-item">"把这篇文章翻译成英文并保存"</div>
-                    </div>
-                </div>
-                <div class="use-case-card">
-                    <div class="use-case-header">
-                        <div class="use-case-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-                        </div>
-                        <h3>开发辅助</h3>
-                    </div>
-                    <div class="use-case-examples">
-                        <div class="example-item">"审查这个 PR 的代码并给出改进建议"</div>
-                        <div class="example-item">"批量重命名项目里的图片文件为 kebab-case"</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Tech Architecture Section -->
-    <section class="tech" id="tech">
-        <div class="container">
-            <h2>技术架构</h2>
-            <p class="section-desc">现代技术栈，安全可靠</p>
-            <div class="tech-grid">
-                <div class="tech-card">
-                    <div class="tech-label">桌面框架</div>
-                    <div class="tech-value">Electron</div>
-                    <div class="tech-detail">Electron 主进程 + 原生组件，兼顾桌面集成与安全边界</div>
-                </div>
-                <div class="tech-card">
-                    <div class="tech-label">前端</div>
-                    <div class="tech-value">React + TypeScript</div>
-                    <div class="tech-detail">Vite 构建，TailwindCSS + shadcn/ui</div>
-                </div>
-                <div class="tech-card">
-                    <div class="tech-label">AI 集成</div>
-                    <div class="tech-value">多模型任务执行</div>
-                    <div class="tech-detail">工具调用 + 技能 + 连接器</div>
-                </div>
-                <div class="tech-card">
-                    <div class="tech-label">安全</div>
-                    <div class="tech-value">沙箱隔离</div>
-                    <div class="tech-detail">系统沙箱 + 路径保护 + 命令检查</div>
-                </div>
-                <div class="tech-card">
-                    <div class="tech-label">数据</div>
-                    <div class="tech-value">本地优先</div>
-                    <div class="tech-detail">所有数据和 API Key 存储在本地</div>
-                </div>
-                <div class="tech-card">
-                    <div class="tech-label">扩展</div>
-                    <div class="tech-value">可扩展工具箱</div>
-                    <div class="tech-detail">技能 + 代理 + 连接器按需扩展</div>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Community / Get Started Section -->
-    <section class="community" id="community">
-        <div class="container">
-            <h2>开始使用</h2>
-            <p class="section-desc">三步上手，开始体验 AI 办公助手</p>
-            <div class="steps">
-                <div class="step">
-                    <div class="step-number">1</div>
-                    <h3>下载安装</h3>
-                    <p>点击本页顶部的下载按钮，选择对应平台的安装包</p>
-                </div>
-                <div class="step">
-                    <div class="step-number">2</div>
-                    <h3>配置模型</h3>
-                    <p>进入设置，选择 API 厂商并填入 API Key</p>
-                </div>
-                <div class="step">
-                    <div class="step-number">3</div>
-                    <h3>开始任务</h3>
-                    <p>选择工作区，用自然语言告诉阿布目标、约束和交付物</p>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Social / Community Section -->
-    <section class="social" id="social">
-        <div class="container">
-            <h2>加入社区</h2>
-            <p class="section-desc">关注动态、交流心得、一起让阿布变得更好</p>
-            <div class="social-grid">
-                <div class="social-card social-card-wechat">
-                    <div class="social-card-icon">
-                        <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.811-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-4.196-6.348-8.596-6.348zM5.785 5.991c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178A1.17 1.17 0 0 1 4.623 7.17c0-.651.52-1.18 1.162-1.18zm5.813 0c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178 1.17 1.17 0 0 1-1.162-1.178c0-.651.52-1.18 1.162-1.18zm5.34 2.867c-1.797-.052-3.746.512-5.28 1.786-1.72 1.428-2.687 3.72-1.78 6.22.942 2.453 3.666 4.229 6.884 4.229.826 0 1.622-.12 2.361-.336a.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.045c.133 0 .241-.108.241-.241 0-.06-.024-.12-.04-.178l-.325-1.233a.492.492 0 0 1 .177-.554C23.016 18.514 24 16.807 24 14.896c0-3.344-3.174-5.99-7.062-6.038zm-2.534 3.21a.98.98 0 0 1 .968.983.98.98 0 0 1-.968.982.98.98 0 0 1-.969-.982.98.98 0 0 1 .969-.982zm4.857 0a.98.98 0 0 1 .969.983.98.98 0 0 1-.969.982.98.98 0 0 1-.968-.982.98.98 0 0 1 .968-.982z"/></svg>
-                    </div>
-                    <h3>微信交流群</h3>
-                    <p>扫码添加作者微信，备注「Abu」拉你进群</p>
-                    <div class="social-qr-wrapper">
-                        <img src="assets/wechat-qr.png" alt="微信二维码" class="social-qr">
-                    </div>
-                </div>
-                <div class="social-card-links">
-                    <a href="https://xhslink.com/m/8ruHynC0jPB" target="_blank" rel="noopener" class="social-link-card">
-                        <div class="social-link-icon social-link-xhs">
-                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M22.405 9.879c.002.016.01.02.07.019h.725a.797.797 0 0 0 .78-.972.794.794 0 0 0-.884-.618.795.795 0 0 0-.692.794c0 .101-.002.666.001.777zm-11.509 4.808c-.203.001-1.353.004-1.685.003a2.528 2.528 0 0 1-.766-.126.025.025 0 0 0-.03.014L7.7 16.127a.025.025 0 0 0 .01.032c.111.06.336.124.495.124.66.01 1.32.002 1.981 0 .01 0 .02-.006.023-.015l.712-1.545a.025.025 0 0 0-.024-.036zM.477 9.91c-.071 0-.076.002-.076.01a.834.834 0 0 0-.01.08c-.027.397-.038.495-.234 3.06-.012.24-.034.389-.135.607-.026.057-.033.042.003.112.046.092.681 1.523.787 1.74.008.015.011.02.017.02.008 0 .033-.026.047-.044.147-.187.268-.391.371-.606.306-.635.44-1.325.486-1.706.014-.11.021-.22.03-.33l.204-2.616.022-.293c.003-.029 0-.033-.03-.034zm7.203 3.757a1.427 1.427 0 0 1-.135-.607c-.004-.084-.031-.39-.235-3.06a.443.443 0 0 0-.01-.082c-.004-.011-.052-.008-.076-.008h-1.48c-.03.001-.034.005-.03.034l.021.293c.076.982.153 1.964.233 2.946.05.4.186 1.085.487 1.706.103.215.223.419.37.606.015.018.037.051.048.049.02-.003.742-1.642.804-1.765.036-.07.03-.055.003-.112zm3.861-.913h-.872a.126.126 0 0 1-.116-.178l1.178-2.625a.025.025 0 0 0-.023-.035l-1.318-.003a.148.148 0 0 1-.135-.21l.876-1.954a.025.025 0 0 0-.023-.035h-1.56c-.01 0-.02.006-.024.015l-.926 2.068c-.085.169-.314.634-.399.938a.534.534 0 0 0-.02.191.46.46 0 0 0 .23.378.981.981 0 0 0 .46.119h.59c.041 0-.688 1.482-.834 1.972a.53.53 0 0 0-.023.172.465.465 0 0 0 .23.398c.15.092.342.12.475.12l1.66-.001c.01 0 .02-.006.023-.015l.575-1.28a.025.025 0 0 0-.024-.035zm-6.93-4.937H3.1a.032.032 0 0 0-.034.033c0 1.048-.01 2.795-.01 6.829 0 .288-.269.262-.28.262h-.74c-.04.001-.044.004-.04.047.001.037.465 1.064.555 1.263.01.02.03.033.051.033.157.003.767.009.938-.014.153-.02.3-.06.438-.132.3-.156.49-.419.595-.765.052-.172.075-.353.075-.533.002-2.33 0-4.66-.007-6.991a.032.032 0 0 0-.032-.032zm11.784 6.896c0-.014-.01-.021-.024-.022h-1.465c-.048-.001-.049-.002-.05-.049v-4.66c0-.072-.005-.07.07-.07h.863c.08 0 .075.004.075-.074V8.393c0-.082.006-.076-.08-.076h-3.5c-.064 0-.075-.006-.075.073v1.445c0 .083-.006.077.08.077h.854c.075 0 .07-.004.07.07v4.624c0 .095.008.084-.085.084-.37 0-1.11-.002-1.304 0-.048.001-.06.03-.06.03l-.697 1.519s-.014.025-.008.036c.006.01.013.008.058.008 1.748.003 3.495.002 5.243.002.03-.001.034-.006.035-.033v-1.539zm4.177-3.43c0 .013-.007.023-.02.024-.346.006-.692.004-1.037.004-.014-.002-.022-.01-.022-.024-.005-.434-.007-.869-.01-1.303 0-.072-.006-.071.07-.07l.733-.003c.041 0 .081.002.12.015.093.025.16.107.165.204.006.431.002 1.153.001 1.153zm2.67.244a1.953 1.953 0 0 0-.883-.222h-.18c-.04-.001-.04-.003-.042-.04V10.21c0-.132-.007-.263-.025-.394a1.823 1.823 0 0 0-.153-.53 1.533 1.533 0 0 0-.677-.71 2.167 2.167 0 0 0-1-.258c-.153-.003-.567 0-.72 0-.07 0-.068.004-.068-.065V7.76c0-.031-.01-.041-.046-.039H17.93s-.016 0-.023.007c-.006.006-.008.012-.008.023v.546c-.008.036-.057.015-.082.022h-.95c-.022.002-.028.008-.03.032v1.481c0 .09-.004.082.082.082h.913c.082 0 .072.128.072.128V11.19s.003.117-.06.117h-1.482c-.068 0-.06.082-.06.082v1.445s-.01.068.064.068h1.457c.082 0 .076-.006.076.079v3.225c0 .088-.007.081.082.081h1.43c.09 0 .082.007.082-.08v-3.27c0-.029.006-.035.033-.035l2.323-.003c.098 0 .191.02.28.061a.46.46 0 0 1 .274.407c.008.395.003.79.003 1.185 0 .259-.107.367-.33.367h-1.218c-.023.002-.029.008-.028.033.184.437.374.871.57 1.303a.045.045 0 0 0 .04.026c.17.005.34.002.51.003.15-.002.517.004.666-.01a2.03 2.03 0 0 0 .408-.075c.59-.18.975-.698.976-1.313v-1.981c0-.128-.01-.254-.034-.38 0 .078-.029-.641-.724-.998z"/></svg>
-                        </div>
-                        <div class="social-link-info">
-                            <span class="social-link-name">小红书</span>
-                            <span class="social-link-desc">关注产品动态和使用技巧分享</span>
-                        </div>
-                        <svg class="social-link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-                    </a>
-                    <div class="social-link-card social-link-card-static">
-                        <div class="social-link-icon social-link-wechat-mp">
-                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8.691 2.188C3.891 2.188 0 5.476 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.665l-.39 1.48c-.019.07-.048.141-.048.213 0 .163.13.295.29.295a.326.326 0 0 0 .167-.054l1.903-1.114a.864.864 0 0 1 .717-.098 10.16 10.16 0 0 0 2.837.403c.276 0 .543-.027.811-.05-.857-2.578.157-4.972 1.932-6.446 1.703-1.415 3.882-1.98 5.853-1.838-.576-3.583-4.196-6.348-8.596-6.348zM5.785 5.991c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178A1.17 1.17 0 0 1 4.623 7.17c0-.651.52-1.18 1.162-1.18zm5.813 0c.642 0 1.162.529 1.162 1.18a1.17 1.17 0 0 1-1.162 1.178 1.17 1.17 0 0 1-1.162-1.178c0-.651.52-1.18 1.162-1.18zm5.34 2.867c-1.797-.052-3.746.512-5.28 1.786-1.72 1.428-2.687 3.72-1.78 6.22.942 2.453 3.666 4.229 6.884 4.229.826 0 1.622-.12 2.361-.336a.722.722 0 0 1 .598.082l1.584.926a.272.272 0 0 0 .14.045c.133 0 .241-.108.241-.241 0-.06-.024-.12-.04-.178l-.325-1.233a.492.492 0 0 1 .177-.554C23.016 18.514 24 16.807 24 14.896c0-3.344-3.174-5.99-7.062-6.038zm-2.534 3.21a.98.98 0 0 1 .968.983.98.98 0 0 1-.968.982.98.98 0 0 1-.969-.982.98.98 0 0 1 .969-.982zm4.857 0a.98.98 0 0 1 .969.983.98.98 0 0 1-.969.982.98.98 0 0 1-.968-.982.98.98 0 0 1 .968-.982z"/></svg>
-                        </div>
-                        <div class="social-link-info">
-                            <span class="social-link-name">公众号</span>
-                            <span class="social-link-desc">打开微信搜索公众号「Shawn的产品笔记」</span>
-                        </div>
-                    </div>
-                    <a href="https://x.com/pmshawn_x" target="_blank" rel="noopener" class="social-link-card">
-                        <div class="social-link-icon social-link-x">
-                            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-                        </div>
-                        <div class="social-link-info">
-                            <span class="social-link-name">X (Twitter)</span>
-                            <span class="social-link-desc">获取最新发布和开发进展</span>
-                        </div>
-                        <svg class="social-link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-                    </a>
-                    <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="social-link-card">
-                        <div class="social-link-icon social-link-github">
-                            <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-                        </div>
-                        <div class="social-link-info">
-                            <span class="social-link-name">GitHub</span>
-                            <span class="social-link-desc">Star、Issue、贡献代码</span>
-                        </div>
-                        <svg class="social-link-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
-                    </a>
-                </div>
-            </div>
-        </div>
-    </section>
-
-    <!-- Footer -->
-    <footer class="footer">
-        <div class="container">
-            <div class="footer-content">
-                <div class="footer-brand">
-                    <img src="assets/abu-avatar.png" alt="Abu" class="footer-logo">
-                    <span>Abu (阿布)</span>
-                </div>
-                <div class="footer-links">
-                    <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
-                    <a href="https://github.com/PM-Shawn/Abu-Cowork/releases" target="_blank" rel="noopener">Releases</a>
-                    <a href="enterprise.zh-CN.html">企业版</a>
-                    <a href="https://github.com/PM-Shawn/Abu-Cowork/issues" target="_blank" rel="noopener">Issues</a>
-                    <a href="https://github.com/PM-Shawn/Abu-Cowork/blob/main/LICENSE" target="_blank" rel="noopener">License</a>
-                </div>
-                <p class="footer-copy">&copy; 2026 Abu (阿布). Open source with Abu License.</p>
-            </div>
-        </div>
-    </footer>
-
-    <script>
-        // Resolve release metadata on the homepage; installer downloads always use the official OSS host.
-        (function () {
-            const OSS_BASE = 'https://abu-agent.oss-cn-beijing.aliyuncs.com';
-            const RELEASE_METADATA = `${OSS_BASE}/electron/latest-release.json`;
-            const downloadLinks = ['dlMacSilicon', 'dlMacIntel', 'dlWindows']
-                .map(id => document.getElementById(id));
-
-            downloadLinks.forEach(link => link.addEventListener('click', event => {
-                if (link.dataset.ready !== 'true') event.preventDefault();
-            }));
-
-            function detectPlatform() {
-                const ua = navigator.userAgent;
-                if (/Win/i.test(ua)) return 'windows';
-                if (/Mac/i.test(ua)) return 'mac';
-                return 'other';
-            }
-
-            function applyLinks(urls) {
-                document.getElementById('dlMacSilicon').href = urls.macSilicon;
-                document.getElementById('dlMacIntel').href   = urls.macIntel;
-                document.getElementById('dlWindows').href    = urls.windows;
-                downloadLinks.forEach(link => {
-                    link.dataset.ready = 'true';
-                    link.removeAttribute('aria-disabled');
-                });
-
-                const platform = detectPlatform();
-
-                const dlCommunity = document.getElementById('dlCommunity');
-                if (dlCommunity) {
-                    dlCommunity.href = platform === 'windows' ? urls.windows : urls.macSilicon;
-                }
-            }
-
-            function trustedDownloadUrl(value, extension, version) {
-                const url = new URL(value);
-                const releasePath = `/releases/${version}/`;
-                if (url.origin !== OSS_BASE || !url.pathname.startsWith(releasePath) || !url.pathname.toLowerCase().endsWith(extension)) {
-                    throw new Error('Untrusted installer URL');
-                }
-                return url.href;
-            }
-
-            function markDownloadUnavailable() {
-                const label = document.getElementById('dlPrimaryLabel');
-                if (label) label.textContent = '暂时无法下载';
-            }
-
-            // ── Localized release notes (What's new) ──
-            function escapeHtml(s) {
-                return s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-            }
-            function mdInline(s) {
-                return escapeHtml(s)
-                    .replace(/`([^`]+)`/g, '<code>$1</code>')
-                    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-                    .replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
-                    .replace(/(^|[^"=])(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
-            }
-            function renderMarkdown(md) {
-                let html = '', inList = false;
-                for (const raw of md.split('\n')) {
-                    const line = raw.trim();
-                    const h = line.match(/^#{2,4}\s+(.*)/);
-                    if (h) { if (inList) { html += '</ul>'; inList = false; } html += '<h4>' + mdInline(h[1]) + '</h4>'; continue; }
-                    const li = line.match(/^[-*]\s+(.*)/);
-                    if (li) { if (!inList) { html += '<ul>'; inList = true; } html += '<li>' + mdInline(li[1]) + '</li>'; continue; }
-                    if (!line) { if (inList) { html += '</ul>'; inList = false; } continue; }
-                    if (inList) { html += '</ul>'; inList = false; }
-                    html += '<p>' + mdInline(line) + '</p>';
-                }
-                if (inList) html += '</ul>';
-                return html;
-            }
-            // Paint the "What's new" panel from a version label + Markdown body.
-            function paintNotes(version, notes) {
-                notes = (notes || '').trim();
-                const sec = document.getElementById('whatsnew');
-                const body = document.getElementById('wnBody');
-                const ver = document.getElementById('wnVersion');
-                // Skip the "See {github-url}" fallback stub — nothing useful to render.
-                if (!sec || !body || !notes || /^see\s+https?:\/\//i.test(notes)) return;
-                body.innerHTML = renderMarkdown(notes);
-                if (ver && version) ver.textContent = version;
-                sec.hidden = false;
-            }
-
-            function renderNotes(data) {
-                try {
-                    const i18n = data.notes_i18n || {};
-                    const key = (document.documentElement.lang || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh-CN' : 'en-US';
-                    paintNotes(data.version, i18n[key] || '');
-                } catch (e) { /* leave the section hidden on any error */ }
-            }
-
-            function applyMetadata(data) {
-                if (data.schema_version !== 1 || !/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(data.version || '')) {
-                    throw new Error('Invalid release metadata');
-                }
-                const downloads = data.downloads || {};
-                applyLinks({
-                    macSilicon: trustedDownloadUrl(downloads['mac-arm64']?.url, '.dmg', data.version),
-                    macIntel: trustedDownloadUrl(downloads['mac-x64']?.url, '.dmg', data.version),
-                    windows: trustedDownloadUrl(downloads['windows-x64']?.url, '.exe', data.version),
-                });
-                renderNotes(data);
-            }
-
-            fetch(RELEASE_METADATA, { cache: 'no-cache' })
-                .then(r => { if (!r.ok) throw new Error(); return r.json(); })
-                .then(applyMetadata)
-                .catch(markDownloadUnavailable);
-
-            // Dropdown toggle
-            const chevron = document.getElementById('dlChevron');
-            const menu    = document.getElementById('dlMenu');
-            if (chevron && menu) {
-                chevron.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    const open = !menu.hidden;
-                    menu.hidden = open;
-                    chevron.setAttribute('aria-expanded', String(!open));
-                    chevron.classList.toggle('open', !open);
-                });
-                document.addEventListener('click', () => {
-                    menu.hidden = true;
-                    chevron.setAttribute('aria-expanded', 'false');
-                    chevron.classList.remove('open');
-                });
-                menu.addEventListener('click', e => e.stopPropagation());
-            }
-        })();
-
-        // Navbar scroll effect
-        let lastScroll = 0;
-        const navbar = document.getElementById('navbar');
-        window.addEventListener('scroll', () => {
-            const currentScroll = window.scrollY;
-            if (currentScroll > 60) {
-                navbar.classList.add('scrolled');
-            } else {
-                navbar.classList.remove('scrolled');
-            }
-            lastScroll = currentScroll;
-        });
-
-        // Mobile nav toggle
-        const navToggle = document.getElementById('navToggle');
-        const navLinks = document.getElementById('navLinks');
-        const closeNavigation = () => {
-            navLinks.classList.remove('open');
-            navToggle.classList.remove('open');
-            navToggle.setAttribute('aria-expanded', 'false');
-            navToggle.setAttribute('aria-label', '打开导航菜单');
-        };
-        navToggle.addEventListener('click', () => {
-            const isOpen = navLinks.classList.toggle('open');
-            navToggle.classList.toggle('open', isOpen);
-            navToggle.setAttribute('aria-expanded', String(isOpen));
-            navToggle.setAttribute('aria-label', isOpen ? '关闭导航菜单' : '打开导航菜单');
-        });
-
-        // Close mobile nav on link click
-        navLinks.querySelectorAll('.nav-link').forEach(link => {
-            link.addEventListener('click', closeNavigation);
-        });
-        document.addEventListener('keydown', event => {
-            if (event.key === 'Escape' && navLinks.classList.contains('open')) {
-                closeNavigation();
-                navToggle.focus();
-            }
-        });
-
-        // Screenshot tabs
-        document.querySelectorAll('.screenshot-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                const target = tab.dataset.tab;
-                document.querySelectorAll('.screenshot-tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.screenshot-panel').forEach(p => p.classList.remove('active'));
-                tab.classList.add('active');
-                document.querySelector(`.screenshot-panel[data-panel="${target}"]`).classList.add('active');
-            });
-        });
-
-        // Showcase: click a feature in the list → swap the big image
-        document.querySelectorAll('.showcase-item').forEach(item => {
-            item.addEventListener('click', () => {
-                const showcase = item.closest('.showcase');
-                showcase.querySelectorAll('.showcase-item').forEach(i => i.classList.remove('active'));
-                item.classList.add('active');
-                const img = showcase.querySelector('.showcase-img');
-                const cap = showcase.querySelector('.showcase-caption');
-                img.src = item.dataset.img;
-                img.alt = item.textContent;
-                cap.textContent = `${item.textContent} · ${item.dataset.cap}`;
-            });
-        });
-
-        // Smooth scroll for anchor links
-        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
-            anchor.addEventListener('click', function(e) {
-                const href = this.getAttribute('href');
-                if (href === '#') return;
-                e.preventDefault();
-                const target = document.querySelector(href);
-                if (target) {
-                    const offset = navbar.offsetHeight + 16;
-                    const top = target.getBoundingClientRect().top + window.scrollY - offset;
-                    window.scrollTo({ top, behavior: 'smooth' });
-                }
-            });
-        });
-    </script>
+<script src="site.js"></script>
+<script src="home.js"></script>
 </body>
 </html>

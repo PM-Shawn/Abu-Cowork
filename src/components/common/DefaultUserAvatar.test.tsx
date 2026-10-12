@@ -7,11 +7,12 @@ import DefaultUserAvatar from './DefaultUserAvatar';
 afterEach(cleanup);
 
 describe('DefaultUserAvatar', () => {
-  it('paints the account glyph in the identity colours and fills its frame', () => {
+  it('paints the account glyph in the neutral fill and fills its frame', () => {
     const { container } = render(<DefaultUserAvatar />);
     const box = container.firstElementChild as HTMLElement;
-    expect(box).toHaveClass('bg-brand');
-    expect(box).toHaveClass('text-brand-ink');
+    expect(box).toHaveClass('bg-fill');
+    expect(box).toHaveClass('text-label-secondary');
+    expect(box.className).not.toContain('brand');
     expect(box).toHaveClass('size-full');
     expect(box.className).not.toContain('abu-clay');
     const glyph = box.querySelector('svg');

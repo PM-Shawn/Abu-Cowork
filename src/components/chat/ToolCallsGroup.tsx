@@ -418,7 +418,7 @@ export function ToolResultImagePreview({
         {state === 'loading' ? (
           <Spinner size="sm" labelHidden label={t.chat.imageLoading} />
         ) : unavailable ? (
-          <div className="flex flex-col items-center gap-1 px-3 text-center text-caption text-label-tertiary">
+          <div className="flex flex-col items-center gap-1 px-3 text-center text-caption text-label-secondary">
             <Icon icon={AppIcons.imageMissing} size="lg" />
             <span>{t.chat.imageUnavailable}</span>
             {block.outputRef?.basename && <span className="max-w-full truncate">{block.outputRef.basename}</span>}

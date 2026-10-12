@@ -146,6 +146,12 @@ describe('InstallDisclosureDialog', () => {
     expect(rows[2]).toHaveTextContent(tb.pluginsDisclosureAgentUnsafeName);
     expect(rows[3].getAttribute('aria-disabled')).toBe('true');
     expect(rows[3]).toHaveTextContent(tb.pluginsDisclosureAgentEmptyPrompt);
+
+    // A skipped row fades its name and keeps its reason at full strength; an installing row fades nothing.
+    const faded = (row: HTMLElement) => [...row.querySelectorAll('.opacity-60')].map((node) => node.textContent);
+    expect(faded(rows[0])).toEqual([]);
+    expect(faded(rows[3]).length).toBeGreaterThan(0);
+    expect(faded(rows[3]).join(' ')).not.toContain(tb.pluginsDisclosureAgentEmptyPrompt);
   });
 
   it('names a team and its members the way the user sees them', () => {

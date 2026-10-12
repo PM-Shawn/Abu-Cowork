@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { initLanguage } from '@/i18n';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { TOAST_SETTLE_MS } from '@/components/ds/styles';
 import { useAppStore } from '@/stores/appStore';
+import { useToastStore } from '@/stores/toastStore';
 import { DEFAULT_APP_CONFIG } from '@/data/defaultAppConfig';
 import type { AppDefinition } from '@/types/app';
 import AppSwitcher from './AppSwitcher';
@@ -19,6 +20,11 @@ vi.mock('@/core/enterprise/appPolicy', () => ({ useEnterpriseAppPolicy: () => po
 // Removing reaches the disk through `removeApp`; its own tests cover that.
 const removeApp = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('@/core/app/appSync', () => ({ removeApp }));
+// 创建应用 makes a folder and a conversation through `createAppDraft`; its own tests cover that.
+const createAppDraft = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock('@/core/app/appDraft', () => ({ createAppDraft }));
+const focusComposerAfterPageChange = vi.hoisted(() => vi.fn());
+vi.mock('@/components/chat/composerFocus', () => ({ focusComposerAfterPageChange }));
 
 const app = (appId: string, name: string, origin: AppDefinition['origin']): AppDefinition => ({
   appId, name, config: DEFAULT_APP_CONFIG, version: '1.0.0', origin, plugins: [],
@@ -42,6 +48,8 @@ beforeEach(() => {
   initLanguage('zh-CN');
   policy.value = { defaultAppId: null, allowExit: true };
   removeApp.mockClear();
+  createAppDraft.mockClear();
+  focusComposerAfterPageChange.mockClear();
   useAppStore.setState({ addedApps: [recruiting, weekly], managedApps: { enterprise: [shop, hr] }, recentAppIds: [], selectedAppId: shop.appId, appMarketOpen: false });
 });
 afterEach(() => {
@@ -133,6 +141,67 @@ describe('AppSwitcher', () => {
       await vi.runOnlyPendingTimersAsync();
       expect(screen.queryByRole('menu')).toBeNull();
       expect(useAppStore.getState().appMarketOpen).toBe(true);
+    });
+
+    /** Opens the menu and chooses 创建应用. */
+    async function chooseCreate(user: ReturnType<typeof userEvent.setup>) {
+      await user.click(screen.getByTestId('app-switcher-trigger'));
+      await user.click(screen.getByTestId('app-switcher-create'));
+      await vi.runOnlyPendingTimersAsync();
+      await flush();
+    }
+
+    it('创建应用 starts the creation conversation in the general shell and hands the focus to the message field', async () => {
+      const user = setUp();
+      await chooseCreate(user);
+      expect(createAppDraft).toHaveBeenCalledExactlyOnceWith({ leaveApp: true });
+      expect(focusComposerAfterPageChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('创建应用 keeps an employee in the app the organization holds them in', async () => {
+      policy.value = { defaultAppId: shop.appId, allowExit: false };
+      const user = setUp();
+      await chooseCreate(user);
+      expect(createAppDraft).toHaveBeenCalledExactlyOnceWith({ leaveApp: false });
+    });
+
+    describe('an operation that fails', () => {
+      const HOST_REASON = 'EACCES: permission denied, mkdir /Users/testuser/Abu Apps/0f3a';
+      let warn: MockInstance<typeof console.warn>;
+      // The notices as they are handed to the list: the list's own clock takes a notice off again.
+      const addToast = vi.fn();
+      beforeEach(() => {
+        warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        addToast.mockClear();
+        useToastStore.setState({ addToast });
+      });
+      afterEach(() => {
+        warn.mockRestore();
+        useToastStore.setState({ addToast: useToastStore.getInitialState().addToast });
+      });
+      const notice = () => addToast.mock.calls.map(([toast]) => toast);
+
+      it('创建应用: a notice says what did not happen and what to do; the host\'s reason goes to the console only', async () => {
+        createAppDraft.mockRejectedValueOnce(new Error(HOST_REASON));
+        const user = setUp();
+        await chooseCreate(user);
+        await vi.waitFor(() => expect(notice()).toHaveLength(1));
+        expect(notice()[0]).toMatchObject({ type: 'error', title: '没能开始创建应用', message: '请再试一次' });
+        expect(JSON.stringify(notice())).not.toContain('EACCES');
+        expect(warn).toHaveBeenCalledExactlyOnceWith('[app] create app failed:', HOST_REASON);
+        expect(focusComposerAfterPageChange).not.toHaveBeenCalled();
+      });
+
+      it('移除: a notice says what did not happen and what to do; the host\'s reason goes to the console only', async () => {
+        removeApp.mockRejectedValueOnce(new Error('EBUSY: resource busy or locked, rmdir /Users/testuser/.abu/apps/recruiting'));
+        const user = setUp();
+        await chooseRemove(user, recruiting);
+        await flush();
+        expect(notice()).toHaveLength(1);
+        expect(notice()[0]).toMatchObject({ type: 'error', title: '没能移除这个应用', message: '请再试一次' });
+        expect(JSON.stringify(notice())).not.toContain('EBUSY');
+        expect(warn).toHaveBeenCalledExactlyOnceWith('[app] remove app failed:', 'EBUSY: resource busy or locked, rmdir /Users/testuser/.abu/apps/recruiting');
+      });
     });
 
     it('lists under 移除 the apps the user added and no organization app', async () => {

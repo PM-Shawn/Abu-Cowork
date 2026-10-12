@@ -141,7 +141,7 @@ function parseHeaders(text: string): Record<string, string> {
 const FIELD_LABEL = 'mb-1 block text-ui-sm font-medium text-label-secondary';
 const HINT = 'mt-1 text-caption text-label-tertiary';
 // Said in place of a channel list when no channel exists yet.
-const NO_CHANNELS = 'rounded-control bg-fill px-3 py-2 text-ui-sm text-label-tertiary';
+const NO_CHANNELS = 'rounded-control bg-fill px-3 py-2 text-ui-sm text-label-secondary';
 
 /**
  * The window that creates an event listener or edits one. It stays mounted and is closed, not

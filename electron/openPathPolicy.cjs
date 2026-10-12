@@ -7,6 +7,10 @@
  * as a `file:` URL, is judged here before it reaches the shell: a target the
  * system would start, install or mount is refused, and the renderer shows it
  * in the file manager.
+ *
+ * `shell.openExternal` hands a URL to the application that registered its
+ * scheme. A renderer request reaches it only with a web or mail scheme, or, on
+ * macOS, the scheme of the System Settings panes.
  */
 'use strict';
 
@@ -16,6 +20,9 @@ const { fileURLToPath } = require('node:url');
 
 /** Error message of a refused open. `src/utils/openWithDefaultApp.ts` matches it. */
 const OPEN_REFUSED_RUNS_BY_DEFAULT = 'open-refused:runs-by-default';
+
+/** Error message of a refused URL: its scheme is outside the allowed set. */
+const OPEN_REFUSED_URL_SCHEME = 'open-refused:url-scheme';
 
 /**
  * Extensions whose default handling starts the file, installs it or mounts it,
@@ -122,12 +129,28 @@ function localPathOfUrl(value) {
   return fileURLToPath(value);
 }
 
+/** URL schemes handed to the system on every platform, spelled as `URL.protocol` reports them. */
+const EXTERNAL_URL_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
+
+/** The scheme of the macOS System Settings panes that the permission prompts link to. */
+const MACOS_SETTINGS_SCHEME = 'x-apple.systempreferences:';
+
+/**
+ * Whether the system may be asked to open this URL. `shell.openExternal` starts
+ * whichever application registered the scheme, so the scheme decides.
+ */
+function isExternalUrlAllowed(url, platform) {
+  if (!URL.canParse(url)) return false;
+  const scheme = new URL(url).protocol;
+  return EXTERNAL_URL_SCHEMES.has(scheme) || (platform === 'darwin' && scheme === MACOS_SETTINGS_SCHEME);
+}
+
 /**
  * The opener the desktop host uses for every renderer request.
  *
  * @param {{ shell: Pick<import('electron').Shell, 'openPath' | 'openExternal'>, fs?: Parameters<typeof resolveOpenTarget>[1]['fs'], platform?: NodeJS.Platform }} deps
  */
-function createOpener({ shell, fs, platform }) {
+function createOpener({ shell, fs, platform = process.platform }) {
   /** Opens a local path with its default application, or throws the refusal. */
   async function openPath(rawPath) {
     const target = await resolveOpenTarget(rawPath, { fs, platform });
@@ -138,10 +161,14 @@ function createOpener({ shell, fs, platform }) {
     return null;
   }
 
-  /** Opens a URL with its default application; one that names a local path is opened as that path. */
+  /**
+   * Opens a URL with its default application, or throws the refusal. One that
+   * names a local path is opened as that path; any other needs an allowed scheme.
+   */
   async function openUrl(url) {
     const localPath = localPathOfUrl(url);
     if (localPath !== null) return openPath(localPath);
+    if (!isExternalUrlAllowed(url, platform)) throw new Error(OPEN_REFUSED_URL_SCHEME);
     await shell.openExternal(url);
     return null;
   }
@@ -151,6 +178,7 @@ function createOpener({ shell, fs, platform }) {
 
 module.exports = {
   OPEN_REFUSED_RUNS_BY_DEFAULT,
+  OPEN_REFUSED_URL_SCHEME,
   RUN_BY_DEFAULT_EXTENSIONS,
   createOpener,
   resolveOpenTarget,

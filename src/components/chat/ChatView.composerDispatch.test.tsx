@@ -541,6 +541,48 @@ describe('ChatView welcome composer dispatch ownership', () => {
     }
   });
 
+  it('keeps the model picker open, with the focus in it, when the organization withdrew the pinned model', async () => {
+    configureApiKey();
+    const previousLanguage = getLanguageSetting();
+    setLanguage('zh-CN');
+    try {
+      const template = useSettingsStore.getInitialState().providers.find((p) => p.id === 'anthropic')!;
+      useSettingsStore.setState((state) => ({
+        providers: [...state.providers, {
+          ...template,
+          id: 'org-models',
+          name: 'MAZG',
+          source: 'managed',
+          enabled: true,
+          apiKey: 'sk-virtual',
+          userAdded: false,
+          status: 'verified',
+          models: [{ ...template.models[0], id: 'kept', label: 'kept' }],
+        }],
+      }));
+      const convId = useChatStore.getState().createConversation();
+      useChatStore.getState().setConversationModel(convId, { providerId: 'org-models', modelId: 'revoked' });
+      useChatStore.setState({ activeConversationId: convId });
+
+      render(<ChatView />);
+      const user = userEvent.setup();
+      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+      await user.type(textarea, 'hello');
+      await user.keyboard('{Enter}');
+
+      expect(dispatchMock).not.toHaveBeenCalled();
+      await waitFor(() => expect(textarea.value).toBe('hello'));
+      expect(useToastStore.getState().toasts.at(-1)?.title).toBe('模型「revoked」已不可用，请重新选择');
+      const search = screen.getByRole('textbox', { name: '搜索...' });
+      expect(search).toHaveFocus();
+      // The picker is still there once every pending focus move has run.
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(screen.getByRole('textbox', { name: '搜索...' })).toHaveFocus();
+    } finally {
+      setLanguage(previousLanguage);
+    }
+  });
+
   it('still opens settings when no provider is usable at all', async () => {
     const convId = useChatStore.getState().createConversation();
     useChatStore.getState().setConversationModel(convId, { providerId: 'gone-provider', modelId: 'model-a' });

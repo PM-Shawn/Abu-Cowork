@@ -366,12 +366,12 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         {block.type === 'error' && <StatusIcon tone="danger" size="sm" />}
         {headerLabel}
         {block.isTruncated && !localExpanded && (
-          <span className="text-label-tertiary">
+          <span>
             ({block.fullContentLength} {t.chat.characters})
           </span>
         )}
         {block.type === 'list' && block.parsedItems && (
-          <span className="text-label-tertiary">
+          <span>
             ({block.parsedItems.length})
           </span>
         )}

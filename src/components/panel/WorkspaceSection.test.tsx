@@ -370,7 +370,8 @@ describe('WorkspaceSection', () => {
     expect(instructions).toHaveClass('text-label');
     const memory = screen.getByRole('button', { name: 'Project Memory · None' });
     expect(memory).toHaveClass('bg-fill');
-    expect(memory).toHaveClass('text-label-tertiary');
+    // An entry with nothing behind it yet is still text on a fill: secondary, never tertiary.
+    expect(memory).toHaveClass('text-label-secondary');
   });
 
   it('offers to pick a workspace when there is none', async () => {

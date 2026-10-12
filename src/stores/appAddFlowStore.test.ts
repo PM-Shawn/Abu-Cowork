@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -8,6 +8,7 @@ import type { InstallDisclosure } from '@/core/plugin/installer';
 import { planInstall, releasePreparedInstall } from '@/core/plugin/installer';
 import { readAddedApps } from '@/core/app/appRecords';
 import type { AppDefinition } from '@/types/app';
+import { format, getI18n } from '@/i18n';
 import { usePluginStore } from './pluginStore';
 import { useAppStore } from './appStore';
 import { useAppAddFlowStore } from './appAddFlowStore';
@@ -76,8 +77,10 @@ function disclosure(name: string): InstallDisclosure {
 
 const source = (name: string) => ({ kind: 'market' as const, market: { name: 'lawyer-market', dir: market }, entry: { name, source: { kind: 'relative' as const, path: `./apps/${name}` } } });
 const flow = () => useAppAddFlowStore.getState().flow;
+let warn: MockInstance<typeof console.warn>;
 
 beforeEach(() => {
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
   root = mkdtempSync(join(tmpdir(), 'abu-app-add-flow-'));
   market = join(root, 'market');
   useRealTree();
@@ -90,6 +93,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  warn.mockRestore();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -124,12 +128,20 @@ describe('appAddFlowStore', () => {
       expect(await readAddedApps(root)).toEqual([]);
     });
 
-    it('shows why an app cannot be added', async () => {
+    it('keeps the refusal the installer words for the user', async () => {
       writeApp('future', { minAbuVersion: '99.0.0' });
       await useAppAddFlowStore.getState().start(source('future'), '未来', 'add');
-      const current = flow();
-      expect(current).toMatchObject({ kind: 'error', name: '未来' });
-      expect(current.kind === 'error' ? current.message : '').toMatch(/99\.0\.0/);
+      expect(flow()).toEqual({ kind: 'error', name: '未来', operation: 'add', refusal: format(getI18n().appMarket.needsNewerAbu, { version: '99.0.0' }) });
+      expect(warn).not.toHaveBeenCalled();
+    });
+
+    it.each(['add', 'update', 'preview'] as const)('a failed %s names its operation and sends the reason to the console only', async (purpose) => {
+      // No app file in the market folder: the read fails with the path of the file.
+      mkdirSync(join(market, '.abu-plugin'), { recursive: true });
+      await useAppAddFlowStore.getState().start(source('absent'), '缺席', purpose);
+      expect(flow()).toEqual({ kind: 'error', name: '缺席', operation: purpose });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toBe(`[app] ${purpose} failed:`);
     });
 
     it('releases what it prepared when the user cancelled while planning', async () => {
@@ -165,7 +177,8 @@ describe('appAddFlowStore', () => {
       usePluginStore.setState({ install: vi.fn().mockRejectedValue(new Error('disk full')) });
       await useAppAddFlowStore.getState().start(source('contract-review'), '合同审阅', 'add');
       await useAppAddFlowStore.getState().confirm({});
-      expect(flow()).toEqual({ kind: 'error', name: '合同审阅', message: 'disk full' });
+      expect(flow()).toEqual({ kind: 'error', name: '合同审阅', operation: 'add' });
+      expect(warn).toHaveBeenCalledExactlyOnceWith('[app] add failed:', 'disk full');
       expect(await readAddedApps(root)).toEqual([]);
     });
 
@@ -208,10 +221,24 @@ describe('appAddFlowStore', () => {
       expect(flow()).toEqual({ kind: 'closed' });
     });
 
-    it('shows why the plugin cannot be found, and starts nothing', async () => {
+    it('says the plugin cannot be found in the installer\'s words, and starts nothing', async () => {
+      // The market lists no plugin of that name.
+      writeApp('contract-review');
       const resume = vi.fn();
       await useAppAddFlowStore.getState().repair(app('missing-tools'), resume);
-      expect(flow()).toMatchObject({ kind: 'error', name: '合同审阅' });
+      expect(flow()).toEqual({ kind: 'error', name: '合同审阅', operation: 'repair', refusal: format(getI18n().appMarket.pluginNotFound, { plugin: 'missing-tools' }) });
+      expect(resume).not.toHaveBeenCalled();
+    });
+
+    it('a repair whose install fails names its operation and sends the reason to the console only', async () => {
+      writeApp('contract-review', { plugin: 'contract-tools' });
+      vi.mocked(planInstall).mockResolvedValue(disclosure('contract-tools'));
+      usePluginStore.setState({ install: vi.fn().mockRejectedValue(new Error('disk full')) });
+      const resume = vi.fn();
+      await useAppAddFlowStore.getState().repair(app('contract-tools'), resume);
+      await useAppAddFlowStore.getState().confirm({});
+      expect(flow()).toEqual({ kind: 'error', name: '合同审阅', operation: 'repair' });
+      expect(warn).toHaveBeenCalledExactlyOnceWith('[app] repair failed:', 'disk full');
       expect(resume).not.toHaveBeenCalled();
     });
 

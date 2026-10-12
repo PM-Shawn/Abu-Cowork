@@ -5,6 +5,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { useI18n } from '@/i18n';
 import { format } from '@/i18n';
+import { appHomePicks } from '@/core/app/appHomePicks';
 import { Button, IconButton } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
@@ -71,8 +72,19 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
     const project = useProjectStore.getState().projects[projectId];
     if (!project) return;
 
+    // Inside an app the task belongs to that app. The app home holds its binding and its team
+    // ready while it is in view; from a conversation or another page they are read here.
+    const chat = useChatStore.getState();
+    if (chat.pendingAppBinding === undefined) {
+      const picks = appHomePicks();
+      if (picks) {
+        chat.setPendingAppBinding(picks.binding);
+        chat.setPendingTeamId(picks.teamId);
+      }
+    }
+
     // Create conversation with inherited config
-    const convId = useChatStore.getState().createConversation(project.workspacePath, { projectId });
+    const convId = chat.createConversation(project.workspacePath, { projectId });
 
     // Apply default skills/MCP if configured
     if (project.defaultSkills?.length || project.defaultMCPServers?.length) {

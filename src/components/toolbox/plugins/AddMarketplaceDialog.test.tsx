@@ -28,6 +28,7 @@ vi.mock('@/core/plugin/installedStore', () => ({
 }));
 vi.mock('@/core/permissions/pluginToolPolicy', () => ({ setPluginServerNames: vi.fn() }));
 
+import { invoke } from '@tauri-apps/api/core';
 import { open as pickDirectory } from '@tauri-apps/plugin-dialog';
 import { getI18n } from '@/i18n';
 import type { Marketplace } from '@/core/plugin/marketplace';
@@ -126,14 +127,19 @@ describe('AddMarketplaceDialog', () => {
     expect(addMarketplace).toHaveBeenCalledExactlyOnceWith('demo-market', '/real/markets/demo');
   });
 
-  it('shows why the directory could not be read, stays open and keeps what was typed', async () => {
+  it('says a folder could not be read and what to check, stays open and keeps what was typed', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(loadMarketplaceFromDir).mockRejectedValue(new Error('No marketplace manifest in /real/markets/demo'));
     open();
     type('/markets/demo');
     fireEvent.click(submit());
 
-    expect(await screen.findByText('No marketplace manifest in /real/markets/demo')).toBeInTheDocument();
+    expect(await screen.findByText(tb().pluginsMarketplaceFolderFailed)).toBeInTheDocument();
     expect(screen.getByText(tb().pluginsMarketplaceReadFailed)).toBeInTheDocument();
+    // What the reader said goes to the console and nowhere on the page.
+    expect(document.body.innerHTML).not.toContain('No marketplace manifest');
+    expect(warn).toHaveBeenCalledExactlyOnceWith('[app] add market failed:', 'No marketplace manifest in /real/markets/demo');
+    warn.mockRestore();
     expect(onClose).not.toHaveBeenCalled();
     expect(onAdded).not.toHaveBeenCalled();
     expect(addMarketplace).not.toHaveBeenCalled();
@@ -188,8 +194,59 @@ describe('AddMarketplaceDialog', () => {
     expect(screen.getByTestId('plugin-add-marketplace')).toBeInTheDocument();
 
     await act(async () => { reading.reject(new Error('unreadable')); });
-    await screen.findByText('unreadable');
+    await screen.findByText(tb().pluginsMarketplaceFolderFailed);
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  describe('an address that cannot be added', () => {
+    const fail = async (message: string) => {
+      vi.mocked(invoke).mockRejectedValueOnce(new Error(message));
+      open();
+      type('https://git.example.test/acme/market.git');
+      fireEvent.click(submit());
+      return screen.findByTestId('plugin-marketplace-error');
+    };
+
+    it.each([
+      ['[auth_required] 401 from https://git.example.test', () => tb().pluginsMarketplaceAuthRequired],
+      ['[not_a_market] no .abu-plugin/marketplace.json in the archive', () => tb().pluginsMarketplaceNotFound],
+      ['[name_taken] acme is already added from another address', () => tb().pluginsMarketplaceNameConflict],
+    ] as const)('says what the user can do about %s', async (message, sentence) => {
+      expect(await fail(message)).toHaveTextContent(sentence());
+    });
+
+    it('says the address could not be fetched and what to check when the host gives another reason', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const error = await fail('git clone https://user:hunter2secret@git.example.test/acme/market.git exited with 128');
+      expect(error).toHaveTextContent(tb().pluginsMarketplaceAddressFailed);
+      expect(document.body.innerHTML).not.toContain('exited with 128');
+      expect(document.body.innerHTML).not.toContain('hunter2secret');
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls[0][0]).toBe('[app] add market failed:');
+      expect(String(warn.mock.calls[0][1])).not.toContain('hunter2secret');
+      warn.mockRestore();
+    });
+
+    it('refuses a second address under a name the list already has, in its own words', async () => {
+      usePluginStore.setState({ marketplaces: [{ name: 'demo-market', dir: '/Users/tester/.abu/markets/other' }] });
+      vi.mocked(invoke).mockResolvedValueOnce({ name: 'demo-market', dir: '/Users/tester/.abu/markets/demo-market' });
+      open();
+      type('https://git.example.test/acme/market.git');
+      fireEvent.click(submit());
+      expect(await screen.findByTestId('plugin-marketplace-error')).toHaveTextContent(tb().pluginsMarketplaceNameConflict);
+      expect(addMarketplace).not.toHaveBeenCalled();
+    });
+  });
+
+  it('says the folder picker could not be opened, in plain words', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(pickDirectory).mockRejectedValueOnce(new Error('dialog.open not allowed by ACL'));
+    open();
+    fireEvent.click(screen.getByRole('button', { name: tb().pluginsBrowseDir }));
+    expect(await screen.findByTestId('plugin-marketplace-error')).toHaveTextContent(tb().pluginsBrowseFailed);
+    expect(document.body.innerHTML).not.toContain('ACL');
+    expect(warn).toHaveBeenCalledExactlyOnceWith('[app] choose market folder failed:', 'dialog.open not allowed by ACL');
+    warn.mockRestore();
   });
 
   it('puts the picked folder into the field and reads nothing until submit', async () => {
@@ -217,13 +274,13 @@ describe('AddMarketplaceDialog', () => {
     render(<Owner />);
     type('/markets/demo');
     fireEvent.click(submit());
-    await screen.findByText('unreadable');
+    await screen.findByText(tb().pluginsMarketplaceFolderFailed);
 
     fireEvent.click(screen.getByText('Hide'));
     fireEvent.click(screen.getByText('Show'));
 
     expect(input().value).toBe('');
-    expect(screen.queryByText('unreadable')).toBeNull();
+    expect(screen.queryByText(tb().pluginsMarketplaceFolderFailed)).toBeNull();
   });
 
   it('is a named window whose failure is announced', async () => {
@@ -234,7 +291,7 @@ describe('AddMarketplaceDialog', () => {
     type('/markets/demo');
     fireEvent.click(submit());
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('unreadable');
+    expect(await screen.findByRole('alert')).toHaveTextContent(tb().pluginsMarketplaceFolderFailed);
   });
 
   it('keeps the focus on the pressed control while the directory is being read', async () => {
@@ -353,7 +410,7 @@ describe('AddMarketplaceDialog', () => {
 
       view.rerender(<Owner approval={false} />);
       expect(window).not.toHaveAttribute('hidden');
-      expect(screen.getByText('unreadable')).toBeInTheDocument();
+      expect(screen.getByText(tb().pluginsMarketplaceFolderFailed)).toBeInTheDocument();
       expect(input().value).toBe('/markets/demo');
       expect(onClose).not.toHaveBeenCalled();
     });

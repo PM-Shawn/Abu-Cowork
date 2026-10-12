@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
 
@@ -28,6 +28,8 @@ import { LABS_TODOS_INBOX, LABS_PET } from '@/core/labs/registry';
 import { resolvePetBootAction } from '@/core/pet/petBoot';
 import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
 import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync';
+import { petMessageConversation } from '@/core/pet/petQuickMessage';
+import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import RightPanel from '@/components/panel/RightPanel';
 import { isTabVisibleFor, useHasTabs, usePreviewStore } from '@/stores/previewStore';
 import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidths';
@@ -384,19 +386,16 @@ function App() {
     };
   }, []);
 
-  // Pet window sends a message to the currently active conversation
+  // Pet window sends a message; `petMessageConversation` names the conversation it goes to.
+  const { allowExit } = useEnterpriseAppPolicy();
+  const allowExitRef = useRef(allowExit);
+  useEffect(() => { allowExitRef.current = allowExit; }, [allowExit]);
   useEffect(() => {
     let unlistenFn: (() => void) | null = null;
     let cancelled = false;
     listen('pet-send-message', (event) => {
       const { text, conversationId } = event.payload as { text: string; conversationId?: string | null };
-      const store = useChatStore.getState();
-      // A waiting-state inline reply targets the conversation the notice
-      // pointed at; a plain quick message falls back to the active one.
-      const convId =
-        (conversationId && store.conversations[conversationId] ? conversationId : null) ??
-        store.activeConversationId ??
-        store.createConversation(null);
+      const convId = petMessageConversation(conversationId, { leaveApp: allowExitRef.current });
       runAgentLoopDispatched(convId, text, { initiatedBy: 'user' }).catch((err) => {
         console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });

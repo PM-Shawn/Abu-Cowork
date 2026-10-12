@@ -355,28 +355,29 @@ export function PluginDisclosureSections({ disclosure: d }: { disclosure: Instal
         <Section icon={AppIcons.agent} title={tb.pluginsDisclosureAgents}>
           <ul className="space-y-1">
             {d.agents.map((agent) => {
-              // A conflicting entry is disclosed, not installed: it is
-              // greyed and carries the one-line reason, so the user reads
-              // "this one will not arrive" before confirming rather than
-              // wondering afterwards where it went.
+              // A conflicting entry is disclosed, not installed: its name
+              // and description are faded and it carries the one-line
+              // reason at full strength, so the user reads "this one will
+              // not arrive" before confirming rather than wondering
+              // afterwards where it went.
               const reason = skipReason(agent.conflict, tb);
               return (
                 <li
                   key={`${agent.name}:${agent.conflict ?? ''}`}
                   data-testid="plugin-disclosure-agent"
                   aria-disabled={reason ? true : undefined}
-                  className={cn(ITEM, reason ? 'text-label-tertiary' : 'text-label-secondary')}
+                  className={cn(ITEM, 'text-label-secondary')}
                 >
                   <p className="text-ui">
-                    <span className="font-medium">{agent.name}</span>
+                    <span className={cn('font-medium', reason && 'opacity-60')}>{agent.name}</span>
                     {reason && (
-                      <span className="ml-2 text-ui-sm text-label-tertiary">
+                      <span className="ml-2 text-ui-sm">
                         {reason}
                       </span>
                     )}
                   </p>
                   {agent.description && (
-                    <p className="mt-1 text-ui-sm text-label-tertiary">
+                    <p className={cn('mt-1 text-ui-sm', reason && 'opacity-60')}>
                       {agent.description}
                     </p>
                   )}
@@ -393,8 +394,8 @@ export function PluginDisclosureSections({ disclosure: d }: { disclosure: Instal
             {d.teams!.map((team) => (
               <li key={team.id} data-testid="plugin-disclosure-team" className={cn(ITEM, 'text-label-secondary')}>
                 <p className="text-ui"><span className="font-medium">{resolveText(team.name)}</span></p>
-                <p className="mt-1 text-ui-sm text-label-tertiary">{resolveText(team.description)}</p>
-                <p className="mt-1 text-ui-sm text-label-tertiary">{team.memberRoleIds.map((roleId) => roleIdAgentName(roleId) ?? roleId).join('、')}</p>
+                <p className="mt-1 text-ui-sm">{resolveText(team.description)}</p>
+                <p className="mt-1 text-ui-sm">{team.memberRoleIds.map((roleId) => roleIdAgentName(roleId) ?? roleId).join('、')}</p>
               </li>
             ))}
           </ul>

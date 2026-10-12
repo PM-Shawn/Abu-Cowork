@@ -10,7 +10,8 @@ import { Spinner } from '@/components/ds/spinner';
 import { PluginConfigurationFields, PluginDisclosureSections } from '@/components/toolbox/plugins/InstallDisclosureDialog';
 import { DETAIL_WINDOW_CONTENT_HEIGHT } from '@/components/toolbox/windowHeight';
 import AppLogo from '@/components/app/AppLogo';
-import { useAppAddFlowStore, type AppAddFlow, type AppAddFlowPlace } from '@/stores/appAddFlowStore';
+import { useAppAddFlowStore, type AppAddFlow, type AppAddFlowPlace, type AppAddOperation } from '@/stores/appAddFlowStore';
+import type { TranslationDict } from '@/i18n/types';
 import { pluginConfigFields } from '@/core/plugin/configuration';
 import { resolveText } from '@/core/app/appBinding';
 import { liveRefCatalog, resolveRun } from '@/core/app/appRefs';
@@ -21,6 +22,13 @@ import { describeSceneRun } from './runLabel';
 const HEADING = 'flex items-center gap-2 text-ui font-medium text-label';
 // One listed item: a filled row inside its section's list.
 const ITEM = 'rounded-control bg-fill px-2 py-1';
+// The window's title once a flow has failed: what did not happen. Its body says what to do.
+const FAILED: Record<AppAddOperation, (t: TranslationDict) => string> = {
+  add: (t) => t.appMarket.addFailed,
+  update: (t) => t.appMarket.updateFailed,
+  preview: (t) => t.appMarket.previewFailed,
+  repair: (t) => t.appMarket.repairFailed,
+};
 
 function StepGroup({ title, steps, values, onChange }: {
   title: string;
@@ -64,7 +72,7 @@ function ScenePreview({ app }: { app: AppDefinition }) {
           return (
             <li key={`${mode.modeId}/${scene.id}`} className={cn(ITEM, 'flex items-baseline justify-between gap-3')}>
               <span className="truncate text-ui text-label-secondary">{resolveText(mode.title)} · {resolveText(scene.title)}</span>
-              <span className="shrink-0 text-ui-sm text-label-tertiary">{label}</span>
+              <span className="shrink-0 text-ui-sm text-label-secondary">{label}</span>
             </li>
           );
         }))}
@@ -122,7 +130,7 @@ export default function AppAddConfirmDialog({ within }: { within: AppAddFlowPlac
   const title = flow.kind === 'ready'
     ? format(flow.purpose === 'update' ? t.appMarket.confirmUpdateTitle : flow.purpose === 'preview' ? t.appMarket.previewTitle : t.appMarket.confirmAddTitle, { name: flow.plan.app.name })
     : flow.kind === 'repair' ? t.appMarket.needInstall
-      : flow.kind === 'error' ? t.appMarket.addFailed
+      : flow.kind === 'error' ? FAILED[flow.operation](t)
         : flow.kind === 'planning' ? format(t.appMarket.confirmAddTitle, { name: flow.name })
           : '';
 
@@ -132,7 +140,9 @@ export default function AppAddConfirmDialog({ within }: { within: AppAddFlowPlac
     if (flow.kind === 'error') {
       return (
         <div data-testid="app-add-error">
-          <InlineMessage tone="danger"><p className="min-w-0 break-words">{flow.message}</p></InlineMessage>
+          <InlineMessage tone="danger">
+            <p className="min-w-0 break-words">{flow.refusal ?? (flow.operation === 'preview' ? t.appMarket.previewFailedHint : t.appMarket.failedHint)}</p>
+          </InlineMessage>
         </div>
       );
     }

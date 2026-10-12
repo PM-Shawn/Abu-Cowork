@@ -172,7 +172,7 @@ describe('AppAddConfirmDialog', () => {
       marketLeaves();
 
       await act(async () => { adding.reject(new Error('disk is full')); });
-      await waitFor(() => expect(screen.getByTestId('app-add-error')).toHaveTextContent('disk is full'));
+      await waitFor(() => expect(screen.getByTestId('app-add-error')).toHaveTextContent(copy().failedHint));
       expect(screen.getAllByTestId('app-add-dialog')).toHaveLength(1);
       fireEvent.click(screen.getByRole('button', { name: common().close }));
       await flush();
@@ -246,12 +246,25 @@ describe('AppAddConfirmDialog', () => {
       expect(screen.getByTestId('app-add-scenes')).toHaveTextContent(getI18n().appHome.sceneRunDefault);
     });
 
-    it('says why an add failed, with Close as its one button', () => {
-      flowIs({ kind: 'error', name: '店铺运营', message: 'the plugin shop-assistant is not in any market' });
-      expect(dialog()).toHaveAccessibleName(copy().addFailed);
-      expect(within(screen.getByTestId('app-add-error')).getByRole('alert')).toHaveTextContent('the plugin shop-assistant is not in any market');
+    it.each([
+      ['add', () => copy().addFailed, () => copy().failedHint],
+      ['update', () => copy().updateFailed, () => copy().failedHint],
+      ['preview', () => copy().previewFailed, () => copy().previewFailedHint],
+      ['repair', () => copy().repairFailed, () => copy().failedHint],
+    ] as const)('a failed %s says what did not happen and what to do, with Close as its one button', (operation, title, hint) => {
+      flowIs({ kind: 'error', name: '店铺运营', operation });
+      expect(dialog()).toHaveAccessibleName(title());
+      expect(within(screen.getByTestId('app-add-error')).getByRole('alert')).toHaveTextContent(hint());
       expect(screen.queryByTestId('app-add-confirm')).toBeNull();
       expect(screen.getAllByRole('button', { name: common().close })).toHaveLength(1);
+    });
+
+    it('shows a refusal in the installer\'s own words', () => {
+      const refusal = format(copy().pluginNotFound, { plugin: 'shop-assistant' });
+      flowIs({ kind: 'error', name: '店铺运营', operation: 'add', refusal });
+      expect(dialog()).toHaveAccessibleName(copy().addFailed);
+      expect(within(screen.getByTestId('app-add-error')).getByRole('alert')).toHaveTextContent(refusal);
+      expect(screen.getByTestId('app-add-error')).not.toHaveTextContent(copy().failedHint);
     });
 
     it('waits for every value a plugin asks for, in masked fields, and forgets them with the flow', () => {
@@ -338,11 +351,16 @@ describe('AppAddConfirmDialog', () => {
       expect(confirmAddApp).not.toHaveBeenCalled();
     });
 
-    it('says why when adding fails, and adds nothing more from there', async () => {
-      vi.mocked(confirmAddApp).mockRejectedValue(new Error('disk is full'));
+    it('says so in plain words when adding fails, keeps the host\'s text off the page, and adds nothing more from there', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      vi.mocked(confirmAddApp).mockRejectedValue(new Error('ENOSPC: disk is full, write /Users/testuser/.abu/apps/added.json'));
       flowIs(ready());
       fireEvent.click(confirmButton());
-      await waitFor(() => expect(screen.getByTestId('app-add-error')).toHaveTextContent('disk is full'));
+      await waitFor(() => expect(screen.getByTestId('app-add-error')).toHaveTextContent(copy().failedHint));
+      expect(dialog()).toHaveAccessibleName(copy().addFailed);
+      expect(document.body.innerHTML).not.toContain('ENOSPC');
+      expect(warn).toHaveBeenCalledExactlyOnceWith('[app] add failed:', 'ENOSPC: disk is full, write /Users/testuser/.abu/apps/added.json');
+      warn.mockRestore();
       expect(screen.queryByTestId('app-add-confirm')).toBeNull();
       fireEvent.click(screen.getByRole('button', { name: common().close }));
       await flush();

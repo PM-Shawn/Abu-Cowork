@@ -1,13 +1,14 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { exists, readDir, readTextFile } from '@tauri-apps/plugin-fs';
-import { initLanguage } from '@/i18n';
+import { getI18n, initLanguage } from '@/i18n';
 import { useAppStore } from '@/stores/appStore';
+import { useToastStore } from '@/stores/toastStore';
 import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useChatStore } from '@/stores/chatStore';
 import { useTeamStore } from '@/stores/teamStore';
@@ -74,12 +75,38 @@ describe('AppDraftCard', () => {
     expect(useChatStore.getState().composerFocusRequest).toBe(before + 1);
   });
 
-  it('says what is wrong when the draft no longer passes', async () => {
+  it('says the preview could not be opened and what to do when the draft no longer passes; the reason goes to the console', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     writeDraft('mine:gone');
     render(<AppDraftCard conversationId="creator" toolCallId="call-1" />);
     expect(await screen.findByText('预览没能打开')).toBeInTheDocument();
-    expect(screen.getByTestId('app-draft-card')).toHaveTextContent('home.modes.items[0].scenes[1].run.team');
+    expect(screen.getByTestId('app-draft-card')).toHaveTextContent(getI18n().appDraft.previewFailedHint);
+    expect(screen.getByTestId('app-draft-card').outerHTML).not.toContain('home.modes');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toBe('[app] draft preview failed:');
+    expect(String(warn.mock.calls[0][1])).toContain('home.modes.items[0].scenes[1].run.team');
     expect(screen.queryByTestId('app-draft-confirm')).not.toBeInTheDocument();
+    warn.mockRestore();
+  });
+
+  it('says the app could not be added and what to do when confirming fails, and can be pressed again', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    useToastStore.setState({ toasts: [] });
+    writeDraft(`mine:${myTeamId}`);
+    render(<AppDraftCard conversationId="creator" toolCallId="call-1" />);
+    const confirm = await screen.findByTestId('app-draft-confirm');
+    // The draft changed under the card: confirming reads it again and refuses it.
+    rmSync(join(dir, '.abu-app'), { recursive: true, force: true });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(useToastStore.getState().toasts).toHaveLength(1));
+    const [toast] = useToastStore.getState().toasts;
+    expect(toast).toMatchObject({ type: 'error', title: getI18n().appDraft.failed, message: getI18n().appDraft.failedHint });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toBe('[app] add created app failed:');
+    await waitFor(() => expect(confirm).not.toHaveAttribute('aria-disabled'));
+    useToastStore.setState({ toasts: [] });
+    warn.mockRestore();
   });
 
   it('shows the added app once the draft was confirmed', () => {

@@ -27,6 +27,10 @@ import { usePluginStore } from '@/stores/pluginStore';
 import { canonicalizeElectronPathForPolicy } from '@/utils/electronHost';
 import { expandHome, loadMarketplaceFromDir } from '@/core/plugin/loadMarketplace';
 import { fetchMarket, isMarketAddress, marketAddFailure } from '@/core/plugin/marketSource';
+import { reportAppFailure } from '@/core/app/appFailure';
+
+/** A fetched market whose name the list already holds for another address. */
+class MarketNameTaken extends Error {}
 
 interface AddMarketplaceDialogProps {
   open: boolean;
@@ -71,7 +75,8 @@ export default function AddMarketplaceDialog({
       const picked = await openDialog({ directory: true, multiple: false });
       if (typeof picked === 'string') setInput(picked);
     } catch (err) {
-      setError(String(err));
+      reportAppFailure('choose market folder', err);
+      setError(tb.pluginsBrowseFailed);
     }
   };
 
@@ -93,17 +98,23 @@ export default function AddMarketplaceDialog({
     const marketplace = await loadMarketplaceFromDir(fetched.dir);
     const existing = usePluginStore.getState().marketplaces.find(item => item.name === marketplace.name);
     if (!existing) addMarketplace(marketplace.name, fetched.dir);
-    else if (existing.dir !== fetched.dir) throw new Error(tb.pluginsMarketplaceNameConflict);
+    else if (existing.dir !== fetched.dir) throw new MarketNameTaken();
     return marketplace.name;
   };
 
-  /** What the user reads when adding fails: what they can do, not what broke inside. */
-  const explain = (err: unknown): string => {
+  /**
+   * What the user reads when adding fails: what they can do. A failure the
+   * host classified has a sentence of its own; any other says what to check
+   * for an address or for a folder, and its reason goes to the console.
+   */
+  const explain = (err: unknown, address: boolean): string => {
+    if (err instanceof MarketNameTaken) return tb.pluginsMarketplaceNameConflict;
     const failure = marketAddFailure(err);
     if (failure === 'auth_required') return tb.pluginsMarketplaceAuthRequired;
     if (failure === 'name_taken') return tb.pluginsMarketplaceNameConflict;
     if (failure === 'not_a_market') return tb.pluginsMarketplaceNotFound;
-    return err instanceof Error ? err.message : String(err);
+    reportAppFailure('add market', err);
+    return address ? tb.pluginsMarketplaceAddressFailed : tb.pluginsMarketplaceFolderFailed;
   };
 
   const handleSubmit = async () => {
@@ -114,12 +125,13 @@ export default function AddMarketplaceDialog({
     reading.current = true;
     setBusy(true);
     setError(null);
+    const address = isMarketAddress(trimmed);
     try {
-      const name = isMarketAddress(trimmed) ? await addAddress(trimmed) : await addFolder(trimmed);
+      const name = address ? await addAddress(trimmed) : await addFolder(trimmed);
       onAdded?.(name);
       onClose();
     } catch (err) {
-      setError(explain(err));
+      setError(explain(err, address));
     } finally {
       reading.current = false;
       setBusy(false);

@@ -193,14 +193,18 @@ describe('AppPageView', () => {
   });
 
   describe('a page that failed to load', () => {
-    it('shows why, with a retry that reloads it', async () => {
+    it('says so in plain words, with a retry that reloads it; the host\'s reason goes to the console', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
       await shown();
       expect(screen.queryByTestId('app-page-failed')).toBeNull();
       say('failed', { errorDescription: 'ERR_NAME_NOT_RESOLVED' });
       const failed = within(screen.getByTestId('app-page-failed'));
-      expect(failed.getByText('ERR_NAME_NOT_RESOLVED')).toBeInTheDocument();
+      expect(failed.getByText(t().appHome.pageLoadFailed)).toBeInTheDocument();
+      expect(view().outerHTML).not.toContain('ERR_NAME_NOT_RESOLVED');
+      expect(warn).toHaveBeenCalledExactlyOnceWith('[app] page load failed:', 'ERR_NAME_NOT_RESOLVED');
       fireEvent.click(failed.getByRole('button', { name: t().common.retry }));
       expect(vi.mocked(reloadAppPage).mock.calls).toEqual([[APP_ID, 'portal']]);
+      warn.mockRestore();
     });
 
     it('clears the failure once the page loads', async () => {
@@ -242,7 +246,7 @@ describe('AppPageView', () => {
       await shown();
       say('failed', { errorDescription: 'ERR_NAME_NOT_RESOLVED' });
       const alert = within(screen.getByTestId('app-page-failed')).getByRole('alert');
-      expect(alert).toHaveTextContent('ERR_NAME_NOT_RESOLVED');
+      expect(alert).toHaveTextContent(t().appHome.pageLoadFailed);
       expect(within(alert).getByRole('button', { name: t().common.retry })).toBeInTheDocument();
     });
 

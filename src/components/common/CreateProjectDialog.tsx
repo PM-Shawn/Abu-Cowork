@@ -349,7 +349,7 @@ export default function CreateProjectDialog({
           </div>
 
           {/* Project location (read-only) */}
-          <div className="flex items-center gap-2 rounded-control bg-fill px-3 py-2 text-ui-sm text-label-tertiary">
+          <div className="flex items-center gap-2 rounded-control bg-fill px-3 py-2 text-ui-sm text-label-secondary">
             <Icon icon={AppIcons.folderOpen} size="sm" />
             <span className="truncate">
               {projectName.trim()

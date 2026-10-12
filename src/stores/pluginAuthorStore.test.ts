@@ -7,24 +7,26 @@ vi.mock('@/core/plugin/installer', () => ({ planPreparedInstall: vi.fn(), releas
 vi.mock('./chatStore', () => ({ useChatStore: { getState: () => chat } }));
 vi.mock('./settingsStore', () => ({ useSettingsStore: { getState: () => ({ closeExtensions: vi.fn() }) } }));
 const chat = vi.hoisted(() => ({ conversations: {} as Record<string, unknown>, conversationIndex: {} as Record<string, unknown>,
-  switchConversation: vi.fn(), createConversation: vi.fn(() => 'new-conversation'), renameConversation: vi.fn(), setPendingInput: vi.fn() }));
+  switchConversation: vi.fn(), createConversation: vi.fn(() => 'new-conversation'), renameConversation: vi.fn(), setPendingInput: vi.fn(),
+  setPendingAppBinding: vi.fn(), setPendingTeamId: vi.fn() }));
+const shell = { leaveApp: true };
 const author = { id: 'a'.repeat(32), createdAt: '2026-09-09', conversationId: 'existing', name: 'demo', prepared: null, sourceDir: '/home/Abu Plugins/a', marketplace: 'author-a', key: 'demo@author-a' };
 beforeEach(() => { vi.clearAllMocks(); chat.conversations = {}; chat.conversationIndex = {}; vi.mocked(listPluginAuthors).mockResolvedValue([author]); });
 it('reopens an indexed conversation even when its messages were unloaded', async () => {
   chat.conversationIndex.existing = { id: 'existing' };
-  await usePluginAuthorStore.getState().edit(author);
+  await usePluginAuthorStore.getState().edit(author, shell);
   expect(chat.switchConversation).toHaveBeenCalledWith('existing');
   expect(chat.createConversation).not.toHaveBeenCalled();
   expect(bindPluginAuthor).not.toHaveBeenCalled();
 });
 it('replaces a deleted conversation using the expected old binding', async () => {
-  await usePluginAuthorStore.getState().edit(author);
+  await usePluginAuthorStore.getState().edit(author, shell);
   expect(bindPluginAuthor).toHaveBeenCalledWith(author.id, 'new-conversation', 'existing');
   expect(chat.createConversation).toHaveBeenCalledWith(author.sourceDir);
 });
 it('persists the draft before starting its creation conversation', async () => {
   vi.mocked(createPluginAuthor).mockResolvedValue({ ...author, conversationId: null, name: null, key: null });
-  await usePluginAuthorStore.getState().create();
+  await usePluginAuthorStore.getState().create(shell);
   expect(createPluginAuthor).toHaveBeenCalledWith();
   expect(listPluginAuthors).toHaveBeenCalledTimes(2);
   const prompt = chat.setPendingInput.mock.calls[0][0];
@@ -45,9 +47,9 @@ it('does not mark a draft validated when component parsing fails', async () => {
 it('coalesces rapid creation and releases the busy state after failure', async () => {
   let reject!: (error: Error) => void;
   vi.mocked(createPluginAuthor).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
-  const first = usePluginAuthorStore.getState().create();
+  const first = usePluginAuthorStore.getState().create(shell);
   expect(usePluginAuthorStore.getState().creating).toBe(true);
-  await usePluginAuthorStore.getState().create();
+  await usePluginAuthorStore.getState().create(shell);
   expect(createPluginAuthor).toHaveBeenCalledOnce();
   reject(new Error('creation failed'));
   await expect(first).rejects.toThrow('creation failed');

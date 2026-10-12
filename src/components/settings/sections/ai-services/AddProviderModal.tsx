@@ -178,7 +178,7 @@ const FIELD_LABEL = 'text-ui-sm font-medium text-label';
 // Looks like the closed design-system select; opens a panel instead of a list.
 const PANEL_TRIGGER = 'flex h-7 w-full items-center justify-between gap-2 rounded-control border border-control-border bg-field px-2 text-ui text-label';
 // A row that states a fact where another provider would have a field.
-const FIXED_VALUE = 'flex h-7 items-center rounded-control bg-fill px-2 text-ui text-label-tertiary';
+const FIXED_VALUE = 'flex h-7 items-center rounded-control bg-fill px-2 text-ui text-label-secondary';
 const TEXT_LINK = 'inline-flex items-center gap-1 rounded-control text-ui-sm text-link hover:underline';
 
 // ── Model rows ───────────────────────────────────────────────────

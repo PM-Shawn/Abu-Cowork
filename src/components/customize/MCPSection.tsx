@@ -95,7 +95,7 @@ function ToolDetailsList({ tools }: { tools: { name: string; description?: strin
           <div className="min-w-0">
             <span className="text-ui-sm font-medium text-label">{tool.name}</span>
             {tool.description && (
-              <p className="truncate text-caption text-label-tertiary">{tool.description}</p>
+              <p className="truncate text-caption text-label-secondary">{tool.description}</p>
             )}
           </div>
         </div>

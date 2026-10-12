@@ -375,7 +375,7 @@ function ToolCallPreviewCard({ toolCall }: { toolCall: ToolCall }) {
         </code>
       </div>
       {resultSnippet && (
-        <div className="mt-2 max-h-24 overflow-hidden whitespace-pre-wrap break-words pl-5 font-code text-ui-sm text-label-tertiary">
+        <div className="mt-2 max-h-24 overflow-hidden whitespace-pre-wrap break-words pl-5 font-code text-ui-sm text-label-secondary">
           {resultSnippet}
         </div>
       )}

@@ -93,13 +93,14 @@ describe('basic components', () => {
     expect(root).toHaveTextContent('x');
   });
 
-  it('Avatar falls back to the first character of the name on the brand color', () => {
+  it('Avatar falls back to the first character of the name on the neutral fill', () => {
     render(<Avatar name="shawn" />);
     const fallback = screen.getByRole('img', { name: 'shawn' });
     expect(fallback).toHaveTextContent('S');
-    expect(fallback).toHaveClass('bg-brand', 'text-brand-ink');
-    // The green belongs to the initial only, so a transparent photo never shows it.
-    expect(fallback.parentElement).not.toHaveClass('bg-brand');
+    expect(fallback).toHaveClass('bg-fill', 'text-label-secondary');
+    expect(fallback.className).not.toContain('brand');
+    // The fill belongs to the initial only, so a transparent photo shows nothing behind it.
+    expect(fallback.parentElement).not.toHaveClass('bg-fill');
   });
 
   it('Separator is announced only when it is not decorative', () => {

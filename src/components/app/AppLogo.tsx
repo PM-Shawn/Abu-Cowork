@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { cn } from '@/lib/utils';
 import { loadLocalImage } from '@/utils/pathUtils';
+import { reportAppFailure } from '@/core/app/appFailure';
 import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
 import abuAvatar from '@/assets/abu-avatar.png';
 import TeamAvatar from '@/components/team/TeamAvatar';
@@ -12,8 +13,9 @@ const ICON_SIZE: Record<keyof typeof SIZE, AvatarSize> = { sm: 'sm', md: 'md', l
 /**
  * An app's logo: the package image (light or dark variant by theme) loaded
  * through the scoped file bridge, the icon an organization set for its app,
- * the app's first letter while an image loads or when there is none, and
- * Abu's own avatar for the general shell.
+ * the app's first letter while an image loads, when there is none or when
+ * its file cannot be read or drawn, and Abu's own avatar for the general
+ * shell.
  */
 export default function AppLogo({ name, logo, logoDark, icon, general = false, size = 'md', className }: {
   name: string;
@@ -37,6 +39,11 @@ export default function AppLogo({ name, logo, logoDark, icon, general = false, s
       if (cancelled) { URL.revokeObjectURL(loaded); return; }
       url = loaded;
       setSrc(loaded);
+    }, (error: unknown) => {
+      if (cancelled) return;
+      // The file is gone, as for a conversation of an app that was removed: the letter mark shows.
+      setSrc(null);
+      reportAppFailure('logo image', error);
     });
     return () => {
       cancelled = true;
@@ -46,7 +53,8 @@ export default function AppLogo({ name, logo, logoDark, icon, general = false, s
   // The letter mark takes its size from SIZE; font-medium also overrides the weight a title size brings.
   const box = cn('inline-flex shrink-0 items-center justify-center overflow-hidden rounded-control bg-fill font-medium text-label select-none', SIZE[size], className);
   if (general) return <span className={box} data-testid="app-logo" data-app-logo="general"><img src={abuAvatar} alt="" className="h-full w-full object-cover" /></span>;
-  if (src) return <span className={box} data-testid="app-logo" data-app-logo="image"><img src={src} alt="" className="h-full w-full object-cover" /></span>;
+  // A file the page cannot draw as a picture leaves the place to the letter mark as well.
+  if (src) return <span className={box} data-testid="app-logo" data-app-logo="image"><img src={src} alt="" className="h-full w-full object-cover" onError={() => setSrc(null)} /></span>;
   if (icon) return <TeamAvatar avatar={icon} size={ICON_SIZE[size]} className={cn(size === 'xl' && 'h-20 w-20', className)} />;
   return <span className={box} data-testid="app-logo" data-app-logo="letter" aria-hidden="true">{name.trim().charAt(0)}</span>;
 }

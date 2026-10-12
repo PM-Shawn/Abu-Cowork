@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+    (function () {
+      try {
+        var pref = localStorage.getItem('abu-lang');
+        var target = pref || ((navigator.language || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
+        if (target === 'zh') location.replace('platform.zh-CN.html');
+      } catch (e) {}
+    })();
+    </script>
+    <link rel="alternate" hreflang="en" href="platform.html">
+    <link rel="alternate" hreflang="zh-CN" href="platform.zh-CN.html">
+    <link rel="alternate" hreflang="x-default" href="platform.html">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
+    <title>Abu Open Platform — Turn industry know-how into an app</title>
+    <meta name="description" content="An app is Abu prepared for one kind of work: its own home page, scenes, expert team and navigation. You write an app folder, hand your customer a market address, and they click Use to start working.">
+    <link rel="icon" href="assets/abu-avatar-120.png" type="image/png">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400.css">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400-italic.css">
+    <link rel="stylesheet" href="assets/fonts/noto-serif-sc/500.css">
+    <link rel="stylesheet" href="site.css">
+    <link rel="stylesheet" href="enterprise.css">
+    <link rel="stylesheet" href="home.css">
+    <link rel="stylesheet" href="platform.css">
+    <!-- Baidu Tongji -->
+    <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?01567fba26100539d5fb9f494c789f4d";
+      var s = document.getElementsByTagName("script")[0];
+      s.parentNode.insertBefore(hm, s);
+    })();
+    </script>
+</head>
+<body>
+<a class="skip" href="#main-content">Skip to main content</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="logo" href="index.html"><img src="assets/abu-avatar-120.png" width="30" height="30" alt="">Abu</a>
+    <nav class="nav-links" aria-label="Main">
+      <a href="index.html#preview">Preview</a>
+      <a href="index.html#abilities">Features</a>
+      <a href="index.html#scenes">Use cases</a>
+      <a href="index.html#tech">Architecture</a>
+      <a href="enterprise.html" data-new>Enterprise</a>
+      <a href="platform.html" aria-current="page" data-new>Open Platform</a>
+      <a href="docs.html">Docs</a>
+      <a href="community.html">Community</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="nav-lang" href="platform.zh-CN.html" lang="zh-CN" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">中文</a>
+      <a class="btn btn-line btn-sm" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-fill btn-sm" href="index.html#start">Download</a>
+    </div>
+  </div>
+</header>
+
+<main id="main-content">
+
+  <div class="wrap e-hero">
+    <span class="e-tag fade" style="animation-delay: 500ms"><b></b>Abu Open Platform · Apps · from Abu 0.51.0</span>
+    <h1 class="h1">
+      <span class="rise"><span>Turn industry know-how into an app</span></span>
+    </h1>
+    <p class="lead fade" style="animation-delay: 420ms">You write an app folder. Your customer's Abu gains a home page, scenes and an expert team prepared for that kind of work.</p>
+    <div class="actions fade" style="animation-delay: 520ms">
+      <a class="btn btn-fill" href="docs.html#app-spec">Read the app spec</a>
+      <a class="btn btn-line" href="index.html#start">Download Abu</a>
+    </div>
+    <div class="e-points fade" style="animation-delay: 620ms">
+      <div class="e-point"><span class="n">a</span><h3 class="h3">You write an app folder</h3><p class="small">It holds one app file and a few images, and says what the home page shows, which scenes exist and who handles each scene.</p></div>
+      <div class="e-point"><span class="n">b</span><h3 class="h3">Abu provides the rest</h3><p class="small">Conversations, permission prompts, reading and writing files, delivering files: the app uses what Abu already does.</p></div>
+      <div class="e-point"><span class="n">c</span><h3 class="h3">Your customer clicks Use</h3><p class="small">The app appears in their app switcher, and the plugins it needs are installed along with it.</p></div>
+      <div class="e-point"><span class="n">d</span><h3 class="h3">You deliver a market address</h3><p class="small">A git repository or a zip address. After you publish a new version, your customer sees Update.</p></div>
+    </div>
+  </div>
+
+  <section class="pad wrap" id="anatomy">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">What an app is made of</h2>
+      <p class="lead">An app is Abu prepared for one kind of work. Below is Recruiting, an app that ships with Abu, with the five parts this screen shows marked. Recruiting uses no single expert, skill or app web page, so the screen has none of them.</p>
+    </div>
+    <div class="anatomy">
+      <figure class="anatomy-shot reveal">
+        <div class="shot-frame">
+          <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/en/p-home-recruiting-scene-dark-1440.webp 1440w, assets/shots/en/p-home-recruiting-scene-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 760px">
+            <img src="assets/shots/en/p-home-recruiting-scene-light.webp" srcset="assets/shots/en/p-home-recruiting-scene-light-1440.webp 1440w, assets/shots/en/p-home-recruiting-scene-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 760px" alt="The home page of the Recruiting app: its name and one line at the top, groups of scenes below, three example prompts in the open scene, and the app's navigation on the left" width="1440" height="900" loading="lazy">
+          </picture>
+          <span class="mark" data-mark="home" aria-hidden="true">1</span>
+          <span class="mark" data-mark="scene" aria-hidden="true">2</span>
+          <span class="mark" data-mark="template" aria-hidden="true">3</span>
+          <span class="mark" data-mark="team" aria-hidden="true">4</span>
+          <span class="mark" data-mark="nav" aria-hidden="true">5</span>
+        </div>
+      </figure>
+      <ol class="parts">
+        <li class="part reveal"><span class="part-no">1</span><h3 class="h3">Home page</h3><p class="small">The first thing the app shows, with its name and one line about it.</p></li>
+        <li class="part reveal"><span class="part-no">2</span><h3 class="h3">Scenes</h3><p class="small">One task on the home page, such as “Write the JD”. Each scene carries 3 to 6 example prompts (3 in the picture); clicking one fills the input box.</p></li>
+        <li class="part reveal"><span class="part-no">4</span><h3 class="h3">Expert teams</h3><p class="small">A scene can go to an expert team, where several experts share the work. Every Recruiting scene goes to the recruiting team, and each scene card names it.</p></li>
+        <li class="part reveal"><span class="part-no"></span><h3 class="h3">Experts</h3><p class="small">A scene can also go to a single expert.</p></li>
+        <li class="part reveal"><span class="part-no"></span><h3 class="h3">Skills</h3><p class="small">Or a scene can go to a skill. Expert teams, experts and skills come in plugins; the app only names the ones it uses.</p></li>
+        <li class="part reveal"><span class="part-no">5</span><h3 class="h3">Navigation</h3><p class="small">The menu on the left follows the app's definition.</p></li>
+        <li class="part reveal"><span class="part-no"></span><h3 class="h3">App web pages</h3><p class="small">Web pages your customer already has can sit in the navigation and open in Abu's main area.</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="apps">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">Apps that ship with Abu</h2>
+      <p class="lead">These three apps are installed with Abu. Their app files are in the repository's official market folder, ready to learn from.</p>
+    </div>
+    <div class="app-shots">
+      <article class="app-shot reveal">
+        <div class="shot-frame">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/en/p-home-recruiting-dark-1440.webp 1440w, assets/shots/en/p-home-recruiting-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px">
+            <img src="assets/shots/en/p-home-recruiting-light.webp" srcset="assets/shots/en/p-home-recruiting-light-1440.webp 1440w, assets/shots/en/p-home-recruiting-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px" alt="The home page of the Recruiting app" width="1440" height="900" loading="lazy">
+          </picture>
+        </div>
+        <h3 class="h3">Recruiting</h3>
+        <p class="small">Write JDs, screen resumes, prepare interviews, check the market</p>
+        <div class="pills"><span class="pill">Write the JD</span><span class="pill">Rank resumes</span><span class="pill">Scorecards and notes</span></div>
+      </article>
+      <article class="app-shot reveal">
+        <div class="shot-frame">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/en/p-home-finance-dark-1440.webp 1440w, assets/shots/en/p-home-finance-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px">
+            <img src="assets/shots/en/p-home-finance-light.webp" srcset="assets/shots/en/p-home-finance-light-1440.webp 1440w, assets/shots/en/p-home-finance-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px" alt="The home page of the Finance reconciliation app" width="1440" height="900" loading="lazy">
+          </picture>
+        </div>
+        <h3 class="h3">Finance reconciliation</h3>
+        <p class="small">Match statements, find differences, produce reports</p>
+        <div class="pills"><span class="pill">Monthly expense reconciliation</span><span class="pill">Expense claims</span><span class="pill">Monthly expense report</span></div>
+      </article>
+      <article class="app-shot reveal">
+        <div class="shot-frame">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/en/p-home-content-dark-1440.webp 1440w, assets/shots/en/p-home-content-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px">
+            <img src="assets/shots/en/p-home-content-light.webp" srcset="assets/shots/en/p-home-content-light-1440.webp 1440w, assets/shots/en/p-home-content-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px" alt="The home page of the Content creation app" width="1440" height="900" loading="lazy">
+          </picture>
+        </div>
+        <h3 class="h3">Content creation</h3>
+        <p class="small">From topic to finished draft, visuals and a publishing kit</p>
+        <div class="pills"><span class="pill">Write an article</span><span class="pill">Cover and infographic</span><span class="pill">A set of promo copy</span></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="steps">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">Delivery steps</h2>
+    </div>
+    <div class="stack">
+      <article class="stack-card">
+        <div class="copy"><span class="num">1</span><h3 class="h3">Write an app folder</h3><p>The folder holds one app file, <code>app.json</code>, and a few images. To try an idea first, click Create app in Abu and build one in a conversation; that app stays on this computer.</p></div>
+        <div class="art"><figure class="code-card"><figcaption class="eyebrow">app.json of the Recruiting app (excerpt)</figcaption><pre><code>{
+  "name": "recruiting",
+  "version": "1.0.0",
+  "interface": {
+    "displayName": "招聘",
+    "shortDescription": "写 JD、筛简历、备面试、查行情"
+  },
+  "defaultRun": { "team": "builtin-team:recruiting" },
+  "home": {
+    "modes": { "items": [ {
+      "title": { "en-US": "Prepare the role" },
+      "scenes": [ {
+        "title": { "en-US": "Write the JD" },
+        "templates": [
+          { "title": { "en-US": "Senior front-end JD" }, "prompt": { … } },
+          …
+        ]
+      } ]
+    } ] }
+  }
+}</code></pre></figure></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">2</span><h3 class="h3">Preview it in your own Abu</h3><p>In the app market, click Add from folder and pick the app folder. The confirmation page lists who handles each scene, the plugins installed along with it and the connector settings to fill in. When the app file has a mistake, the error gives the full path of that field.</p></div>
+        <div class="art"><img class="win-confirm" src="assets/shots/en/platform-step-preview.webp" width="672" height="570" alt="The confirmation page after adding the sample app Shop operations from a folder: who handles each of its three scenes, the plugin installed along with it and the connector setting to fill in" loading="lazy"></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">3</span><h3 class="h3">Hand your customer a market address</h3><p>Put the market folder in a git repository, or zip it and host it at a downloadable address. Your customer clicks Add market in the app market, enters the address, finds the app and clicks Use.</p></div>
+        <div class="art"><img class="win-market" src="assets/shots/en/platform-step-deliver.webp" width="768" height="590" alt="The Add market window in the app market, with a market address in the address field" loading="lazy"></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">4</span><h3 class="h3">Raise the version, your customer sees Update</h3><p>You update the repository or the zip. When your customer opens the app market, Update shows beside the app; the steps are the same as the first Use.</p></div>
+        <div class="art"><img class="win-market" src="assets/shots/en/platform-step-update.webp" width="768" height="590" alt="The app market with Update shown beside the sample app Shop operations" loading="lazy"></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="connect">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">Connect your customer's systems</h2>
+    </div>
+    <div class="connect">
+      <article class="cell reveal"><span class="cell-name">Connectors</span><h3 class="h3">Business systems come in through connectors</h3><p class="small">Connectors come in plugins. The app names the connectors it needs; while one is not connected, the top of the home page offers Connect.</p></article>
+      <article class="cell reveal"><span class="cell-name">App web pages</span><h3 class="h3">Existing web pages go straight into the app</h3><p class="small">Put the address in the navigation and the page opens in Abu's main area. It can only stay on the websites the app declares; links to anywhere else open in the system browser.</p></article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="official">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">Submit to the official app market</h2>
+    </div>
+    <div class="spec">
+      <div class="spec-row reveal"><span class="eyebrow">How to submit</span><span class="spec-value">Submit an app entry to the Abu repository</span><span class="spec-detail">After a manual review, the app enters the official app market with the next Abu version, where every user can find it. The rules are in section 10 of the <a class="text-link" href="docs.html#app-spec">app spec</a> (in Chinese).</span></div>
+    </div>
+  </section>
+
+  <div class="finale" id="contact" data-night>
+    <div class="aurora"></div>
+    <div class="wrap inner">
+      <span class="eyebrow">FDE / Partners</span>
+      <h2 class="h2 reveal">Have a project to deliver with Abu?</h2>
+      <p class="lead">Scan to add Shawn, the author of Abu, on WeChat with the note “Open Platform”, and tell him about your industry and your customer.</p>
+      <figure class="qr reveal">
+        <img src="assets/wechat-qr.png" width="448" height="448" alt="WeChat QR code of Shawn, the author of Abu" loading="lazy">
+        <figcaption class="eyebrow">Scan in WeChat · note Open Platform</figcaption>
+      </figure>
+      <div class="actions reveal">
+        <a class="btn btn-fill" href="docs.html#app-spec">Read the app spec</a>
+        <a class="btn btn-line" href="index.html#start">Download Abu</a>
+        <a class="btn btn-line" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub repository</a>
+      </div>
+    </div>
+    <div class="wrap foot"><span>© 2026 Abu</span><a href="index.html">Home</a><a href="docs.html">Docs</a><a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a><a href="platform.zh-CN.html" lang="zh-CN" onclick="try{localStorage.setItem('abu-lang','zh')}catch(e){}">中文</a></div>
+    <div class="wordmark" aria-hidden="true"><span class="it">Abu</span> 阿布</div>
+  </div>
+
+</main>
+
+<script src="site.js"></script>
+</body>
+</html>

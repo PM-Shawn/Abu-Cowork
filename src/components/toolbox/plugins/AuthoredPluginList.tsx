@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { revealItemInDir } from '@tauri-apps/plugin-opener';
 import { useI18n } from '@/i18n';
 import { usePluginAuthorStore } from '@/stores/pluginAuthorStore';
+import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import { cleanupPluginConfiguration, usePluginStore } from '@/stores/pluginStore';
 import { useToastStore } from '@/stores/toastStore';
 import type { PluginAuthor } from '@/core/plugin/authorBridge';
@@ -46,6 +47,7 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
   const authors = usePluginAuthorStore(s => s.authors);
   const error = usePluginAuthorStore(s => s.error);
   const refresh = usePluginAuthorStore(s => s.refresh);
+  const { allowExit } = useEnterpriseAppPolicy();
   const installed = usePluginStore(s => s.installed);
   const deletingRef = useRef(false);
   const [selected, setSelected] = useState<PluginAuthor | null>(null);
@@ -92,7 +94,7 @@ export default function AuthoredPluginList({ home, searchQuery, onVisibleCount }
   useLayoutEffect(() => { selectedRef.current = selected; });
   const stillOpen = (author: PluginAuthor) => selectedRef.current?.id === author.id;
 
-  const edit = (author: PluginAuthor) => { void usePluginAuthorStore.getState().edit(author).catch(report); };
+  const edit = (author: PluginAuthor) => { void usePluginAuthorStore.getState().edit(author, { leaveApp: allowExit }).catch(report); };
   const reveal = (author: PluginAuthor) => { void revealItemInDir(author.sourceDir).catch(report); };
   const prepare = async (author: PluginAuthor) => {
     const requestEpoch = ++epoch.current;

@@ -15,431 +15,219 @@
     <link rel="alternate" hreflang="zh-CN" href="enterprise.zh-CN.html">
     <link rel="alternate" hreflang="x-default" href="enterprise.html">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="theme-color" content="#faf9f5">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
     <title>Abu 企业版 - 全员用 AI 提效，企业把成本、数据和风险管起来</title>
-    <meta name="description" content="Abu 企业版统一模型入口、知识权限、策略审计和用量预算，企业看得见、控得住、可追溯。">
-    <link rel="stylesheet" href="style.css">
-    <link rel="icon" href="assets/abu-avatar.png" type="image/png">
-</head>
-<body class="enterprise-body">
-    <a class="skip-link" href="#main-content">跳到主要内容</a>
-    <nav class="navbar" id="navbar">
-        <div class="container nav-container">
-            <a href="index.zh-CN.html" class="nav-brand">
-                <img src="assets/abu-avatar.png" alt="Abu" class="nav-logo" width="32" height="32">
-                <span class="nav-title">Abu <span class="nav-title-cn">阿布</span></span>
-            </a>
-            <div class="nav-links" id="navLinks">
-                <a href="index.zh-CN.html#features" class="nav-link">功能</a>
-                <a href="index.zh-CN.html#screenshots" class="nav-link">预览</a>
-                <a href="index.zh-CN.html#use-cases" class="nav-link">场景</a>
-                <a href="index.zh-CN.html#tech" class="nav-link">架构</a>
-                <a href="enterprise.zh-CN.html" class="nav-link nav-link-active nav-link-hot" aria-label="企业版，热门">企业版<span class="nav-hot-flame" aria-hidden="true">🔥</span></a>
-                <a href="docs.zh-CN.html" class="nav-link">文档</a>
-                <a href="index.zh-CN.html#social" class="nav-link">社区</a>
-                <a href="enterprise.html" class="nav-lang" aria-label="Switch to English" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">
-                    <svg class="nav-lang-icon" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-                    English
-                </a>
-                <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener" class="nav-link nav-github">
-                    <svg class="icon" aria-hidden="true" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-                    GitHub
-                </a>
-            </div>
-            <button class="nav-toggle" id="navToggle" aria-label="打开导航菜单" aria-controls="navLinks" aria-expanded="false">
-                <span></span><span></span><span></span>
-            </button>
-        </div>
-    </nav>
-
-    <main id="main-content">
-    <section class="enterprise-hero">
-        <div class="container enterprise-hero-grid">
-            <div class="enterprise-hero-copy">
-                <div class="enterprise-eyebrow">Abu Enterprise</div>
-                <h1>全员用 AI 提效，<br>企业把成本、数据和风险管起来</h1>
-                <p class="enterprise-lead">
-                    统一模型入口、知识权限、策略审计和用量预算，企业看得见、控得住、可追溯。
-                </p>
-                <div class="enterprise-actions">
-                    <a href="#contact" class="btn btn-primary">预约演示</a>
-                    <a href="#comparison" class="btn btn-outline">查看版本对比</a>
-                </div>
-            </div>
-        </div>
-        <div class="container enterprise-metrics">
-            <div class="enterprise-metric">
-                <strong>统一网关</strong>
-                <span>员工不接触真模型 Key，调用经企业侧路由</span>
-            </div>
-            <div class="enterprise-metric">
-                <strong>按部门管控</strong>
-                <span>预算、限速、模型白名单和资源授权</span>
-            </div>
-            <div class="enterprise-metric">
-                <strong>知识库闭环</strong>
-                <span>企业、部门、个人知识库可检索可引用</span>
-            </div>
-            <div class="enterprise-metric">
-                <strong>私有部署</strong>
-                <span>控制台、审计和治理数据部署在企业侧</span>
-            </div>
-        </div>
-    </section>
-
-    <section class="enterprise-section">
-        <div class="container">
-            <div class="enterprise-heading">
-                <span class="enterprise-section-kicker">为什么需要企业版</span>
-                <h2>员工都在用 AI，但企业需要能管理 AI</h2>
-                <p>开源版让个人高效工作；当 AI 进入团队级使用，企业会遇到四个管理问题：钱、权、知、险。</p>
-            </div>
-            <div class="problem-list">
-                <article class="problem-row">
-                    <div>
-                        <span class="pain-index">01</span>
-                        <h3>AI 成本失控</h3>
-                        <p>员工各自配置模型 Key，谁在用、用了多少、哪个部门超预算，企业很难说清楚。</p>
-                    </div>
-                    <div>
-                        <span class="solution-label">企业版做法</span>
-                        <p>模型调用统一走企业网关，按部门配置预算、RPM 限速、可用模型范围，并在后台查看用量和成本。</p>
-                    </div>
-                </article>
-                <article class="problem-row">
-                    <div>
-                        <span class="pain-index">02</span>
-                        <h3>权限和数据边界不清</h3>
-                        <p>模型、知识库、Skill、MCP 和文件访问散落在个人配置里，很难按组织规则统一约束。</p>
-                    </div>
-                    <div>
-                        <span class="solution-label">企业版做法</span>
-                        <p>通过组织、部门、角色和策略下发建立边界，客户端在工具、Skill、MCP 调用前做本地校验。</p>
-                    </div>
-                </article>
-                <article class="problem-row">
-                    <div>
-                        <span class="pain-index">03</span>
-                        <h3>企业知识用不上</h3>
-                        <p>制度、FAQ、产品资料、项目文档和会议纪要沉在文件里，AI 不能稳定引用企业自己的上下文。</p>
-                    </div>
-                    <div>
-                        <span class="solution-label">企业版做法</span>
-                        <p>企业知识库支持文档上传、解析、分块、向量检索和全文检索，回答时可引用来源材料并记录查询审计。</p>
-                    </div>
-                </article>
-                <article class="problem-row">
-                    <div>
-                        <span class="pain-index">04</span>
-                        <h3>工具来源和风险不可追踪</h3>
-                        <p>员工自行安装扩展和连接内部系统，来源、权限、凭据、版本和使用记录都难以统一管理。</p>
-                    </div>
-                    <div>
-                        <span class="solution-label">企业版做法</span>
-                        <p>Skill 走上传、扫描、审核、发布和签名校验；MCP 走目录、审核、授权和凭据管理，风险可控可复盘。</p>
-                    </div>
-                </article>
-            </div>
-        </div>
-    </section>
-
-    <section class="enterprise-section enterprise-section-alt">
-        <div class="container">
-            <div class="enterprise-heading">
-                <span class="enterprise-section-kicker">产品形态</span>
-                <h2>不是另一个客户端，而是在 Abu 之上加一层企业治理</h2>
-                <p>员工在桌面端使用 AI，管理员在私有控制台统一配置组织、模型、知识、工具与治理策略。</p>
-            </div>
-            <div class="product-split">
-                <article class="product-panel">
-                    <h3>员工侧：体验尽量不变</h3>
-                    <p>员工仍然在 Abu 桌面端里发起任务、调用工具和使用 Skill。绑定企业后，客户端使用企业模型、企业知识库、已授权 Skill，并展示个人透明度信息。</p>
-                    <div class="product-tags">
-                        <span>企业绑定</span>
-                        <span>企业模型</span>
-                        <span>企业知识库</span>
-                        <span>企业 Skill</span>
-                    </div>
-                </article>
-                <article class="product-panel product-panel-strong">
-                    <h3>管理员侧：统一配置和追踪</h3>
-                    <p>管理员在控制台里配置部门、角色、模型、预算、知识库、Skill、MCP、策略和审计，让组织级 AI 使用有边界、有记录、可复盘。</p>
-                    <div class="product-tags">
-                        <span>组织权限</span>
-                        <span>成本治理</span>
-                        <span>工具审批</span>
-                        <span>审计追踪</span>
-                    </div>
-                </article>
-            </div>
-        </div>
-    </section>
-
-    <section class="enterprise-section" id="capabilities">
-        <div class="container">
-            <div class="enterprise-heading">
-                <span class="enterprise-section-kicker">核心企业级能力</span>
-                <h2>覆盖身份、成本、知识、扩展、安全和运维</h2>
-                <p>下面按企业采购和落地最关心的大模块重组，尽量把“能解决什么问题”和“后台实际管什么”放在一起。</p>
-            </div>
-            <div class="capability-grid capability-grid-major">
-                <article class="capability-card">
-                    <span class="capability-meta">Identity</span>
-                    <h3>身份与组织治理</h3>
-                    <p>把企业里的组织、部门、员工、角色和登录方式纳入一套控制面。</p>
-                    <ul>
-                        <li>密码、Magic Link、OIDC SSO 和桌面端 Device Flow</li>
-                        <li>组织、部门树、用户、角色和权限矩阵</li>
-                        <li>邀请、待审批成员、会话和 License 席位管理</li>
-                    </ul>
-                </article>
-                <article class="capability-card">
-                    <span class="capability-meta">Gateway</span>
-                    <h3>模型网关与成本管控</h3>
-                    <p>把分散的模型 Key、模型供应商和调用成本收回企业侧统一治理。</p>
-                    <ul>
-                        <li>LiteLLM 网关，多 Provider 配置和真实 Key 加密托管</li>
-                        <li>部门预算、RPM 限流、模型白名单和连接测试</li>
-                        <li>按用户、部门、模型统计 Token、费用和调用情况</li>
-                    </ul>
-                </article>
-                <article class="capability-card">
-                    <span class="capability-meta">Knowledge</span>
-                    <h3>企业知识库</h3>
-                    <p>把企业文档变成 Abu 能检索、引用和审计的可信上下文。</p>
-                    <ul>
-                        <li>支持 PDF、Word、HTML、Markdown 和纯文本入库</li>
-                        <li>pgvector 向量检索 + BM25 全文检索 + RRF 融合排序</li>
-                        <li>企业、部门、个人知识库作用域和 ACL 授权</li>
-                    </ul>
-                </article>
-                <article class="capability-card">
-                    <span class="capability-meta">Extensions</span>
-                    <h3>Skill 与 MCP 可信扩展</h3>
-                    <p>让企业内部能力和外部工具连接可发布、可授权、可验签、可追踪。</p>
-                    <ul>
-                        <li>Skill 上传、manifest 解析、安全扫描、审核和发布</li>
-                        <li>Skill ACL、签名校验和客户端安装记录</li>
-                        <li>MCP 目录同步、审核、ACL 和授权凭据获取</li>
-                    </ul>
-                </article>
-                <article class="capability-card">
-                    <span class="capability-meta">Policy</span>
-                    <h3>策略安全与本地执行</h3>
-                    <p>把组织级和部门级策略下发到客户端，在关键动作发生前拦截或要求确认。</p>
-                    <ul>
-                        <li>工具黑名单、工具二次确认、Skill/MCP 黑名单</li>
-                        <li>文件路径白名单和黑名单</li>
-                        <li>企业策略 Hook 在本地工具调用前执行</li>
-                    </ul>
-                </article>
-                <article class="capability-card">
-                    <span class="capability-meta">Ops</span>
-                    <h3>审计、透明度与运维</h3>
-                    <p>管理员看得到治理结果，员工也看得到自己的企业数据和用量。</p>
-                    <ul>
-                        <li>管理操作审计、敏感字段脱敏、用量与成本看板</li>
-                        <li>员工个人透明度页：资料、Token、审计、用量</li>
-                        <li>质量反馈、诊断日志、诊断包和自托管观测入口</li>
-                    </ul>
-                </article>
-            </div>
-        </div>
-    </section>
-
-    <section class="enterprise-section enterprise-section-alt">
-        <div class="container">
-            <div class="enterprise-heading">
-                <span class="enterprise-section-kicker">部署与交付</span>
-                <h2>单机私有部署起步，先满足 POC 和中小规模落地</h2>
-                <p>企业版控制台是独立部署面，客户端企业能力通过企业构建和闭源模块交付，不把私有模块混进公开 Release。</p>
-            </div>
-            <div class="deployment-grid">
-                <article class="deployment-card">
-                    <span class="deployment-label">交付形态</span>
-                    <h3>企业控制台私有部署</h3>
-                    <p>标准单机部署包含 Console、Postgres/pgvector、LiteLLM、Nginx、Redis、MinIO 等组件，可按客户环境启用观测和知识库增强能力。</p>
-                </article>
-                <article class="deployment-card">
-                    <span class="deployment-label">适用规模</span>
-                    <h3>50 到 2000 席位</h3>
-                    <p>POC 和 50-500 人团队可从默认配置开始；500-2000 人建议调优数据库、网关和观测组件资源；更大规模按高可用方案另行设计。</p>
-                </article>
-                <article class="deployment-card">
-                    <span class="deployment-label">合规适配</span>
-                    <h3>信创友好预留</h3>
-                    <p>数据库层尽量使用标准 Postgres 能力，镜像支持 amd64/arm64；国产数据库、CPU 和内网模型可按真实客户环境做适配验证。</p>
-                </article>
-            </div>
-        </div>
-    </section>
-
-    <section class="enterprise-section" id="comparison">
-        <div class="container">
-            <div class="enterprise-heading">
-                <span class="enterprise-section-kicker">开源版 vs 企业版</span>
-                <h2>能力内核一致，企业版额外提供组织级治理</h2>
-                <p>开源版适合个人和小团队自由使用；企业版适合需要成本、权限、知识、扩展和审计统一管理的组织。</p>
-            </div>
-            <div class="edition-grid">
-                <article class="edition-card">
-                    <span class="edition-tag">开源版</span>
-                    <h3>一个人的全功能 AI 办公助手</h3>
-                    <p>桌面应用，本地优先，使用自己的模型 Key 和本地配置，适合个人用户、开发者和小团队试用。</p>
-                    <div class="edition-meta">免费开源 · 本地使用 · 自主管理</div>
-                </article>
-                <article class="edition-card edition-card-strong">
-                    <span class="edition-tag">企业版</span>
-                    <h3>一支团队的可治理 AI 平台</h3>
-                    <p>员工继续用 Abu，企业在私有控制台里统一管人、管模型、管预算、管知识、管扩展、管策略和管审计。</p>
-                    <div class="edition-meta">私有部署 · 按席位授权 · 可 POC</div>
-                </article>
-            </div>
-            <div class="compare-panel compare-panel-detailed">
-                <div class="compare-row compare-head">
-                    <div>能力维度</div>
-                    <div>开源版</div>
-                    <div>企业版</div>
-                </div>
-                <div class="compare-row compare-group">
-                    <div>核心办公能力：两版共享同一个 Abu 客户端内核</div>
-                </div>
-                <div class="compare-row">
-                    <div>AI 桌面办公助手</div>
-                    <div><span class="status-chip status-available">完整可用</span>对话、任务执行、工具调用、Skill 使用和本地工作区协作。</div>
-                    <div><span class="status-chip status-available">完整继承</span>同一个桌面体验，叠加企业绑定和治理能力。</div>
-                </div>
-                <div class="compare-row">
-                    <div>本地优先</div>
-                    <div><span class="status-chip status-available">支持</span>对话、记忆、文件和项目数据默认保留在本机。</div>
-                    <div><span class="status-chip status-available">支持</span>企业配置、授权、审计和用量进入私有控制台。</div>
-                </div>
-                <div class="compare-row compare-group">
-                    <div>企业治理能力：企业版新增</div>
-                </div>
-                <div class="compare-row">
-                    <div>身份与登录</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>无企业账号、统一登录和成员审批。</div>
-                    <div><span class="status-chip status-available">支持</span>密码、Magic Link、OIDC SSO、客户端 Device Flow 和成员审批。</div>
-                </div>
-                <div class="compare-row">
-                    <div>组织、部门、角色权限</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>无组织级权限体系。</div>
-                    <div><span class="status-chip status-available">支持</span>组织、部门树、用户、角色、权限矩阵和资源 ACL。</div>
-                </div>
-                <div class="compare-row">
-                    <div>模型 Key 与网关</div>
-                    <div><span class="status-chip status-available">个人管理</span>用户自行填写模型 Key，调用和账单由个人负责。</div>
-                    <div><span class="status-chip status-available">统一管理</span>真实 Key 加密托管，客户端通过企业网关调用。</div>
-                </div>
-                <div class="compare-row">
-                    <div>预算、限速和模型白名单</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>无组织级集中管控。</div>
-                    <div><span class="status-chip status-available">支持</span>按部门配置预算、RPM 限速和可用模型范围。</div>
-                </div>
-                <div class="compare-row">
-                    <div>用量与成本看板</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>无企业集中统计。</div>
-                    <div><span class="status-chip status-available">支持</span>按用户、部门和模型统计 Token、调用量与成本。</div>
-                </div>
-                <div class="compare-row">
-                    <div>企业知识库</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>仅使用本地上下文和个人记忆。</div>
-                    <div><span class="status-chip status-available">支持</span>企业、部门、个人知识库，支持混合检索、来源引用和 ACL。</div>
-                </div>
-                <div class="compare-row">
-                    <div>企业 Skill 市场</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>用户仅可自行安装和维护 Skill。</div>
-                    <div><span class="status-chip status-available">支持</span>上传、扫描、审核、发布、授权、验签和安装记录。</div>
-                </div>
-                <div class="compare-row">
-                    <div>企业 MCP 管理</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>用户仅可自行配置本地 MCP 服务。</div>
-                    <div><span class="status-chip status-available">支持</span>统一登记、同步、审核、授权和凭据管理。</div>
-                </div>
-                <div class="compare-row">
-                    <div>企业安全策略</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>仅有个人权限模式和本机安全设置。</div>
-                    <div><span class="status-chip status-available">支持</span>工具黑名单、二次确认、扩展黑名单和文件路径策略。</div>
-                </div>
-                <div class="compare-row">
-                    <div>审计、透明度和诊断</div>
-                    <div><span class="status-chip status-unavailable">不支持</span>无企业集中审计和诊断。</div>
-                    <div><span class="status-chip status-available">支持</span>管理审计、个人透明度、质量反馈、日志和诊断包。</div>
-                </div>
-                <div class="compare-row">
-                    <div>部署、授权和品牌</div>
-                    <div><span class="status-chip status-unavailable">不包含</span>仅提供开源仓库和公开版本。</div>
-                    <div><span class="status-chip status-available">支持</span>私有控制台、企业构建、License、Logo/主色和受控交付。</div>
-                </div>
-            </div>
-            <p class="compare-note">注：企业 MCP 客户端当前聚焦目录浏览和授权凭据获取，便于企业先把可用工具和凭据范围统一管起来。</p>
-        </div>
-    </section>
-
-    <section class="enterprise-cta" id="contact">
-        <div class="container">
-            <div class="enterprise-cta-box">
-                <span class="enterprise-section-kicker">PoC / Demo</span>
-                <h2>想看看企业版如何接入你的团队？</h2>
-                <p>可以先从一次演示或小范围 POC 开始：确认部署方式、登录方式、模型供应商、知识库样本和第一批企业 Skill。</p>
-                <div class="enterprise-actions">
-                    <a href="index.zh-CN.html#social" class="btn btn-primary">联系作者预约演示</a>
-                    <a href="docs.zh-CN.html" class="btn btn-outline">先看使用文档</a>
-                </div>
-            </div>
-        </div>
-    </section>
-    </main>
-
-    <footer class="footer">
-        <div class="container">
-            <div class="footer-content">
-                <div class="footer-brand">
-                    <img src="assets/abu-avatar.png" alt="Abu" class="footer-logo" width="28" height="28" loading="lazy">
-                    <span>Abu (阿布)</span>
-                </div>
-                <div class="footer-links">
-                    <a href="index.zh-CN.html">首页</a>
-                    <a href="enterprise.zh-CN.html">企业版</a>
-                    <a href="docs.zh-CN.html">文档</a>
-                    <a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
-                </div>
-                <p class="footer-copy">&copy; 2026 Abu (阿布). Open source with Abu License.</p>
-            </div>
-        </div>
-    </footer>
-
+    <meta name="description" content="Abu 企业版把模型入口、知识库权限、策略审计和用量预算收进一个私有控制台。谁在用、用了多少、能访问什么，管理员都查得到。">
+    <link rel="icon" href="assets/abu-avatar-120.png" type="image/png">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400.css">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400-italic.css">
+    <link rel="stylesheet" href="assets/fonts/noto-serif-sc/500.css">
+    <link rel="stylesheet" href="site.css">
+    <link rel="stylesheet" href="enterprise.css">
+    <!-- Baidu Tongji -->
     <script>
-        const navbar = document.getElementById('navbar');
-        window.addEventListener('scroll', () => {
-            if (window.scrollY > 60) navbar.classList.add('scrolled');
-            else navbar.classList.remove('scrolled');
-        });
-
-        const navToggle = document.getElementById('navToggle');
-        const navLinks = document.getElementById('navLinks');
-        const closeNavigation = () => {
-            navLinks.classList.remove('open');
-            navToggle.classList.remove('open');
-            navToggle.setAttribute('aria-expanded', 'false');
-            navToggle.setAttribute('aria-label', '打开导航菜单');
-        };
-        navToggle.addEventListener('click', () => {
-            const isOpen = navLinks.classList.toggle('open');
-            navToggle.classList.toggle('open', isOpen);
-            navToggle.setAttribute('aria-expanded', String(isOpen));
-            navToggle.setAttribute('aria-label', isOpen ? '关闭导航菜单' : '打开导航菜单');
-        });
-        navLinks.querySelectorAll('.nav-link').forEach(link => {
-            link.addEventListener('click', closeNavigation);
-        });
-        document.addEventListener('keydown', event => {
-            if (event.key === 'Escape' && navLinks.classList.contains('open')) {
-                closeNavigation();
-                navToggle.focus();
-            }
-        });
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?01567fba26100539d5fb9f494c789f4d";
+      var s = document.getElementsByTagName("script")[0];
+      s.parentNode.insertBefore(hm, s);
+    })();
     </script>
+</head>
+<body>
+<a class="skip" href="#main-content">跳到主要内容</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="logo" href="index.zh-CN.html"><img src="assets/abu-avatar-120.png" width="30" height="30" alt="">Abu 阿布</a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="index.zh-CN.html#preview">预览</a>
+      <a href="index.zh-CN.html#abilities">能力</a>
+      <a href="index.zh-CN.html#scenes">场景</a>
+      <a href="index.zh-CN.html#tech">架构</a>
+      <a href="enterprise.zh-CN.html" aria-current="page" data-new>企业版</a>
+      <a href="platform.zh-CN.html" data-new>开放平台</a>
+      <a href="docs.zh-CN.html">文档</a>
+      <a href="community.zh-CN.html">社区</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="nav-lang" href="enterprise.html" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">EN</a>
+      <a class="btn btn-line btn-sm" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-fill btn-sm" href="#contact">预约演示</a>
+    </div>
+  </div>
+</header>
+
+<main id="main-content">
+
+  <div class="wrap e-hero">
+    <span class="e-tag fade" style="animation-delay: 500ms"><b></b>Abu Enterprise · 私有部署 · 按席位授权</span>
+    <h1 class="h1">
+      <span class="rise"><span>全员用 AI 提效<span class="punct">，</span></span></span>
+      <span class="rise"><span>企业把成本、数据和风险管起来</span></span>
+    </h1>
+    <p class="lead fade" style="animation-delay: 420ms">企业版把模型入口、知识库权限、策略审计和用量预算收进一个私有控制台。谁在用、用了多少、能访问什么，管理员都查得到。</p>
+    <div class="actions fade" style="animation-delay: 520ms">
+      <a class="btn btn-fill" href="#contact">预约演示</a>
+      <a class="btn btn-line" href="#comparison">查看版本对比</a>
+    </div>
+    <div class="e-points fade" style="animation-delay: 620ms">
+      <div class="e-point"><span class="n">a</span><h3 class="h3">统一网关</h3><p class="small">员工接触不到真实的模型 Key，调用都经过企业自己的网关。</p></div>
+      <div class="e-point"><span class="n">b</span><h3 class="h3">按部门管控</h3><p class="small">每个部门有自己的预算、限速、可用模型和资源授权。</p></div>
+      <div class="e-point"><span class="n">c</span><h3 class="h3">企业知识库</h3><p class="small">企业、部门、个人三级知识库，阿布回答时可以检索和引用。</p></div>
+      <div class="e-point"><span class="n">d</span><h3 class="h3">私有部署</h3><p class="small">控制台、审计记录和治理数据都部署在企业自己的环境里。</p></div>
+    </div>
+  </div>
+
+  <section class="pad wrap" id="why">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">为什么需要企业版</h2>
+      <p class="lead">员工都在用 AI，企业需要能管理 AI。AI 进入团队之后，企业会遇到四个管理问题：成本、权限、知识、风险。</p>
+    </div>
+    <div>
+      <div class="why-row reveal">
+        <span class="num">1</span>
+        <div class="problem"><h3 class="h3">AI 成本失控</h3><p class="small">员工各自配置模型 Key。谁在用、用了多少、哪个部门超出预算，企业很难说清楚。</p></div>
+        <div class="answer"><span class="eyebrow">企业版做法</span><p>模型调用统一经过企业网关。管理员按部门配置预算、RPM 限速和可用模型范围，在后台查看用量和成本。</p></div>
+      </div>
+      <div class="why-row reveal">
+        <span class="num">2</span>
+        <div class="problem"><h3 class="h3">权限和数据边界不清</h3><p class="small">模型、知识库、Skill、MCP 和文件访问分散在每个人的配置里，企业很难按组织规则统一约束。</p></div>
+        <div class="answer"><span class="eyebrow">企业版做法</span><p>管理员通过组织、部门、角色和策略下发建立边界。客户端在调用工具、Skill、MCP 之前先在本地校验。</p></div>
+      </div>
+      <div class="why-row reveal">
+        <span class="num">3</span>
+        <div class="problem"><h3 class="h3">企业知识用不上</h3><p class="small">制度、FAQ、产品资料、项目文档和会议纪要都存在文件里，AI 没有办法稳定引用企业自己的资料。</p></div>
+        <div class="answer"><span class="eyebrow">企业版做法</span><p>企业知识库支持文档上传、解析、分块、向量检索和全文检索。阿布回答时可以引用来源材料，每次查询都有审计记录。</p></div>
+      </div>
+      <div class="why-row reveal">
+        <span class="num">4</span>
+        <div class="problem"><h3 class="h3">工具来源和风险不可追踪</h3><p class="small">员工自行安装扩展、连接内部系统。来源、权限、凭据、版本和使用记录，企业都难以统一管理。</p></div>
+        <div class="answer"><span class="eyebrow">企业版做法</span><p>Skill 要经过上传、扫描、审核、发布和签名校验。MCP 要经过目录登记、审核、授权和凭据管理。出了问题，管理员可以回头复盘。</p></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="form">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">产品形态</h2>
+      <p class="lead">企业版在 Abu 之上加一层企业治理。员工在桌面端使用 AI，管理员在私有控制台统一配置组织、模型、知识、工具与治理策略。</p>
+    </div>
+    <div class="forms">
+      <article class="form-card staff reveal">
+        <span class="eyebrow">员工侧</span>
+        <h3 class="h3">员工的体验尽量不变</h3>
+        <p>员工仍然在 Abu 桌面端里发起任务、调用工具和使用 Skill。绑定企业之后，客户端使用企业模型、企业知识库和已授权的 Skill，并且向员工展示他自己的用量和审计信息。</p>
+        <div class="pills"><span class="pill">企业绑定</span><span class="pill">企业模型</span><span class="pill">企业知识库</span><span class="pill">企业 Skill</span></div>
+        <div class="shot-frame">
+          <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/b-done-summary-dark-1440.webp 1440w, assets/shots/b-done-summary-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 104px), 640px">
+            <img src="assets/shots/b-done-summary-light.webp" srcset="assets/shots/b-done-summary-light-1440.webp 1440w, assets/shots/b-done-summary-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 104px), 640px" alt="阿布桌面客户端：一条已完成的任务" width="1440" height="900" loading="lazy">
+          </picture>
+        </div>
+      </article>
+      <article class="form-card admin reveal">
+        <span class="eyebrow">管理员侧</span>
+        <h3 class="h3">管理员统一配置和追踪</h3>
+        <p>管理员在控制台里配置部门、角色、模型、预算、知识库、Skill、MCP、策略和审计。组织里每一次 AI 使用都有边界、有记录，可以复盘。</p>
+        <div class="pills"><span class="pill">组织权限</span><span class="pill">成本治理</span><span class="pill">工具审批</span><span class="pill">审计追踪</span></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="capabilities">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">核心企业级能力</h2>
+      <p class="lead">六个模块：身份、成本、知识、扩展、安全和运维。每个模块都写明它解决什么问题、后台实际管理什么。</p>
+    </div>
+    <div class="caps">
+      <article class="cap reveal"><span class="eyebrow">Identity</span><h3 class="h3">身份与组织治理</h3><p class="small">企业里的组织、部门、员工、角色和登录方式，都在同一个控制台里管理。</p>
+        <ul><li>密码、Magic Link、OIDC SSO 和桌面端 Device Flow</li><li>组织、部门树、用户、角色和权限矩阵</li><li>邀请、待审批成员、会话和 License 席位管理</li></ul></article>
+      <article class="cap reveal"><span class="eyebrow">Gateway</span><h3 class="h3">模型网关与成本管控</h3><p class="small">分散在员工手里的模型 Key、模型供应商和调用成本，收回到企业这一侧统一治理。</p>
+        <ul><li>LiteLLM 网关，多 Provider 配置，真实 Key 加密托管</li><li>部门预算、RPM 限流、模型白名单和连接测试</li><li>按用户、部门、模型统计 Token、费用和调用情况</li></ul></article>
+      <article class="cap reveal"><span class="eyebrow">Knowledge</span><h3 class="h3">企业知识库</h3><p class="small">企业文档入库之后，Abu 可以检索它、引用它，每次查询都留有审计记录。</p>
+        <ul><li>支持 PDF、Word、HTML、Markdown 和纯文本入库</li><li>pgvector 向量检索 + BM25 全文检索 + RRF 融合排序</li><li>企业、部门、个人知识库作用域和 ACL 授权</li></ul></article>
+      <article class="cap reveal"><span class="eyebrow">Extensions</span><h3 class="h3">Skill 与 MCP 可信扩展</h3><p class="small">企业内部的能力和外部工具连接，都可以发布、授权、验签和追踪。</p>
+        <ul><li>Skill 上传、manifest 解析、安全扫描、审核和发布</li><li>Skill ACL、签名校验和客户端安装记录</li><li>MCP 目录同步、审核、ACL 和授权凭据获取</li></ul></article>
+      <article class="cap reveal"><span class="eyebrow">Policy</span><h3 class="h3">策略安全与本地执行</h3><p class="small">组织级和部门级的策略下发到客户端，客户端在关键动作发生之前拦截或者要求确认。</p>
+        <ul><li>工具黑名单、工具二次确认、Skill / MCP 黑名单</li><li>文件路径白名单和黑名单</li><li>企业策略 Hook 在本地工具调用之前执行</li></ul></article>
+      <article class="cap reveal"><span class="eyebrow">Ops</span><h3 class="h3">审计、透明度与运维</h3><p class="small">管理员看得到治理结果，员工也看得到企业记录了自己的哪些数据和用量。</p>
+        <ul><li>管理操作审计、敏感字段脱敏、用量与成本看板</li><li>员工个人透明度页：资料、Token、审计、用量</li><li>质量反馈、诊断日志、诊断包和自托管观测入口</li></ul></article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="deploy">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">部署与交付</h2>
+      <p class="lead">企业版从单机私有部署起步，控制台单独部署。客户端的企业能力通过企业构建和闭源模块交付，私有模块不会进入公开的 Release。</p>
+    </div>
+    <div class="spec">
+      <div class="spec-row reveal"><span class="eyebrow">交付形态</span><span class="spec-value">企业控制台私有部署</span><span class="spec-detail">标准单机部署包含 Console、Postgres / pgvector、LiteLLM、Nginx、Redis、MinIO 等组件，可以按客户环境启用观测和知识库增强能力。</span></div>
+      <div class="spec-row reveal"><span class="eyebrow">适用规模</span><span class="spec-value">50 到 2000 席位</span><span class="spec-detail">POC 和 50–500 人的团队可以从默认配置开始；500–2000 人建议调整数据库、网关和观测组件的资源；规模更大时按高可用方案另行设计。</span></div>
+      <div class="spec-row reveal"><span class="eyebrow">合规适配</span><span class="spec-value">为信创环境预留了适配空间</span><span class="spec-detail">数据库层尽量只使用标准 Postgres 能力，镜像支持 amd64 / arm64；国产数据库、CPU 和内网模型可以按真实客户环境做适配验证。</span></div>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="comparison">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">开源版与企业版</h2>
+      <p class="lead">两个版本的能力内核一致，企业版额外提供组织级治理。开源版适合个人和小团队自由使用；企业版适合需要统一管理成本、权限、知识、扩展和审计的组织。</p>
+    </div>
+    <div class="versions">
+      <article class="version oss reveal"><span class="eyebrow">开源版</span><h3 class="h3">一个人的全功能 AI 办公助手</h3><p class="small">桌面应用，本地优先，使用自己的模型 Key 和本地配置，适合个人用户、开发者和小团队试用。</p><span class="terms">免费开源 · 本地使用 · 自主管理</span></article>
+      <article class="version ent reveal"><span class="eyebrow">企业版</span><h3 class="h3">一支团队的可治理 AI 平台</h3><p class="small">员工继续用 Abu，企业在私有控制台里统一管理人员、模型、预算、知识、扩展、策略和审计。</p><span class="terms">私有部署 · 按席位授权 · 可 POC</span></article>
+    </div>
+    <div class="compare" role="table" aria-label="开源版与企业版能力对比">
+      <div class="compare-head eyebrow" role="row"><span role="columnheader">能力维度</span><span role="columnheader">开源版</span><span role="columnheader">企业版</span></div>
+
+      <div class="compare-group eyebrow">核心办公能力：两个版本使用同一个 Abu 客户端内核</div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">AI 桌面办公助手</span><div class="cell-v" role="cell" data-label="开源版"><span class="state">完整可用</span><span class="small">对话、任务执行、工具调用、Skill 使用和本地工作区协作。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">完整继承</span><span class="small">同一个桌面体验，加上企业绑定和治理能力。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">本地优先</span><div class="cell-v" role="cell" data-label="开源版"><span class="state">支持</span><span class="small">对话、记忆、文件和项目数据默认保留在本机。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">企业配置、授权、审计和用量进入私有控制台。</span></div></div>
+
+      <div class="compare-group eyebrow">企业治理能力：企业版新增</div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">身份与登录</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">没有企业账号、统一登录和成员审批。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">密码、Magic Link、OIDC SSO、客户端 Device Flow 和成员审批。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">组织、部门、角色权限</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">没有组织级的权限体系。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">组织、部门树、用户、角色、权限矩阵和资源 ACL。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">模型 Key 与网关</span><div class="cell-v" role="cell" data-label="开源版"><span class="state">个人管理</span><span class="small">用户自己填写模型 Key，调用和账单由个人负责。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">统一管理</span><span class="small">真实 Key 加密托管，客户端通过企业网关调用。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">预算、限速和模型白名单</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">没有组织级的集中管控。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">按部门配置预算、RPM 限速和可用模型范围。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">用量与成本看板</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">没有企业集中统计。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">按用户、部门和模型统计 Token、调用量与成本。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">企业知识库</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">只使用本地上下文和个人记忆。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">企业、部门、个人知识库，支持混合检索、来源引用和 ACL。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">企业 Skill 市场</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">用户只能自己安装和维护 Skill。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">上传、扫描、审核、发布、授权、验签和安装记录。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">企业 MCP 管理</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">用户只能自己配置本地 MCP 服务。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">统一登记、同步、审核、授权和凭据管理。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">企业安全策略</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">只有个人权限模式和本机安全设置。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">工具黑名单、二次确认、扩展黑名单和文件路径策略。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">审计、透明度和诊断</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不支持</span><span class="small">没有企业集中审计和诊断。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">管理审计、个人透明度、质量反馈、日志和诊断包。</span></div></div>
+      <div class="compare-row" role="row"><span class="dim" role="cell">部署、授权和品牌</span><div class="cell-v" role="cell" data-label="开源版"><span class="state no">不包含</span><span class="small">只提供开源仓库和公开版本。</span></div><div class="cell-v" role="cell" data-label="企业版"><span class="state">支持</span><span class="small">私有控制台、企业构建、License、Logo / 主色和受控交付。</span></div></div>
+    </div>
+    <p class="small compare-note">注：企业 MCP 客户端目前提供目录浏览和授权凭据获取，方便企业把可用的工具和凭据范围统一管理起来。</p>
+  </section>
+
+  <div class="finale" id="contact" data-night>
+    <div class="aurora"></div>
+    <div class="wrap inner">
+      <span class="eyebrow">PoC / Demo</span>
+      <h2 class="h2 reveal">想看看企业版怎么接入你的团队？</h2>
+      <p class="lead">扫码添加阿布作者 Shawn 的微信，备注「企业版」，约一次演示或者小范围 POC：确认部署方式、登录方式、模型供应商、知识库样本和第一批企业 Skill。</p>
+      <figure class="qr reveal">
+        <img src="assets/wechat-qr.png" width="448" height="448" alt="阿布作者 Shawn 的微信二维码" loading="lazy">
+        <figcaption class="eyebrow">微信扫一扫 · 备注 企业版</figcaption>
+      </figure>
+      <div class="actions reveal">
+        <a class="btn btn-line" href="docs.zh-CN.html">阅读使用文档</a>
+      </div>
+    </div>
+    <div class="wrap foot"><span>© 2026 Abu 阿布</span><a href="index.zh-CN.html">首页</a><a href="docs.zh-CN.html">文档</a><a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a><a href="enterprise.html" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">English</a></div>
+    <div class="wordmark" aria-hidden="true"><span class="it">Abu</span> 阿布</div>
+  </div>
+
+</main>
+
+<script src="site.js"></script>
 </body>
 </html>

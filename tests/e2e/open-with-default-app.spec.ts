@@ -1,12 +1,13 @@
 /**
  * Opening a file with its default application, in the real shell.
  *
- * The main process decides which local paths reach `shell.openPath`
- * (electron/openPathPolicy.cjs). Its own tests walk the rules; what they cannot
- * reach is the path a request really takes: the renderer's bridge, the
- * `tauri:invoke` channel, the desktop host's dispatch, and the file card that
- * reads the answer. This launches the actual app with the system opener
- * replaced by a recorder, so nothing is opened on the machine running it.
+ * The main process decides which local paths reach `shell.openPath` and which
+ * URLs reach `shell.openExternal` (electron/openPathPolicy.cjs). Its own tests
+ * walk the rules; what they cannot reach is the path a request really takes:
+ * the renderer's bridge, the `tauri:invoke` channel, the desktop host's
+ * dispatch, and the file card that reads the answer. This launches the actual
+ * app with the system opener replaced by a recorder, so nothing is opened on
+ * the machine running it.
  */
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
@@ -26,6 +27,8 @@ import { CHAT_PLACEHOLDER, READY_TIMEOUT, startOpenAiMock, waitForApp, type Open
 import { persistedStoreVersion } from './storeVersions';
 
 const REFUSAL = 'open-refused:runs-by-default';
+const SCHEME_REFUSAL = 'open-refused:url-scheme';
+const MACOS_SETTINGS_URL = 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture';
 const SYMLINKS = process.platform !== 'win32';
 const PROJECT_NAME = 'E2E 打开文件';
 const FINAL_TEXT = '文件都在这里。';
@@ -127,6 +130,34 @@ test.describe('open with the default application', () => {
       opened: [files.notes, files.dir],
       revealed: [],
       external: ['https://example.com/setup.command'],
+    });
+  });
+
+  test('the main process hands a URL to the system only when its scheme is allowed', async () => {
+    dataRoot = createElectronDataRoot();
+    const launched = await launchAbuElectron(dataRoot);
+    app = launched.app;
+    await recordSystemOpener(app);
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await page.waitForLoadState('domcontentloaded');
+
+    const allowed = ['https://example.com/docs', 'http://127.0.0.1:11434/', 'mailto:someone@example.com'];
+    const refused = ['smb://fileserver/share', 'vscode://file/etc/hosts', 'ms-msdt:/id PCWDiagnostic', 'chrome://extensions', 'javascript:alert(1)'];
+    (process.platform === 'darwin' ? allowed : refused).push(MACOS_SETTINGS_URL);
+
+    for (const url of allowed) {
+      expect(await invokeFromPage(page, 'plugin:opener|open_url', { url })).toBe('ok');
+      expect(await invokeFromPage(page, 'plugin:shell|open', { path: url })).toBe('ok');
+    }
+    for (const url of refused) {
+      expect(await invokeFromPage(page, 'plugin:opener|open_url', { url })).toContain(SCHEME_REFUSAL);
+      expect(await invokeFromPage(page, 'plugin:shell|open', { path: url })).toContain(SCHEME_REFUSAL);
+    }
+
+    expect(await openerRecord(app)).toEqual({
+      opened: [],
+      revealed: [],
+      external: allowed.flatMap((url) => [url, url]),
     });
   });
 

@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <script>
+    (function () {
+      try {
+        var pref = localStorage.getItem('abu-lang');
+        var target = pref || ((navigator.language || 'en').toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en');
+        if (target === 'en') location.replace('platform.html');
+      } catch (e) {}
+    })();
+    </script>
+    <link rel="alternate" hreflang="en" href="platform.html">
+    <link rel="alternate" hreflang="zh-CN" href="platform.zh-CN.html">
+    <link rel="alternate" hreflang="x-default" href="platform.html">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#1c1c1e" media="(prefers-color-scheme: dark)">
+    <title>Abu 开放平台 - 把行业经验做成一个应用</title>
+    <meta name="description" content="应用是为一类工作准备好的阿布：自己的首页、场景、专家团和导航。你写一个应用目录，把市场地址交给客户，客户点「使用」就能开始工作。">
+    <link rel="icon" href="assets/abu-avatar-120.png" type="image/png">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400.css">
+    <link rel="stylesheet" href="assets/fonts/instrument-serif/400-italic.css">
+    <link rel="stylesheet" href="assets/fonts/noto-serif-sc/500.css">
+    <link rel="stylesheet" href="site.css">
+    <link rel="stylesheet" href="enterprise.css">
+    <link rel="stylesheet" href="home.css">
+    <link rel="stylesheet" href="platform.css">
+    <!-- Baidu Tongji -->
+    <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?01567fba26100539d5fb9f494c789f4d";
+      var s = document.getElementsByTagName("script")[0];
+      s.parentNode.insertBefore(hm, s);
+    })();
+    </script>
+</head>
+<body>
+<a class="skip" href="#main-content">跳到主要内容</a>
+
+<header class="nav" id="nav">
+  <div class="wrap nav-inner">
+    <a class="logo" href="index.zh-CN.html"><img src="assets/abu-avatar-120.png" width="30" height="30" alt="">Abu 阿布</a>
+    <nav class="nav-links" aria-label="主导航">
+      <a href="index.zh-CN.html#preview">预览</a>
+      <a href="index.zh-CN.html#abilities">能力</a>
+      <a href="index.zh-CN.html#scenes">场景</a>
+      <a href="index.zh-CN.html#tech">架构</a>
+      <a href="enterprise.zh-CN.html" data-new>企业版</a>
+      <a href="platform.zh-CN.html" aria-current="page" data-new>开放平台</a>
+      <a href="docs.zh-CN.html">文档</a>
+      <a href="community.zh-CN.html">社区</a>
+    </nav>
+    <div class="nav-cta">
+      <a class="nav-lang" href="platform.html" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">EN</a>
+      <a class="btn btn-line btn-sm" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-fill btn-sm" href="index.zh-CN.html#start">下载</a>
+    </div>
+  </div>
+</header>
+
+<main id="main-content">
+
+  <div class="wrap e-hero">
+    <span class="e-tag fade" style="animation-delay: 500ms"><b></b>Abu 开放平台 · 应用 · Abu 0.51.0 起</span>
+    <h1 class="h1">
+      <span class="rise"><span>把行业经验做成一个应用</span></span>
+    </h1>
+    <p class="lead fade" style="animation-delay: 420ms">你写一个应用目录，客户的阿布里就多出一套为这类工作准备好的首页、场景和专家团。</p>
+    <div class="actions fade" style="animation-delay: 520ms">
+      <a class="btn btn-fill" href="docs.zh-CN.html#app-spec">阅读应用规范</a>
+      <a class="btn btn-line" href="index.zh-CN.html#start">下载阿布</a>
+    </div>
+    <div class="e-points fade" style="animation-delay: 620ms">
+      <div class="e-point"><span class="n">a</span><h3 class="h3">你写一个应用目录</h3><p class="small">里面是一份应用文件和几张图片，写明首页、场景和每个场景交给谁。</p></div>
+      <div class="e-point"><span class="n">b</span><h3 class="h3">其余由阿布提供</h3><p class="small">对话、权限确认、读写文件、交付文件，应用直接使用阿布已有的这些能力。</p></div>
+      <div class="e-point"><span class="n">c</span><h3 class="h3">客户点一下就能用</h3><p class="small">客户点「使用」，应用出现在应用切换器里，缺少的插件在添加应用时一起安装。</p></div>
+      <div class="e-point"><span class="n">d</span><h3 class="h3">交付一个市场地址</h3><p class="small">一个 git 仓库或者一个 zip 地址。新版本发布后，客户那边显示「更新」。</p></div>
+    </div>
+  </div>
+
+  <section class="pad wrap" id="anatomy">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">应用由什么组成</h2>
+      <p class="lead">应用是为一类工作准备好的阿布。下面是随阿布附带的「招聘」应用，图上标出了这张画面里有的五处；「招聘」没有用到单独的专家、技能和应用网页，画面里没有它们。</p>
+    </div>
+    <div class="anatomy">
+      <figure class="anatomy-shot reveal">
+        <div class="shot-frame">
+          <div class="lights" aria-hidden="true"><i></i><i></i><i></i></div>
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/p-home-recruiting-scene-dark-1440.webp 1440w, assets/shots/p-home-recruiting-scene-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 760px">
+            <img src="assets/shots/p-home-recruiting-scene-light.webp" srcset="assets/shots/p-home-recruiting-scene-light-1440.webp 1440w, assets/shots/p-home-recruiting-scene-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 760px" alt="「招聘」应用的首页：顶部是应用的名称和一句话，下面是几组场景，展开的场景里有三条示例问题，左侧是应用的导航" width="1440" height="900" loading="lazy">
+          </picture>
+          <span class="mark" data-mark="home" aria-hidden="true">1</span>
+          <span class="mark" data-mark="scene" aria-hidden="true">2</span>
+          <span class="mark" data-mark="template" aria-hidden="true">3</span>
+          <span class="mark" data-mark="team" aria-hidden="true">4</span>
+          <span class="mark" data-mark="nav" aria-hidden="true">5</span>
+        </div>
+      </figure>
+      <ol class="parts">
+        <li class="part reveal"><span class="part-no">1</span><h3 class="h3">首页</h3><p class="small">应用打开后的第一个画面，写着应用的名称和一句话。</p></li>
+        <li class="part reveal"><span class="part-no">2</span><h3 class="h3">场景</h3><p class="small">首页上的一件事，例如「写 JD」。每个场景带 3 到 6 条示例问题（图上的 3），用户点一条，文字就填进输入框。</p></li>
+        <li class="part reveal"><span class="part-no">4</span><h3 class="h3">专家团</h3><p class="small">一个场景可以交给专家团，由几位专家分工完成。「招聘」的场景都交给招聘专家团，场景卡片上写着「由 招聘专家团 负责」。</p></li>
+        <li class="part reveal"><span class="part-no"></span><h3 class="h3">专家</h3><p class="small">一个场景也可以交给一位专家。</p></li>
+        <li class="part reveal"><span class="part-no"></span><h3 class="h3">技能</h3><p class="small">一个场景还可以交给一项技能。专家团、专家、技能都装在插件里，应用只写明用到哪些。</p></li>
+        <li class="part reveal"><span class="part-no">5</span><h3 class="h3">导航</h3><p class="small">左侧的菜单按应用的定义显示。</p></li>
+        <li class="part reveal"><span class="part-no"></span><h3 class="h3">应用网页</h3><p class="small">客户已有的网页可以放进导航，在阿布的主区域打开。</p></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="apps">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">阿布附带的应用</h2>
+      <p class="lead">这三个应用随阿布一起安装，应用文件都在仓库的官方市场目录里，可以照着写。</p>
+    </div>
+    <div class="app-shots">
+      <article class="app-shot reveal">
+        <div class="shot-frame">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/p-home-recruiting-dark-1440.webp 1440w, assets/shots/p-home-recruiting-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px">
+            <img src="assets/shots/p-home-recruiting-light.webp" srcset="assets/shots/p-home-recruiting-light-1440.webp 1440w, assets/shots/p-home-recruiting-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px" alt="「招聘」应用的首页" width="1440" height="900" loading="lazy">
+          </picture>
+        </div>
+        <h3 class="h3">招聘</h3>
+        <p class="small">写 JD、筛简历、备面试、查行情</p>
+        <div class="pills"><span class="pill">写 JD</span><span class="pill">简历排序</span><span class="pill">评估表与记录</span></div>
+      </article>
+      <article class="app-shot reveal">
+        <div class="shot-frame">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/p-home-finance-dark-1440.webp 1440w, assets/shots/p-home-finance-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px">
+            <img src="assets/shots/p-home-finance-light.webp" srcset="assets/shots/p-home-finance-light-1440.webp 1440w, assets/shots/p-home-finance-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px" alt="「财务对账」应用的首页" width="1440" height="900" loading="lazy">
+          </picture>
+        </div>
+        <h3 class="h3">财务对账</h3>
+        <p class="small">对流水、查差异、出报表</p>
+        <div class="pills"><span class="pill">月度费用对账</span><span class="pill">报销单整理</span><span class="pill">月度费用报表</span></div>
+      </article>
+      <article class="app-shot reveal">
+        <div class="shot-frame">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/shots/p-home-content-dark-1440.webp 1440w, assets/shots/p-home-content-dark.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px">
+            <img src="assets/shots/p-home-content-light.webp" srcset="assets/shots/p-home-content-light-1440.webp 1440w, assets/shots/p-home-content-light.webp 2880w" sizes="(max-width: 900px) calc(100vw - 32px), 400px" alt="「内容创作」应用的首页" width="1440" height="900" loading="lazy">
+          </picture>
+        </div>
+        <h3 class="h3">内容创作</h3>
+        <p class="small">从选题到成稿、配图和发布物料</p>
+        <div class="pills"><span class="pill">写一篇推文</span><span class="pill">封面与信息图</span><span class="pill">一组宣传文案</span></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="steps">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">交付步骤</h2>
+    </div>
+    <div class="stack">
+      <article class="stack-card">
+        <div class="copy"><span class="num">1</span><h3 class="h3">写一个应用目录</h3><p>目录里是一份应用文件 <code>app.json</code> 和几张图片。想先试一个想法，可以在阿布里点「创建应用」，用对话做一个只留在这台电脑上的应用。</p></div>
+        <div class="art"><figure class="code-card"><figcaption class="eyebrow">「招聘」应用的 app.json（节选）</figcaption><pre><code>{
+  "name": "recruiting",
+  "version": "1.0.0",
+  "interface": {
+    "displayName": "招聘",
+    "shortDescription": "写 JD、筛简历、备面试、查行情"
+  },
+  "defaultRun": { "team": "builtin-team:recruiting" },
+  "home": {
+    "modes": { "items": [ {
+      "title": { "zh-CN": "岗位准备" },
+      "scenes": [ {
+        "title": { "zh-CN": "写 JD" },
+        "templates": [
+          { "title": { "zh-CN": "高级前端 JD" }, "prompt": { … } },
+          …
+        ]
+      } ]
+    } ] }
+  }
+}</code></pre></figure></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">2</span><h3 class="h3">在自己的阿布里预览</h3><p>在应用市场点「从文件夹添加」，选中应用目录。确认页列出每个场景交给谁、需要一起安装的插件和要填写的连接器配置。应用文件写错了，错误信息给出那个字段的完整路径。</p></div>
+        <div class="art"><img class="win-confirm" src="assets/shots/platform-step-preview.webp" width="672" height="554" alt="从文件夹添加示例应用「店铺运营」后的确认页：列出三个场景各自交给谁、需要一起安装的插件「店铺助手」和要填写的连接器配置" loading="lazy"></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">3</span><h3 class="h3">把市场地址交给客户</h3><p>把市场目录放进 git 仓库，或者打成 zip 放在能下载的地址上。客户在应用市场点「添加市场」填入地址，找到应用点「使用」。</p></div>
+        <div class="art"><img class="win-market" src="assets/shots/platform-step-deliver.webp" width="768" height="590" alt="应用市场里的「添加市场」窗口，地址栏里填着一个市场地址" loading="lazy"></div>
+      </article>
+      <article class="stack-card">
+        <div class="copy"><span class="num">4</span><h3 class="h3">提高版本号，客户那边显示「更新」</h3><p>你更新仓库或者压缩包。客户打开应用市场，应用旁边显示「更新」，步骤和第一次点「使用」相同。</p></div>
+        <div class="art"><img class="win-market" src="assets/shots/platform-step-update.webp" width="768" height="590" alt="应用市场里，示例应用「店铺运营」旁边显示「更新」" loading="lazy"></div>
+      </article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="connect">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">接上客户的系统</h2>
+    </div>
+    <div class="connect">
+      <article class="cell reveal"><span class="cell-name">连接器</span><h3 class="h3">客户的业务系统通过连接器接入</h3><p class="small">连接器装在插件里。应用写明需要哪些连接器，客户还没有连接时，首页顶部提示「去连接」。</p></article>
+      <article class="cell reveal"><span class="cell-name">应用网页</span><h3 class="h3">客户已有的网页直接放进应用</h3><p class="small">把网址写进导航，网页在阿布的主区域打开。它只能停留在应用声明的网站上，跳到别处的链接由系统浏览器打开。</p></article>
+    </div>
+  </section>
+
+  <section class="pad wrap" id="official">
+    <div class="head reveal">
+      <span class="eyebrow sec-no" aria-hidden="true"></span>
+      <h2 class="h2">提交到官方应用市场</h2>
+    </div>
+    <div class="spec">
+      <div class="spec-row reveal"><span class="eyebrow">怎么提交</span><span class="spec-value">向 Abu 仓库提交应用条目</span><span class="spec-detail">人工审核通过后，应用随下一个 Abu 版本进入官方应用市场，所有用户都能在应用市场里看到。提交规则在<a class="text-link" href="docs.zh-CN.html#app-spec">应用规范</a>的第 10 节。</span></div>
+    </div>
+  </section>
+
+  <div class="finale" id="contact" data-night>
+    <div class="aurora"></div>
+    <div class="wrap inner">
+      <span class="eyebrow">FDE / Partners</span>
+      <h2 class="h2 reveal">有项目想用阿布交付？</h2>
+      <p class="lead">扫码添加阿布作者 Shawn 的微信，备注「开放平台」，说说你的行业和客户。</p>
+      <figure class="qr reveal">
+        <img src="assets/wechat-qr.png" width="448" height="448" alt="阿布作者 Shawn 的微信二维码" loading="lazy">
+        <figcaption class="eyebrow">微信扫一扫 · 备注 开放平台</figcaption>
+      </figure>
+      <div class="actions reveal">
+        <a class="btn btn-fill" href="docs.zh-CN.html#app-spec">阅读应用规范</a>
+        <a class="btn btn-line" href="index.zh-CN.html#start">下载阿布</a>
+        <a class="btn btn-line" href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub 仓库</a>
+      </div>
+    </div>
+    <div class="wrap foot"><span>© 2026 Abu 阿布</span><a href="index.zh-CN.html">首页</a><a href="docs.zh-CN.html">文档</a><a href="https://github.com/PM-Shawn/Abu-Cowork" target="_blank" rel="noopener">GitHub</a><a href="platform.html" lang="en" onclick="try{localStorage.setItem('abu-lang','en')}catch(e){}">English</a></div>
+    <div class="wordmark" aria-hidden="true"><span class="it">Abu</span> 阿布</div>
+  </div>
+
+</main>
+
+<script src="site.js"></script>
+</body>
+</html>

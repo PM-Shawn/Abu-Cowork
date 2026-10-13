@@ -246,13 +246,17 @@ mod windows {
     use std::thread;
     use windows_sys::Win32::Foundation::{
         CloseHandle, DuplicateHandle, GetHandleInformation, GetLastError, DUPLICATE_SAME_ACCESS,
-        HANDLE, HANDLE_FLAG_INHERIT, INVALID_HANDLE_VALUE, WAIT_FAILED,
+        GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, HANDLE, HANDLE_FLAG_INHERIT,
+        INVALID_HANDLE_VALUE, WAIT_FAILED,
     };
     use windows_sys::Win32::Security::{
-        CreateRestrictedToken, CreateWellKnownSid, WinBuiltinAdministratorsSid,
-        WinBuiltinBackupOperatorsSid, WinBuiltinPowerUsersSid, DISABLE_MAX_PRIVILEGE,
-        SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE,
-        TOKEN_QUERY,
+        AddAccessAllowedAce, CreateRestrictedToken, CreateWellKnownSid, GetLengthSid,
+        GetTokenInformation, InitializeAcl, SetTokenInformation, TokenDefaultDacl, TokenGroups,
+        TokenOwner, TokenUser, WinBuiltinAdministratorsSid, WinBuiltinBackupOperatorsSid,
+        WinBuiltinPowerUsersSid, WinLocalSystemSid, ACCESS_ALLOWED_ACE, ACL, ACL_REVISION,
+        DISABLE_MAX_PRIVILEGE, PSID, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES,
+        TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE,
+        TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_QUERY, TOKEN_USER,
     };
     use windows_sys::Win32::Storage::FileSystem::{
         CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_READ, FILE_SHARE_WRITE,
@@ -452,12 +456,138 @@ mod windows {
         Ok([stdin, stdout, stderr])
     }
 
+    const SE_GROUP_LOGON_ID: u32 = 0xC000_0000;
+
+    fn token_information(
+        token: HANDLE,
+        class: TOKEN_INFORMATION_CLASS,
+        label: &str,
+    ) -> Result<Vec<usize>, String> {
+        let mut bytes = 0u32;
+        unsafe {
+            let _ = GetTokenInformation(token, class, null_mut(), 0, &mut bytes);
+        }
+        if bytes == 0 {
+            return Err(format!(
+                "GetTokenInformation({label}) sizing failed: {}",
+                unsafe { GetLastError() }
+            ));
+        }
+        let mut storage = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+        if unsafe {
+            GetTokenInformation(token, class, storage.as_mut_ptr().cast(), bytes, &mut bytes)
+        } == 0
+        {
+            return Err(format!("GetTokenInformation({label}) failed: {}", unsafe {
+                GetLastError()
+            }));
+        }
+        Ok(storage)
+    }
+
+    fn logon_sid(token_groups: &[usize]) -> Option<PSID> {
+        let groups = token_groups.as_ptr().cast::<TOKEN_GROUPS>();
+        let count = unsafe { (*groups).GroupCount } as usize;
+        let first = unsafe { std::ptr::addr_of!((*groups).Groups) }.cast::<SID_AND_ATTRIBUTES>();
+        (0..count)
+            .map(|index| unsafe { *first.add(index) })
+            .find(|group| group.Attributes & SE_GROUP_LOGON_ID == SE_GROUP_LOGON_ID)
+            .map(|group| group.Sid)
+    }
+
+    // New objects remain accessible to their creator after elevated groups
+    // become deny-only. The logon session receives only read/execute access.
+    fn apply_user_default_security(token: HANDLE) -> Result<(), String> {
+        let user_storage = token_information(token, TokenUser, "TokenUser")?;
+        let user_sid = unsafe { (*user_storage.as_ptr().cast::<TOKEN_USER>()).User.Sid };
+        let groups_storage = token_information(token, TokenGroups, "TokenGroups")?;
+
+        let mut system_sid = [0u8; SECURITY_MAX_SID_SIZE as usize];
+        let mut system_sid_bytes = system_sid.len() as u32;
+        if unsafe {
+            CreateWellKnownSid(
+                WinLocalSystemSid,
+                null_mut(),
+                system_sid.as_mut_ptr().cast(),
+                &mut system_sid_bytes,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "CreateWellKnownSid(LocalSystem) failed: {}",
+                unsafe { GetLastError() }
+            ));
+        }
+
+        let mut grants = vec![
+            (user_sid, GENERIC_ALL),
+            (system_sid.as_mut_ptr().cast::<c_void>(), GENERIC_ALL),
+        ];
+        if let Some(sid) = logon_sid(&groups_storage) {
+            grants.push((sid, GENERIC_READ | GENERIC_EXECUTE));
+        }
+        let acl_bytes = size_of::<ACL>()
+            + grants
+                .iter()
+                .map(|(sid, _)| {
+                    size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>()
+                        + unsafe { GetLengthSid(*sid) } as usize
+                })
+                .sum::<usize>();
+        let mut acl_storage = vec![0usize; acl_bytes.div_ceil(size_of::<usize>())];
+        let acl = acl_storage.as_mut_ptr().cast::<ACL>();
+        if unsafe { InitializeAcl(acl, acl_bytes as u32, ACL_REVISION) } == 0 {
+            return Err(format!("InitializeAcl failed: {}", unsafe {
+                GetLastError()
+            }));
+        }
+        for (sid, access) in &grants {
+            if unsafe { AddAccessAllowedAce(acl, ACL_REVISION, *access, *sid) } == 0 {
+                return Err(format!("AddAccessAllowedAce failed: {}", unsafe {
+                    GetLastError()
+                }));
+            }
+        }
+
+        let owner = TOKEN_OWNER { Owner: user_sid };
+        if unsafe {
+            SetTokenInformation(
+                token,
+                TokenOwner,
+                (&owner as *const TOKEN_OWNER).cast(),
+                size_of::<TOKEN_OWNER>() as u32,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "SetTokenInformation(TokenOwner) failed: {}",
+                unsafe { GetLastError() }
+            ));
+        }
+        let default_dacl = TOKEN_DEFAULT_DACL { DefaultDacl: acl };
+        if unsafe {
+            SetTokenInformation(
+                token,
+                TokenDefaultDacl,
+                (&default_dacl as *const TOKEN_DEFAULT_DACL).cast(),
+                size_of::<TOKEN_DEFAULT_DACL>() as u32,
+            )
+        } == 0
+        {
+            return Err(format!(
+                "SetTokenInformation(TokenDefaultDacl) failed: {}",
+                unsafe { GetLastError() }
+            ));
+        }
+        Ok(())
+    }
+
     fn create_restricted_primary_token() -> Result<OwnedHandle, String> {
         let mut process_token = null_mut();
         let opened = unsafe {
             OpenProcessToken(
                 GetCurrentProcess(),
-                TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY,
+                TOKEN_ASSIGN_PRIMARY | TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ADJUST_DEFAULT,
                 &mut process_token,
             )
         };
@@ -517,7 +647,9 @@ mod windows {
                 GetLastError()
             }));
         }
-        OwnedHandle::new(restricted_token)
+        let restricted_token = OwnedHandle::new(restricted_token)?;
+        apply_user_default_security(restricted_token.raw())?;
+        Ok(restricted_token)
     }
 
     fn create_kill_on_close_job() -> Result<OwnedHandle, String> {
@@ -726,6 +858,129 @@ mod windows {
             thread::sleep(std::time::Duration::from_millis(25));
         }
         Ok(exit_code as i32)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use windows_sys::Win32::Foundation::{GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ};
+        use windows_sys::Win32::Security::{
+            EqualSid, GetAce, GetLengthSid, GetTokenInformation, TokenDefaultDacl, TokenGroups,
+            TokenOwner, TokenUser, WinLocalSystemSid, ACCESS_ALLOWED_ACE, TOKEN_DEFAULT_DACL,
+            TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_OWNER, TOKEN_USER,
+        };
+
+        fn read_token(token: HANDLE, class: TOKEN_INFORMATION_CLASS) -> Vec<usize> {
+            let mut bytes = 0;
+            unsafe { GetTokenInformation(token, class, null_mut(), 0, &mut bytes) };
+            assert!(bytes > 0);
+            let mut storage = vec![0usize; (bytes as usize).div_ceil(size_of::<usize>())];
+            assert_ne!(
+                unsafe {
+                    GetTokenInformation(
+                        token,
+                        class,
+                        storage.as_mut_ptr().cast(),
+                        bytes,
+                        &mut bytes,
+                    )
+                },
+                0
+            );
+            storage
+        }
+
+        fn sid_bytes(sid: *mut c_void) -> Vec<u8> {
+            let bytes = unsafe { GetLengthSid(sid) } as usize;
+            unsafe { std::slice::from_raw_parts(sid.cast::<u8>(), bytes) }.to_vec()
+        }
+
+        fn well_known_sid(kind: i32) -> Vec<u8> {
+            let mut storage = vec![0u8; SECURITY_MAX_SID_SIZE as usize];
+            let mut bytes = storage.len() as u32;
+            assert_ne!(
+                unsafe {
+                    CreateWellKnownSid(kind, null_mut(), storage.as_mut_ptr().cast(), &mut bytes)
+                },
+                0
+            );
+            storage.truncate(bytes as usize);
+            storage
+        }
+
+        fn groups(token: HANDLE) -> Vec<(Vec<u8>, u32)> {
+            let storage = read_token(token, TokenGroups);
+            let groups = storage.as_ptr().cast::<TOKEN_GROUPS>();
+            let count = unsafe { (*groups).GroupCount } as usize;
+            let first =
+                unsafe { std::ptr::addr_of!((*groups).Groups) }.cast::<SID_AND_ATTRIBUTES>();
+            (0..count)
+                .map(|index| {
+                    let group = unsafe { *first.add(index) };
+                    (sid_bytes(group.Sid), group.Attributes)
+                })
+                .collect()
+        }
+
+        #[test]
+        fn restricted_token_owner_and_default_dacl_name_only_user_system_and_logon() {
+            let token = create_restricted_primary_token().unwrap();
+            let user_storage = read_token(token.raw(), TokenUser);
+            let user = unsafe { (*user_storage.as_ptr().cast::<TOKEN_USER>()).User };
+            assert_eq!(
+                user.Attributes & 0x10,
+                0,
+                "token user must not be deny-only"
+            );
+            let owner_storage = read_token(token.raw(), TokenOwner);
+            let owner = unsafe { (*owner_storage.as_ptr().cast::<TOKEN_OWNER>()).Owner };
+            assert_ne!(unsafe { EqualSid(owner, user.Sid) }, 0);
+
+            let storage = read_token(token.raw(), TokenDefaultDacl);
+            let acl = unsafe { (*storage.as_ptr().cast::<TOKEN_DEFAULT_DACL>()).DefaultDacl };
+            assert!(!acl.is_null(), "default DACL must exist");
+            let mut grants = Vec::new();
+            for index in 0..unsafe { (*acl).AceCount } as u32 {
+                let mut ace = null_mut();
+                assert_ne!(unsafe { GetAce(acl, index, &mut ace) }, 0);
+                let ace = ace.cast::<ACCESS_ALLOWED_ACE>();
+                assert_eq!(unsafe { (*ace).Header.AceType }, 0, "ACE must allow access");
+                assert_eq!(unsafe { (*ace).Header.AceFlags }, 0);
+                let sid = unsafe { std::ptr::addr_of!((*ace).SidStart) } as *mut c_void;
+                grants.push((sid_bytes(sid), unsafe { (*ace).Mask }));
+            }
+            let mut expected = vec![
+                (sid_bytes(user.Sid), GENERIC_ALL),
+                (well_known_sid(WinLocalSystemSid), GENERIC_ALL),
+            ];
+            if let Some((sid, _)) = groups(token.raw())
+                .into_iter()
+                .find(|(_, attributes)| attributes & 0xC000_0000 == 0xC000_0000)
+            {
+                expected.push((sid, GENERIC_READ | GENERIC_EXECUTE));
+            }
+            assert_eq!(
+                grants, expected,
+                "default DACL must contain exactly the intended grants"
+            );
+        }
+
+        #[test]
+        fn restricted_token_keeps_elevated_groups_deny_only() {
+            let token = create_restricted_primary_token().unwrap();
+            let groups = groups(token.raw());
+            for kind in [
+                WinBuiltinAdministratorsSid,
+                WinBuiltinPowerUsersSid,
+                WinBuiltinBackupOperatorsSid,
+            ] {
+                let sid = well_known_sid(kind);
+                if let Some((_, attributes)) = groups.iter().find(|(other, _)| *other == sid) {
+                    assert_ne!(attributes & 0x10, 0, "elevated group must be deny-only");
+                    assert_eq!(attributes & 0x6, 0, "elevated group must not be enabled");
+                }
+            }
+        }
     }
 }
 

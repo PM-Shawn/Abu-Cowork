@@ -615,6 +615,9 @@ test('Windows launcher statically wires restricted token and bounded handle inhe
   );
   assert.match(source, /CreateRestrictedToken/);
   assert.match(source, /DISABLE_MAX_PRIVILEGE/);
+  assert.match(source, /TOKEN_ADJUST_DEFAULT/);
+  assert.match(source, /SetTokenInformation\(\s*token,\s*TokenOwner,/);
+  assert.match(source, /SetTokenInformation\(\s*token,\s*TokenDefaultDacl,/);
   assert.match(source, /CreateProcessAsUserW/);
   assert.match(source, /PROC_THREAD_ATTRIBUTE_HANDLE_LIST/);
   assert.match(source, /CreateProcessW\(\s*null\(\),/);

@@ -538,6 +538,14 @@ jobs:
         run: |
           cargo test --manifest-path electron/native-helper/Cargo.toml --bin tauri-transition-reader
 
+      - name: Windows sandbox launcher gates
+        id: windows_sandbox_launcher_gates
+        continue-on-error: true
+        shell: bash
+        run: |
+          cargo test --manifest-path electron/sandbox-launcher/Cargo.toml
+          npm run verify:windows-sandbox
+
       - name: Require all Windows gates
         if: ${{ always() && !cancelled() }}
         shell: bash
@@ -547,6 +555,7 @@ jobs:
           HOST_SECURITY_OUTCOME: ${{ steps.windows_host_security_gates.outcome }}
           ACTIVE_WINDOW_OUTCOME: ${{ steps.windows_active_window_probe.outcome }}
           NATIVE_HELPER_OUTCOME: ${{ steps.windows_native_helper_gates.outcome }}
+          SANDBOX_LAUNCHER_OUTCOME: ${{ steps.windows_sandbox_launcher_gates.outcome }}
         run: |
           failures=()
           for gate in \
@@ -554,7 +563,8 @@ jobs:
             "electron-migration:$ELECTRON_MIGRATION_OUTCOME" \
             "host-security:$HOST_SECURITY_OUTCOME" \
             "active-window:$ACTIVE_WINDOW_OUTCOME" \
-            "native-helper:$NATIVE_HELPER_OUTCOME"; do
+            "native-helper:$NATIVE_HELPER_OUTCOME" \
+            "sandbox-launcher:$SANDBOX_LAUNCHER_OUTCOME"; do
             if [[ "${gate#*:}" != "success" ]]; then
               failures+=("$gate")
             fi

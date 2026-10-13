@@ -376,6 +376,7 @@ test('Electron build uses native runners for all three release targets', () => {
     'windows_host_security_gates',
     'windows_active_window_probe',
     'windows_native_helper_gates',
+    'windows_sandbox_launcher_gates',
   ];
   for (const id of windowsGateIds) {
     const step = build.jobs['build-windows'].steps.find((candidate) => candidate.id === id);
@@ -393,6 +394,7 @@ test('Electron build uses native runners for all three release targets', () => {
     HOST_SECURITY_OUTCOME: '${{ steps.windows_host_security_gates.outcome }}',
     ACTIVE_WINDOW_OUTCOME: '${{ steps.windows_active_window_probe.outcome }}',
     NATIVE_HELPER_OUTCOME: '${{ steps.windows_native_helper_gates.outcome }}',
+    SANDBOX_LAUNCHER_OUTCOME: '${{ steps.windows_sandbox_launcher_gates.outcome }}',
   });
   for (const gate of [
     'frontend:$FRONTEND_OUTCOME',
@@ -400,6 +402,7 @@ test('Electron build uses native runners for all three release targets', () => {
     'host-security:$HOST_SECURITY_OUTCOME',
     'active-window:$ACTIVE_WINDOW_OUTCOME',
     'native-helper:$NATIVE_HELPER_OUTCOME',
+    'sandbox-launcher:$SANDBOX_LAUNCHER_OUTCOME',
   ]) {
     assert.match(requireWindowsGates.run, new RegExp(gate.replace('$', '\\$')));
   }
@@ -410,6 +413,7 @@ test('Electron build uses native runners for all three release targets', () => {
     HOST_SECURITY_OUTCOME: 'success',
     ACTIVE_WINDOW_OUTCOME: 'success',
     NATIVE_HELPER_OUTCOME: 'success',
+    SANDBOX_LAUNCHER_OUTCOME: 'success',
   };
   assert.equal(runBash(requireWindowsGates.run, successfulOutcomes).status, 0);
   for (const [outcome, label] of [
@@ -418,6 +422,7 @@ test('Electron build uses native runners for all three release targets', () => {
     ['HOST_SECURITY_OUTCOME', 'host-security'],
     ['ACTIVE_WINDOW_OUTCOME', 'active-window'],
     ['NATIVE_HELPER_OUTCOME', 'native-helper'],
+    ['SANDBOX_LAUNCHER_OUTCOME', 'sandbox-launcher'],
   ]) {
     const failedGate = runBash(requireWindowsGates.run, {
       ...successfulOutcomes,
@@ -427,6 +432,15 @@ test('Electron build uses native runners for all three release targets', () => {
     assert.match(failedGate.stderr, new RegExp(`${label}:failure`));
   }
   const windowsStepNames = build.jobs['build-windows'].steps.map((step) => step.name);
+  const sandboxGates = build.jobs['build-windows'].steps.find(
+    (step) => step.id === 'windows_sandbox_launcher_gates',
+  );
+  assert.match(sandboxGates.run, /cargo test --manifest-path electron\/sandbox-launcher\/Cargo\.toml/);
+  assert.match(sandboxGates.run, /npm run verify:windows-sandbox/);
+  assert.ok(windowsStepNames.indexOf('Windows native-helper gates') <
+    windowsStepNames.indexOf('Windows sandbox launcher gates'));
+  assert.ok(windowsStepNames.indexOf('Windows sandbox launcher gates') <
+    windowsStepNames.indexOf('Require all Windows gates'));
   assert.ok(
     windowsStepNames.indexOf('Require all Windows gates') <
       windowsStepNames.indexOf('Resolve Windows candidate configuration')

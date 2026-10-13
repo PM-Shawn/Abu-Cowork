@@ -380,7 +380,7 @@ test('Electron build uses native runners for all three release targets', () => {
   ];
   for (const id of windowsGateIds) {
     const step = build.jobs['build-windows'].steps.find((candidate) => candidate.id === id);
-    assert.equal(step.shell, 'bash');
+    assert.equal(step.shell, id === 'windows_sandbox_launcher_gates' ? 'pwsh' : 'bash');
     assert.equal(step['continue-on-error'], true);
   }
   const requireWindowsGates = build.jobs['build-windows'].steps.find(
@@ -436,6 +436,7 @@ test('Electron build uses native runners for all three release targets', () => {
     (step) => step.id === 'windows_sandbox_launcher_gates',
   );
   assert.match(sandboxGates.run, /cargo test --manifest-path electron\/sandbox-launcher\/Cargo\.toml/);
+  assert.match(sandboxGates.run, /cargo test[^\n]*\n\s*if \(\$LASTEXITCODE -ne 0\) \{ exit \$LASTEXITCODE \}/);
   assert.match(sandboxGates.run, /npm run verify:windows-sandbox/);
   assert.ok(windowsStepNames.indexOf('Windows native-helper gates') <
     windowsStepNames.indexOf('Windows sandbox launcher gates'));

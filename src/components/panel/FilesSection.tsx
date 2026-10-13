@@ -76,7 +76,9 @@ const FileCard = memo(function FileCard({ path, operation, conversationId, opera
   const effectivePath = resolved?.status === 'available' ? resolved.path : null;
 
   const handleClick = () => {
-    if (effectivePath) openPreview(effectivePath);
+    if (resolved?.status !== 'available') return;
+    if (resolved.isFromSnapshot) openPreview(resolved.path, { keptCopyOf: path });
+    else openPreview(resolved.path);
   };
 
   const handleReveal = async () => {

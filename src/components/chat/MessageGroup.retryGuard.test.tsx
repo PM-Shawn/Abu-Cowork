@@ -180,9 +180,61 @@ describe('MessageGroup retry question', () => {
     await answered();
 
     expect(questionTitle()).not.toBeInTheDocument();
-    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, assistantMessage.id]]);
+    // The cut starts at the user message: the run writes that message anew.
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
+    expect(stored()).toEqual([]);
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
     expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'do the thing', { initiatedBy: 'user' });
+  });
+
+  it('keeps the earlier turns and cuts at the user message of the retried turn', async () => {
+    const earlierUser: Message = { id: 'user-0', role: 'user', content: 'before', timestamp: 100, loopId: 'loop-0' };
+    const earlierReply: Message = { id: 'assistant-0', role: 'assistant', content: 'done', timestamp: 200, loopId: 'loop-0' };
+    seed([earlierUser, earlierReply, userMessage, assistantMessage]);
+    render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
+
+    pressRetry();
+    await answered();
+
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
+    expect(stored()).toEqual([earlierUser, earlierReply]);
+  });
+
+  it('keeps an earlier question and its answer that share the loop id of the retried one', async () => {
+    const earlierUser: Message = { id: 'user-0', role: 'user', content: 'before', timestamp: 100, loopId: userMessage.loopId };
+    const earlierReply: Message = { id: 'assistant-0', role: 'assistant', content: 'done', timestamp: 200, loopId: userMessage.loopId };
+    seed([earlierUser, earlierReply, userMessage, assistantMessage]);
+    render(<MessageGroup conversationId={CONVERSATION} messages={[userMessage, assistantMessage]} isLastGroup />);
+
+    pressRetry();
+    await answered();
+
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
+    expect(stored()).toEqual([earlierUser, earlierReply]);
+  });
+
+  it('sends a turn that went to an expert to that expert again', async () => {
+    const routed: Message = { ...userMessage, delegateAgent: { name: 'researcher', description: 'Researcher' } };
+    seed([routed, assistantMessage]);
+    render(<MessageGroup conversationId={CONVERSATION} messages={[routed, assistantMessage]} isLastGroup />);
+
+    pressRetry();
+    await answered();
+
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, '@researcher do the thing', { initiatedBy: 'user' });
+  });
+
+  it('sends a turn that ran a skill to that skill again', async () => {
+    const routed: Message = { ...userMessage, skill: { name: 'pdf', description: 'PDF skill' } };
+    seed([routed, assistantMessage]);
+    render(<MessageGroup conversationId={CONVERSATION} messages={[routed, assistantMessage]} isLastGroup />);
+
+    pressRetry();
+    await answered();
+
+    expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
+    expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, '/pdf do the thing', { initiatedBy: 'user' });
   });
 
   it('asks with the number of turns that follow, and Cancel deletes nothing', async () => {
@@ -212,8 +264,8 @@ describe('MessageGroup retry question', () => {
     await answered();
 
     expect(questionTitle()).not.toBeInTheDocument();
-    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, assistantMessage.id]]);
-    expect(stored()).toEqual([userMessage]);
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
+    expect(stored()).toEqual([]);
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
     expect(runAgentLoopDispatched).toHaveBeenCalledWith(CONVERSATION, 'do the thing', { initiatedBy: 'user' });
   });
@@ -280,7 +332,7 @@ describe('MessageGroup retry question', () => {
     fireEvent.click(screen.getByRole('button', { name: getI18n().common.confirm }));
     await answered();
 
-    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, assistantMessage.id]]);
+    expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, userMessage.id]]);
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
   });
 

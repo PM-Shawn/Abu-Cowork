@@ -155,6 +155,21 @@ describe('FilesSection', () => {
     expect(openPreview).toHaveBeenCalledWith(READ_PATH);
   });
 
+  it('opens the kept copy of a file that is gone from its path, and says which file it is a copy of', async () => {
+    const user = userEvent.setup();
+    const copy = '/data/conversations/conv-files/outputs/files/ab12/main.ts';
+    vi.mocked(resolveFileSource).mockImplementation(async () => (
+      { status: 'available', path: copy, isFromSnapshot: true }
+    ));
+    seedConversation([toolCall('t2', 'write_file', WRITE_PATH)]);
+    renderSection();
+    await screen.findByRole('button', { name: 'Show in File Manager' });
+
+    await user.click(screen.getByRole('button', { name: /main\.ts/ }));
+
+    expect(openPreview.mock.calls).toEqual([[copy, { keptCopyOf: WRITE_PATH }]]);
+  });
+
   it('dims a file that is gone, strikes it through when it was written, and offers no reveal button', async () => {
     vi.mocked(resolveFileSource).mockImplementation(async (_conversationId, path) => (
       { status: 'missing', basename: path, originalPath: path }

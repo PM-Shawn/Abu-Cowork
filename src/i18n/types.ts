@@ -3099,6 +3099,7 @@ export interface TranslationDict {
     failedToReadFile: string;
     passwordProtectedFile: string;
     fileNotFound: string;
+    keptCopyNotice: string;
     // Editable preview (P2): autosave + external-change conflict notices
     saveFailedTitle: string;
     externalChangeTitle: string;

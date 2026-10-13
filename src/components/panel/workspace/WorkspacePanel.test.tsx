@@ -18,8 +18,8 @@ import type { BatchIdentity } from '@/types';
 import WorkspacePanel from './WorkspacePanel';
 
 vi.mock('../PreviewPanel', () => ({
-  default: ({ filePath, line, lineRequest }: { filePath: string; line?: number; lineRequest?: number }) => (
-    <div data-line={line} data-line-request={lineRequest}>Preview {filePath}</div>
+  default: ({ filePath, line, lineRequest, keptCopy }: { filePath: string; line?: number; lineRequest?: number; keptCopy?: boolean }) => (
+    <div data-line={line} data-line-request={lineRequest} data-kept-copy={keptCopy}>Preview {filePath}</div>
   ),
 }));
 vi.mock('./TerminalTab', () => ({
@@ -125,6 +125,22 @@ describe('WorkspacePanel', () => {
     expect(screen.getByText('Preview /tmp/a.ts')).toHaveAttribute('data-line-request', '2');
     expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line');
     expect(screen.getByText('Preview /tmp/b.ts')).not.toHaveAttribute('data-line-request');
+  });
+
+  it('tells the preview of a kept copy that it shows one, and no other preview', () => {
+    usePreviewStore.setState({
+      tabs: [
+        { id: 'copy', kind: 'preview', filePath: '/data/outputs/files/ab12/a.md', keptCopyOf: '/work/a.md' },
+        { id: 'own-path', kind: 'preview', filePath: '/work/b.md' },
+      ],
+      activeTabId: 'copy',
+      previewFilePath: '/data/outputs/files/ab12/a.md',
+    });
+
+    renderPanel();
+
+    expect(screen.getByText('Preview /data/outputs/files/ab12/a.md')).toHaveAttribute('data-kept-copy', 'true');
+    expect(screen.getByText('Preview /work/b.md')).toHaveAttribute('data-kept-copy', 'false');
   });
 
   it('renders the changes tab of a turn with the conversation, loop and file it names', () => {

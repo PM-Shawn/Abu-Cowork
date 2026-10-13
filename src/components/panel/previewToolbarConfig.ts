@@ -26,12 +26,17 @@ export function offersOpenInApp(type: RendererType, filePath: string): boolean {
 }
 
 /** 声明式：每种渲染类型显示哪些工具栏按钮。加新格式只改这里。 */
-export function getToolbarButtons(type: RendererType, filePath: string): PreviewToolbarButtons {
+export function getToolbarButtons(
+  type: RendererType,
+  filePath: string,
+  options: { readOnly?: boolean } = {},
+): PreviewToolbarButtons {
   const supported = type !== 'unsupported';
   return {
     viewToggle: VIEW_TOGGLE.has(type),
     fullscreen: supported,
     openInApp: offersOpenInApp(type, filePath),
-    versionHistory: EDITABLE.has(type),
+    // Reverting to a version writes the file, so a read-only preview has no history.
+    versionHistory: EDITABLE.has(type) && !options.readOnly,
   };
 }

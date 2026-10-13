@@ -171,6 +171,26 @@ describe('ChangedFilesCard', () => {
     expect(rows().map((row) => row.textContent)).toEqual(['a.md+3−1', 'docs/b.md+2−0', 'new.md+4−0']);
   });
 
+  it('takes the width of the reply column, as the file cards beside it do', async () => {
+    saveTurn([counted('a.md', 3, 1), counted('b.md', 2, 0)]);
+    render(<ChangedFilesCard conversationId={CONVERSATION_ID} loopId={LOOP_ID} />);
+
+    const root = await screen.findByTestId('changed-files-card');
+    expect([...root.classList].filter((name) => name.startsWith('max-w-'))).toEqual([]);
+  });
+
+  it('carries the hover fill of the title across the part of the row that holds the undo button', async () => {
+    saveRestorableTurn(THREE_FILES, [entryOf('a.md'), entryOf('b.md'), entryOf('c.md')]);
+    render(<ChangedFilesCard conversationId={CONVERSATION_ID} loopId={LOOP_ID} />);
+
+    const root = await screen.findByTestId('changed-files-card');
+    const undoButton = await within(root).findByRole('button', { name: '撤销' });
+    const title = within(root).getByRole('button', { name: /已编辑 3 个文件/ });
+    expect(title.classList.contains('peer')).toBe(true);
+    expect(undoButton.parentElement?.previousElementSibling).toBe(title);
+    expect(undoButton.parentElement?.classList.contains('peer-hover:bg-fill-hover')).toBe(true);
+  });
+
   it('shows only the title, with the file name, for a turn that changed one file', async () => {
     saveTurn([counted('docs/方案.md', 3, 3)]);
     render(<ChangedFilesCard conversationId={CONVERSATION_ID} loopId={LOOP_ID} />);

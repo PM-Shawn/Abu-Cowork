@@ -28,6 +28,7 @@ import { formatRelativeTime } from '@/utils/messageTime';
 import { computeRewindImpact } from '@/utils/rewindImpact';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import { useRewindQuestion } from './rewindQuestion';
+import { reattachRoutingPrefix, retryTurn } from './retryTurn';
 import abuAvatar from '@/assets/abu-avatar.png';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
@@ -200,23 +201,6 @@ function getTextContent(content: string | MessageContent[]): string {
 function getImageBlocks(content: string | MessageContent[]): Extract<MessageContent, { type: 'image' }>[] {
   if (typeof content === 'string') return [];
   return content.filter((c): c is Extract<MessageContent, { type: 'image' }> => c.type === 'image');
-}
-
-/**
- * Re-attach the original routing prefix (`@expert` or `/skill`) to user text
- * for edit / regenerate paths. The user message we store is post-routing
- * cleanInput (without the prefix), so resending raw text would fall back to
- * the default route and lose the expert / skill association.
- */
-function reattachRoutingPrefix(body: string, original: Message): string {
-  const trimmed = body.trim();
-  if (original.delegateAgent) {
-    return trimmed ? `@${original.delegateAgent.name} ${trimmed}` : `@${original.delegateAgent.name}`;
-  }
-  if (original.skill) {
-    return trimmed ? `/${original.skill.name} ${trimmed}` : `/${original.skill.name}`;
-  }
-  return body;
 }
 
 // Thinking block component for extended thinking
@@ -492,8 +476,8 @@ export default function MessageBubble({
       });
     };
 
-    // `message` is a user message and, per the invariant documented on
-    // handleRunRetry below, is itself the first message of its loop — so its
+    // `message` is a user message, the first message of its loop (the user
+    // message is added before any assistant message of the same loop), so its
     // loopId directly identifies the turn being redone.
     const impact = activeConv
       ? computeRewindImpact(activeConv.messages, message.loopId, message.id)
@@ -508,43 +492,11 @@ export default function MessageBubble({
     await proceed();
   };
 
+  // 「重试」 under a failed user message runs its turn again from this message;
+  // the step block's retry of the same turn takes the same path (retryTurn).
   const handleRunRetry = async () => {
-    if (!convId || !activeConv || message.role !== 'user') return;
-    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
-    const imageAttachments = rebuildImageAttachments(message.content, `run-retry-${Date.now()}`);
-    const routedContent = reattachRoutingPrefix(getTextContent(message.content), message);
-    // Rewind semantics (plan stage 3): truncate from the retried turn's FIRST
-    // message. `message` is itself that first message when it belongs to a
-    // loop (the user message is always added before any assistant message of
-    // the same loop — see agentLoop.ts), so finding the earliest message
-    // sharing its loopId is equivalent to using `message.id` directly; doing
-    // the lookup explicitly keeps this correct even if that invariant ever
-    // changes upstream.
-    const truncateFromId = message.loopId
-      ? activeConv.messages.find((m) => m.loopId === message.loopId)?.id ?? message.id
-      : message.id;
-
-    const proceed = async () => {
-      // Re-check: the provider may have been removed while the confirm was open.
-      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
-      useChatStore.getState().deleteMessagesFrom(convId, truncateFromId);
-      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
-      await runAgentLoopDispatched(
-        convId,
-        routedContent,
-        { initiatedBy: 'user', ...(imageAttachments ? { images: imageAttachments } : {}) },
-      );
-    };
-
-    const impact = computeRewindImpact(activeConv.messages, message.loopId, message.id);
-    if (impact.hasLaterTurns && !(await askBeforeRewind({
-      conversationId: convId,
-      laterTurnsCount: impact.laterTurnsCount,
-      loopId: message.loopId,
-      fallbackMessageId: message.id,
-      messageIds: [message.id, truncateFromId],
-    }))) return;
-    await proceed();
+    if (!activeConv || message.role !== 'user') return;
+    await retryTurn({ conversation: activeConv, userMessage: message, askBeforeRewind, chatText: t.chat });
   };
 
   const handleRegenerate = async () => {

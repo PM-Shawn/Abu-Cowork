@@ -19,6 +19,14 @@ describe('getToolbarButtons', () => {
     expect(getToolbarButtons('code', '/w/main.ts').versionHistory).toBe(true);
     expect(getToolbarButtons('code', '/w/main.ts').viewToggle).toBe(false);
   });
+  it('a read-only preview keeps every button but version history', () => {
+    for (const [type, filePath] of [['markdown', '/w/notes.md'], ['html', '/w/page.html'], ['code', '/w/main.ts'], ['text', '/w/notes.txt']] as const) {
+      expect(getToolbarButtons(type, filePath, { readOnly: true })).toEqual({
+        ...getToolbarButtons(type, filePath),
+        versionHistory: false,
+      });
+    }
+  });
   it('unsupported gets openInApp only', () => {
     expect(getToolbarButtons('unsupported', '/w/report.doc')).toEqual({
       viewToggle: false,

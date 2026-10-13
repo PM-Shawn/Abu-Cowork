@@ -91,7 +91,14 @@ function WorkspacePanelImpl() {
               {tab.kind === 'summary' ? (
                 isTabVisibleFor(tab, conversationId) ? <SummaryBody /> : null
               ) : tab.kind === 'preview' ? (
-                <PreviewPanel filePath={tab.filePath} tabId={tab.id} embedded line={tab.line} lineRequest={tab.lineRequest} />
+                <PreviewPanel
+                  filePath={tab.filePath}
+                  tabId={tab.id}
+                  embedded
+                  line={tab.line}
+                  lineRequest={tab.lineRequest}
+                  keptCopy={tab.keptCopyOf !== undefined}
+                />
               ) : tab.kind === 'terminal' ? (
                 <TerminalTab tabId={tab.id} />
               ) : tab.kind === 'browser' ? (

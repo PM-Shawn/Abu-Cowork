@@ -28,8 +28,8 @@ import { useAppDraftStore } from '@/stores/appDraftStore';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useI18n, format } from '@/i18n';
 import { MessageErrorBoundary } from '@/components/common/ErrorBoundary';
-import { computeRewindImpact } from '@/utils/rewindImpact';
 import { useRewindQuestion } from './rewindQuestion';
+import { retryTurn } from './retryTurn';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
@@ -39,9 +39,6 @@ import { collectTurnFilePaths, resolveFileMention } from '@/utils/turnFileMentio
 import { usePresentFilesOnDisk } from '@/hooks/usePresentFilesOnDisk';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
 import { backfillDetailBlockImages, snapshotToExecutionSteps } from '@/core/agent/executionSnapshot';
-import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
-import { ensureConversationModelUsable } from './sendModelGuard';
-import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { allWorkingDirectories } from '@/core/permissions/workingDirs';
 import { homeDir } from '@tauri-apps/api/path';
 import { cn } from '@/lib/utils';
@@ -52,7 +49,6 @@ import { ThinkingStatusLine, AssistantRowAvatar } from './ThinkingStatusLine';
 import { useConversationTeamLeader } from '@/components/team/useConversationTeamLeader';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import { GROUP_CONTENT_GAP } from './chatSpacing';
-import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import {
   rollupBatchRows,
   compactBatchRollupSummary,
@@ -839,7 +835,10 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
           const chat = useChatStore.getState();
           if (r.status === 'available' && ownerId && chat.conversations[ownerId]
             && chat.activeConversationId === ownerId
-            && usePreviewStore.getState().currentConversationId === ownerId) openPreview(r.path);
+            && usePreviewStore.getState().currentConversationId === ownerId) {
+            if (r.isFromSnapshot) openPreview(r.path, { keptCopyOf: previewableFile.path });
+            else openPreview(r.path);
+          }
         }).catch(() => {});
       }).catch(() => {});
     }
@@ -895,48 +894,13 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       && usePreviewStore.getState().currentConversationId === conversationId) openPreview(target.path);
   }, [declaredMode, isLastGroupProp, isAgentDone, onDiskFiles, conversationId, openPreview]);
 
-  // handleRetry's deleteMessagesFrom truncates from this loop's first assistant
-  // message onward, discarding anything after — so when this isn't the
-  // conversation's last loop it asks first. See computeRewindImpact for the
-  // "later turns exist" check.
+  // The retry of a failed step runs the turn again from its user message and
+  // deletes what follows, so it asks first when later turns exist (retryTurn).
   const askBeforeRewind = useRewindQuestion();
 
-  // Handle retry
   const handleRetry = async () => {
     if (!userMsg || !activeConv?.id) return;
-    if (!ensureConversationModelUsable(activeConv, t.chat)) return;
-    const convId = activeConv.id;
-    const userContent = getTextContent(userMsg.content);
-
-    const retryImages = rebuildImageAttachments(userMsg.content, 'retry');
-
-    const firstAssistantInLoop = assistantMsgs[0];
-
-    const proceed = async () => {
-      // Re-check: the provider may have been removed while the confirm was open.
-      if (!ensureConversationModelUsable(useChatStore.getState().conversations[convId], t.chat)) return;
-      if (firstAssistantInLoop) {
-        useChatStore.getState().deleteMessagesFrom(convId, firstAssistantInLoop.id);
-      }
-      announceChatTurnScrollIntent({ conversationId: convId, source: 'run-retry' });
-      // A retry is a human clicking a button, like MessageBubble's own
-      // retry/regenerate/edit-resend — the run is attended even when the
-      // conversation record carries a scheduler/trigger marker.
-      await runAgentLoopDispatched(convId, userContent, {
-        initiatedBy: 'user',
-        ...(retryImages ? { images: retryImages } : {}),
-      });
-    };
-
-    const impact = computeRewindImpact(activeConv.messages, loopId, userMsg.id);
-    if (impact.hasLaterTurns && !(await askBeforeRewind({
-      conversationId: convId,
-      laterTurnsCount: impact.laterTurnsCount,
-      loopId,
-      fallbackMessageId: userMsg.id,
-      messageIds: firstAssistantInLoop ? [userMsg.id, firstAssistantInLoop.id] : [userMsg.id],
-    }))) return;
-    await proceed();
+    await retryTurn({ conversation: activeConv, userMessage: userMsg, askBeforeRewind, chatText: t.chat });
   };
 
   // Tool execution steps for this loop. Thinking is rebuilt per-message inside

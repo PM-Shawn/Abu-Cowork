@@ -14,6 +14,22 @@ function activeLineText(container: HTMLElement): string | null {
   return container.querySelector('.cm-activeLine')?.textContent ?? null;
 }
 
+describe('CodeMirrorEditor readOnly', () => {
+  it('takes typing by default', async () => {
+    const { container } = render(<CodeMirrorEditor value={TEXT} language="txt" onChange={() => {}} />);
+
+    await waitFor(() => expect(container.querySelector('.cm-content')).toHaveAttribute('contenteditable', 'true'));
+  });
+
+  it('shows the text and takes no typing when read-only', async () => {
+    const { container } = render(<CodeMirrorEditor value={TEXT} language="txt" onChange={() => {}} readOnly />);
+
+    await waitFor(() => expect(container.querySelector('.cm-content')).toHaveAttribute('contenteditable', 'false'));
+    expect(container.querySelector('.cm-content')).toHaveTextContent('first line');
+    expect(EditorView.findFromDOM(container.querySelector('.cm-editor') as HTMLElement)!.state.readOnly).toBe(true);
+  });
+});
+
 describe('CodeMirrorEditor line', () => {
   it('keeps the cursor on the first line when no line is asked for', async () => {
     const { container } = render(<CodeMirrorEditor value={TEXT} language="txt" onChange={() => {}} />);

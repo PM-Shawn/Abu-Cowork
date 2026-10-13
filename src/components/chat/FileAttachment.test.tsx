@@ -10,12 +10,13 @@ import { useToastStore } from '@/stores/toastStore';
 import { OPEN_REFUSED_RUNS_BY_DEFAULT } from '@/utils/openWithDefaultApp';
 
 const previewRenders = vi.fn();
+const openPreview = vi.fn();
 
 // Every render of a card reads the preview store once, so this counts card renders.
 vi.mock('@/stores/previewStore', () => ({
-  usePreviewStore: (select: (state: { openPreview: () => void }) => unknown) => {
+  usePreviewStore: (select: (state: { openPreview: typeof openPreview }) => unknown) => {
     previewRenders();
-    return select({ openPreview: () => {} });
+    return select({ openPreview });
   },
 }));
 
@@ -42,6 +43,7 @@ beforeEach(() => { initLanguage('en-US'); });
 afterEach(() => {
   cleanup();
   previewRenders.mockClear();
+  openPreview.mockClear();
   vi.mocked(openPath).mockReset().mockResolvedValue(undefined);
   vi.mocked(revealItemInDir).mockClear();
   useToastStore.setState({ toasts: [] });
@@ -175,6 +177,27 @@ describe('FileAttachment without the declared flag', () => {
 
     expect(await screen.findByText('Document · DOCX')).toBeInTheDocument();
     expect(resolveFileSource).toHaveBeenCalledWith(undefined, '/workspace/report.docx', null);
+  });
+
+  it('opens a file at its own path in the preview with no mark', async () => {
+    const { resolveFileSource } = await import('@/core/session/outputSnapshots');
+    vi.mocked(resolveFileSource).mockResolvedValueOnce({ status: 'available', path: '/workspace/notes.md', isFromSnapshot: false });
+    render(<Group tick={0}><FileAttachment filePath="/workspace/notes.md" /></Group>);
+
+    fireEvent.click(await screen.findByTitle('Click to preview'));
+
+    expect(openPreview.mock.calls).toEqual([['/workspace/notes.md']]);
+  });
+
+  it('opens the kept copy of a file that is gone from its path, and says which file it is a copy of', async () => {
+    const copy = '/data/conversations/c1/outputs/files/ab12/notes.md';
+    const { resolveFileSource } = await import('@/core/session/outputSnapshots');
+    vi.mocked(resolveFileSource).mockResolvedValueOnce({ status: 'available', path: copy, isFromSnapshot: true });
+    render(<Group tick={0}><FileAttachment filePath="/workspace/notes.md" /></Group>);
+
+    fireEvent.click(await screen.findByTitle('Click to preview'));
+
+    expect(openPreview.mock.calls).toEqual([[copy, { keptCopyOf: '/workspace/notes.md' }]]);
   });
 });
 

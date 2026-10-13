@@ -155,6 +155,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   fileName,
   rendererType,
   fileTypeLabel,
+  readOnly,
   saveState,
   viewMode,
   onViewModeChange,
@@ -176,6 +177,8 @@ const PreviewToolbar = memo(function PreviewToolbar({
   fileName: string;
   rendererType: RendererType;
   fileTypeLabel: string;
+  /** The file is shown and never written: no version history is offered. */
+  readOnly: boolean;
   /** null when the file is not editable or failed to load: no save state is shown. */
   saveState: SaveState | null;
   viewMode: 'preview' | 'source';
@@ -198,7 +201,7 @@ const PreviewToolbar = memo(function PreviewToolbar({
   const { t } = useI18n();
   const dataUrl = isDataUrl(filePath);
   const fileIcon = dataUrl ? AppIcons.fileImage : getFileIcon(filePath);
-  const toolbarButtons = getToolbarButtons(rendererType, filePath);
+  const toolbarButtons = getToolbarButtons(rendererType, filePath, { readOnly });
 
   return (
     <div className={cn(
@@ -303,6 +306,7 @@ export default function PreviewPanel({
   embedded = false,
   line,
   lineRequest,
+  keptCopy = false,
 }: {
   filePath?: string;
   tabId?: string;
@@ -311,6 +315,12 @@ export default function PreviewPanel({
   line?: number;
   /** Count of the requests for a line; each one shows the source view at `line`. */
   lineRequest?: number;
+  /**
+   * The file is the copy Abu kept of a file that is no longer at its own path. It is
+   * shown read-only under a line that says so: nothing is saved to it and no version
+   * of it is recorded.
+   */
+  keptCopy?: boolean;
 } = {}) {
   // Back-compat: without a `filePath` prop (older call sites, before
   // workspace tabs existed), fall back to the store's single previewFilePath.
@@ -487,7 +497,13 @@ export default function PreviewPanel({
             setHtmlPreviewUrl(url);
           }
 
-          if (isEditableType) {
+          if (isEditableType && keptCopy) {
+            // The buffer follows the copy on disk and is never edited, so every
+            // load adopts the text as read.
+            lastSavedRef.current = text;
+            setDraft(text);
+            establishedEditablePathRef.current = previewFilePath;
+          } else if (isEditableType) {
             if (!isQuietReload) {
               // Fresh load of this file: disk content becomes both the
               // editor buffer and the reconcile baseline.
@@ -568,7 +584,7 @@ export default function PreviewPanel({
   // reloadNonce is a fs-watch/manual refresh signal: re-run to re-read content
   // (and, for images, re-fetch the blob) when the file changes on disk.
   // eslint-disable-next-line react-hooks/exhaustive-deps -- t is stable from i18n singleton
-  }, [previewFilePath, rendererType, reloadNonce]);
+  }, [previewFilePath, rendererType, reloadNonce, keptCopy]);
 
   // Reset to rendered-preview mode on each file switch so a document never
   // inherits the previously-viewed file's source/edit mode (F4). Keyed on
@@ -705,7 +721,7 @@ export default function PreviewPanel({
   // reload it triggers (handled above) can recognize its own echo instead of
   // treating it as an external change and re-adopting/conflicting on it.
   useEffect(() => {
-    if (!previewFilePath || !EDITABLE_TYPES.has(rendererType)) return;
+    if (!previewFilePath || !EDITABLE_TYPES.has(rendererType) || keptCopy) return;
     if (draft === lastSavedRef.current) {
       setSaveState('saved');
       return;
@@ -902,7 +918,8 @@ export default function PreviewPanel({
         fileName={fileName}
         rendererType={rendererType}
         fileTypeLabel={fileTypeLabel}
-        saveState={EDITABLE_TYPES.has(rendererType) && !error ? saveState : null}
+        readOnly={keptCopy}
+        saveState={EDITABLE_TYPES.has(rendererType) && !keptCopy && !error ? saveState : null}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         showVersionHistory={showVersionHistory}
@@ -938,6 +955,12 @@ export default function PreviewPanel({
             disabled={!iframeLoaded}
             onClick={toggleInspect}
           />
+        </div>
+      )}
+
+      {keptCopy && (
+        <div className="shrink-0 px-3 pt-2">
+          <InlineMessage tone="info">{t.panel.keptCopyNotice}</InlineMessage>
         </div>
       )}
 
@@ -981,7 +1004,7 @@ export default function PreviewPanel({
               </DocSelectionLayer>
             </ScrollArea>
           ) : (
-            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} line={line} lineRequest={lineRequest} />
+            <CodeMirrorEditor value={draft} language="md" onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
           )
         ) : rendererType === 'html' ? (
           viewMode === 'preview' ? (
@@ -1005,14 +1028,14 @@ export default function PreviewPanel({
               <LazyFallback />
             )
           ) : content !== null ? (
-            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} line={line} lineRequest={lineRequest} />
+            <CodeMirrorEditor value={draft} language="html" onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
           ) : (
             <LazyFallback />
           )
         ) : rendererType === 'code' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} line={line} lineRequest={lineRequest} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
         ) : rendererType === 'text' && content !== null ? (
-          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} line={line} lineRequest={lineRequest} />
+          <CodeMirrorEditor value={draft} language={getFileExtension(previewFilePath)} onChange={setDraft} readOnly={keptCopy} line={line} lineRequest={lineRequest} />
         ) : (
           <div className="flex h-full items-center justify-center">
             <EmptyState

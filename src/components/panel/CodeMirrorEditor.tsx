@@ -80,6 +80,7 @@ export default function CodeMirrorEditor({
       theme="none"
       extensions={extensions}
       readOnly={readOnly}
+      editable={!readOnly}
       height="100%"
       basicSetup={readOnly ? READ_ONLY_SETUP : BASIC_SETUP}
       className="h-full"

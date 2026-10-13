@@ -71,7 +71,9 @@ export type WorkspaceTab = (
   // `line` is the 1-based line the latest open request asked the source view to show;
   // `lineRequest` counts the requests that named a line, so the same line asked for
   // again is a new request.
-  | { id: string; kind: 'preview'; filePath: string; line?: number; lineRequest?: number }
+  // `keptCopyOf` is set when `filePath` is the copy Abu kept of a file that is no longer at
+  // its own path, and names that path; the preview of such a tab is read-only.
+  | { id: string; kind: 'preview'; filePath: string; line?: number; lineRequest?: number; keptCopyOf?: string }
   // Agent views carry main's ownerKey; user-created tabs inherit the current conversation.
   | { id: string; kind: 'browser'; url: string }
   | { id: string; kind: 'terminal' }
@@ -229,7 +231,9 @@ interface PreviewState {
   // line of the latest request, so a request without one clears it.
   // `options.focusTab` asks the strip to focus the tab's button: for a caller
   // whose own control leaves the page when the preview tab takes its place.
-  openPreview: (filePath: string, options?: { line?: number; focusTab?: boolean }) => void;
+  // `options.keptCopyOf` says that `filePath` is the kept copy of the file that was at
+  // that path; the tab keeps it for as long as it is open.
+  openPreview: (filePath: string, options?: { line?: number; focusTab?: boolean; keptCopyOf?: string }) => void;
   // Open (or activate an existing) browser tab for `url` (default ''). Main
   // may supply an id when adopting an agent-created Electron browser view, plus
   // the conversation that view belongs to (omitted for the legacy shared pool).
@@ -417,15 +421,16 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     const { tabs } = get();
     const line = options?.line;
     const focus = (id: string) => (options?.focusTab ? { focusTabId: id } : {});
+    const keptCopyOf = options?.keptCopyOf;
     const existing = visibleNow().find((t) => t.kind === 'preview' && t.filePath === filePath);
     if (existing) {
       let nextTabs = tabs;
-      if (existing.kind === 'preview' && line !== undefined) {
-        const moved: WorkspaceTab = { ...existing, line, lineRequest: (existing.lineRequest ?? 0) + 1 };
-        nextTabs = tabs.map((t) => (t.id === existing.id ? moved : t));
-      } else if (existing.kind === 'preview' && existing.line !== undefined) {
-        const cleared: WorkspaceTab = { ...existing, line: undefined };
-        nextTabs = tabs.map((t) => (t.id === existing.id ? cleared : t));
+      if (existing.kind === 'preview') {
+        let next: WorkspaceTab = existing;
+        if (line !== undefined) next = { ...next, line, lineRequest: (existing.lineRequest ?? 0) + 1 };
+        else if (existing.line !== undefined) next = { ...next, line: undefined };
+        if (keptCopyOf !== undefined && existing.keptCopyOf !== keptCopyOf) next = { ...next, keptCopyOf };
+        if (next !== existing) nextTabs = tabs.map((t) => (t.id === existing.id ? next : t));
       }
       commitTabs(nextTabs, existing.id, focus(existing.id));
       expandRightPanel();
@@ -434,7 +439,12 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     const id = genId();
     const nextTabs: WorkspaceTab[] = [
       ...tabs,
-      { id, kind: 'preview', filePath, ...(line !== undefined ? { line, lineRequest: 1 } : {}), ...ownerScope() },
+      {
+        id, kind: 'preview', filePath,
+        ...(line !== undefined ? { line, lineRequest: 1 } : {}),
+        ...(keptCopyOf !== undefined ? { keptCopyOf } : {}),
+        ...ownerScope(),
+      },
     ];
     commitTabs(nextTabs, id, focus(id));
     expandRightPanel();

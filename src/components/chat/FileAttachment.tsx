@@ -171,7 +171,9 @@ export default function FileAttachment({ filePath, description, declared = false
   }, [effectivePath, showThumbnail]);
 
   const handleClick = () => {
-    if (effectivePath) openPreview(effectivePath);
+    if (resolved?.status !== 'available') return;
+    if (resolved.isFromSnapshot) openPreview(resolved.path, { keptCopyOf: filePath });
+    else openPreview(resolved.path);
   };
 
   const handleOpenWithDefaultApp = async (e: React.MouseEvent) => {

@@ -2515,6 +2515,7 @@ const enUS: TranslationDict = {
     failedToReadFile: 'Failed to read file',
     passwordProtectedFile: 'This file is password-protected and cannot be previewed',
     fileNotFound: 'File not found',
+    keptCopyNotice: 'The original file is gone. This is the copy Abu kept.',
     saveFailedTitle: 'Save failed',
     externalChangeTitle: 'File changed externally',
     externalChangeMessage: 'The file on disk was updated; your unsaved edits were kept',

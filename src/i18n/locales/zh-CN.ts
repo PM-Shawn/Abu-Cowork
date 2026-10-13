@@ -2517,6 +2517,7 @@ const zhCN: TranslationDict = {
     failedToReadFile: '无法读取文件',
     passwordProtectedFile: '此文件受密码保护，无法预览',
     fileNotFound: '文件不存在',
+    keptCopyNotice: '原文件已经不在，这是阿布保留的副本',
     saveFailedTitle: '保存失败',
     externalChangeTitle: '文件已被外部修改',
     externalChangeMessage: '磁盘上的内容已更新，你的未保存修改已保留',

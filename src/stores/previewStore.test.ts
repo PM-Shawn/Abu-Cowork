@@ -145,6 +145,28 @@ describe('previewStore', () => {
       expect(tab.id).toBe(id);
       expect(tab.kind === 'preview' ? tab.line : 'not-a-preview').toBeUndefined();
     });
+
+    it('marks the tab of a kept copy with the path the file was at', () => {
+      usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md', { keptCopyOf: '/w/notes.md' });
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({
+        kind: 'preview', filePath: '/data/outputs/files/ab12/notes.md', keptCopyOf: '/w/notes.md',
+      });
+    });
+
+    it('creates a tab without the mark for a file at its own path', () => {
+      usePreviewStore.getState().openPreview('/w/notes.md');
+      expect(usePreviewStore.getState().tabs[0]).not.toHaveProperty('keptCopyOf');
+    });
+
+    it('marks an open tab when its file is opened again as a kept copy, and keeps the mark afterwards', () => {
+      usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md');
+      usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md', { keptCopyOf: '/w/notes.md' });
+      expect(usePreviewStore.getState().tabs).toHaveLength(1);
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({ keptCopyOf: '/w/notes.md' });
+
+      usePreviewStore.getState().openPreview('/data/outputs/files/ab12/notes.md', { line: 2 });
+      expect(usePreviewStore.getState().tabs[0]).toMatchObject({ keptCopyOf: '/w/notes.md', line: 2 });
+    });
   });
 
   describe('openSummary', () => {

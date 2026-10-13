@@ -149,26 +149,28 @@ function ChangedFilesCard({ conversationId, loopId }: { conversationId: string; 
   };
 
   return (
-    <div data-testid="changed-files-card" className="mt-2 max-w-xl overflow-hidden rounded-panel border border-separator bg-surface">
+    <div data-testid="changed-files-card" className="mt-2 overflow-hidden rounded-panel border border-separator bg-surface">
       <div className="flex items-center">
         <Pressable
           onClick={() => open(0)}
-          className="flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left text-ui text-label transition-colors duration-fast hover:bg-fill-hover"
+          className="peer flex min-w-0 flex-1 items-center gap-3 px-3 py-2 text-left text-ui text-label transition-colors duration-fast hover:bg-fill-hover"
         >
           <span className="min-w-0 flex-1 truncate">{title}</span>
           {entry.added + entry.deleted > 0 && <LineCounts added={entry.added} deleted={entry.deleted} />}
         </Pressable>
         {restorable && (
-          <Button
-            size="sm"
-            variant="secondary"
-            busy={unavailable}
-            title={turnRunning ? (undone ? t.chat.reapplyBusyHint : t.chat.undoBusyHint) : undefined}
-            onClick={() => { void ask(); }}
-            className="mx-2 shrink-0"
-          >
-            {undone ? t.chat.reapplyTurn : t.chat.undoTurn}
-          </Button>
+          // The title's hover fill runs on under the button, to the end of the row.
+          <div className="flex shrink-0 items-center self-stretch px-2 transition-colors duration-fast peer-hover:bg-fill-hover">
+            <Button
+              size="sm"
+              variant="secondary"
+              busy={unavailable}
+              title={turnRunning ? (undone ? t.chat.reapplyBusyHint : t.chat.undoBusyHint) : undefined}
+              onClick={() => { void ask(); }}
+            >
+              {undone ? t.chat.reapplyTurn : t.chat.undoTurn}
+            </Button>
+          </div>
         )}
       </div>
       {shown.length > 0 && (

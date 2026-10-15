@@ -121,7 +121,6 @@ describe('UsageSection', () => {
       show();
       const parts = [
         screen.getByRole('heading', { level: 3, name: '用量' }),
-        screen.getByText('还没有记录'),
         periodControl('全部'),
         screen.getByText('请求尝试'),
         screen.getByRole('heading', { name: '活跃热图（近 1 年）' }),
@@ -168,27 +167,21 @@ describe('UsageSection', () => {
   });
 
   describe('the ledger note', () => {
-    it('says where the statistics start', () => {
-      setLedger({ statsOriginLocalDate: '2026-09-15' });
-      show();
-      expect(screen.getByText('统计从 2026.09.15 开始，更早的记录不完整，未并入')).toBeInTheDocument();
-    });
-
-    it('adds how many requests reported no usage: the larger of the two counts', () => {
+    it('shows no line while the numbers can be trusted', () => {
       setLedger({
         statsOriginLocalDate: '2026-09-15',
         totals: aggregate({ attempts: 5, inputUnknownAttempts: 1, outputUnknownAttempts: 2 }),
       });
-      show();
-      expect(screen.getByText('统计从 2026.09.15 开始，更早的记录不完整，未并入 · 另有 2 次未取到用量')).toBeInTheDocument();
+      const { container } = show();
+      expect(container.querySelector('p.text-caption')).toBeNull();
     });
 
-    it('adds every problem in one line: ledger stopped, requests not recorded, not updated', () => {
+    it('puts every problem in one line: ledger stopped, requests not recorded, not updated', () => {
       ledger.sendFailures = 1;
       const health = { ...emptyUsageRangeResult().health, writeFailures: 2, rejectedFrames: 3, degradedCode: 'open_failed' };
       setLedger({ health }, {}, true);
       show();
-      expect(screen.getByText('还没有记录 · 用量暂时记不上，聊天不受影响 · 有 6 次请求未能记录，统计可能不完整 · 暂未更新')).toBeInTheDocument();
+      expect(screen.getByText('用量暂时记不上，聊天不受影响 · 有 6 次请求未能记录，统计可能不完整 · 暂未更新')).toBeInTheDocument();
     });
   });
 
@@ -236,17 +229,24 @@ describe('UsageSection', () => {
     });
 
     it('draws nothing there in a personal build', () => {
-      show();
-      const ledgerNote = screen.getByText('还没有记录');
+      const { container } = show();
       expect(note()).toBeNull();
-      expect((ledgerNote.parentElement as HTMLElement).children).toHaveLength(1);
+      expect(container.querySelector('p.text-caption')).toBeNull();
     });
 
     it('draws nothing there when nothing is registered, bound or not', () => {
       useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: snapshot } });
-      show();
+      const { container } = show();
       expect(note()).toBeNull();
-      expect((screen.getByText('还没有记录').parentElement as HTMLElement).children).toHaveLength(1);
+      expect(container.querySelector('p.text-caption')).toBeNull();
+    });
+
+    it('shows the registered note by itself while the numbers can be trusted', () => {
+      registerEnterpriseMount('usageNote', NoteMarker);
+      useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: snapshot } });
+      show();
+      expect(((note() as HTMLElement).parentElement as HTMLElement).children).toHaveLength(1);
+      expect((note() as HTMLElement).compareDocumentPosition(periodControl('全部')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it('leaves a registered note out while the app is not bound', () => {
@@ -259,8 +259,9 @@ describe('UsageSection', () => {
     it('puts the registered note right under the ledger note and hands it the binding and the configuration', () => {
       registerEnterpriseMount('usageNote', NoteMarker);
       useEnterpriseStore.setState({ mode: { kind: 'enterprise', binding, config: snapshot } });
+      setLedger({}, {}, true);
       show();
-      const ledgerNote = screen.getByText('还没有记录');
+      const ledgerNote = screen.getByText('暂未更新');
       expect(ledgerNote.nextElementSibling).toBe(note());
       expect((ledgerNote.parentElement as HTMLElement).children).toHaveLength(2);
       expect(handed.at(-1)).toEqual({ binding, config: snapshot });
@@ -486,7 +487,7 @@ describe('UsageSection', () => {
       ledger.sendFailures = 1;
       setLedger({ health: { ...emptyUsageRangeResult().health, degradedCode: 'open_failed' } }, {}, true);
       show();
-      const note = screen.getByText(/^还没有记录 · /);
+      const note = screen.getByText(/^用量暂时记不上，聊天不受影响 · /);
       expect(note.tagName).toBe('P');
       expect(note).toHaveClass('text-label-tertiary');
       expect(screen.queryByRole('alert')).toBeNull();

@@ -4201,12 +4201,9 @@ export interface TranslationDict {
     inputTokens: string;
     outputTokens: string;
     cacheHitRate: string;
-    statsOrigin: string;
-    statsOriginEmpty: string;
     unrecorded: string;
     unavailable: string;
     stale: string;
-    unknownUsage: string;
     bySkill: string;
     byModel: string;
     noData: string;

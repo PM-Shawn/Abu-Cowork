@@ -277,32 +277,19 @@ function UsageDailyBar({ dateTokenMap }: { dateTokenMap: Map<string, number> }) 
  * 设置页不放大段文字，所以三件事挤进同一行：起点、本次运行未能记录的次数、
  * 以及读取失败时的「暂未更新」。
  */
-function UsageLedgerNote({
-  statsOrigin,
-  health,
-  stale,
-  unknownAttempts,
-}: {
-  statsOrigin: string | null;
-  health: UsageRangeResult['health'];
-  stale: boolean;
-  unknownAttempts: number;
-}) {
-  const { t } = useI18n();
+/** 页面上的数字不可信时的一行提示；数字可信时为 null，页面不留这一行。 */
+function ledgerNoteText(
+  t: ReturnType<typeof useI18n>['t'],
+  health: UsageRangeResult['health'],
+  stale: boolean,
+): string | null {
   // 三处加在一起：主进程写失败的、主进程校验拒绝的、renderer 这一侧没送到的。
   const unrecorded = health.writeFailures + health.rejectedFrames + getUsageSendFailures();
-  const parts: string[] = [
-    statsOrigin ? format(t.usage.statsOrigin, { date: statsOrigin.replace(/-/g, '.') }) : t.usage.statsOriginEmpty,
-  ];
+  const parts: string[] = [];
   if (health.degradedCode) parts.push(t.usage.unavailable);
   if (unrecorded > 0) parts.push(format(t.usage.unrecorded, { count: String(unrecorded) }));
-  // 只在真有漏掉时出现。全都取到的时候这一句不该占地方。
-  if (unknownAttempts > 0) parts.push(format(t.usage.unknownUsage, { count: String(unknownAttempts) }));
   if (stale) parts.push(t.usage.stale);
-
-  return (
-    <p className="text-caption text-label-tertiary">{parts.join(' · ')}</p>
-  );
+  return parts.length > 0 ? parts.join(' · ') : null;
 }
 
 export default function UsageSection() {
@@ -342,22 +329,21 @@ export default function UsageSection() {
       ? enterpriseMode.lastConfig
       : null;
   const EnterpriseUsageNote = getEnterpriseMount('usageNote');
+  const enterpriseNote = enterpriseBinding && EnterpriseUsageNote
+    ? <EnterpriseUsageNote binding={enterpriseBinding} config={enterpriseConfig} />
+    : null;
+  const ledgerNote = ledgerNoteText(t, data.health, stale);
 
   return (
     <div className="space-y-6">
       <SettingsSectionHeader title={t.usage.title} />
 
-      <div className="space-y-1">
-        <UsageLedgerNote
-          statsOrigin={data.statsOriginLocalDate}
-          health={data.health}
-          stale={stale}
-          unknownAttempts={Math.max(totals.inputUnknownAttempts, totals.outputUnknownAttempts)}
-        />
-        {enterpriseBinding && EnterpriseUsageNote && (
-          <EnterpriseUsageNote binding={enterpriseBinding} config={enterpriseConfig} />
-        )}
-      </div>
+      {(ledgerNote !== null || enterpriseNote !== null) && (
+        <div className="space-y-1">
+          {ledgerNote !== null && <p className="text-caption text-label-tertiary">{ledgerNote}</p>}
+          {enterpriseNote}
+        </div>
+      )}
 
       {/* Period switcher */}
       <div>

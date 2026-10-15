@@ -1,14 +1,13 @@
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
-import type { PluggableList } from 'unified';
-import remarkGfm from 'remark-gfm';
-import remarkBreaks from 'remark-breaks';
-import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import ReactMarkdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown';
+// The PrismLight module itself: the package root's CommonJS entry, which Vitest
+// resolves, also loads every Prism grammar.
+import SyntaxHighlighter from 'react-syntax-highlighter/dist/esm/prism-light';
 import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
 import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
 import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
 import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
 import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
-import { useState, memo, useMemo, useCallback, Suspense, type ReactNode } from 'react';
+import { useState, memo, useMemo, useCallback, Suspense, lazy, type ComponentProps, type ReactNode } from 'react';
 import { useI18n, format } from '@/i18n';
 import { cn } from '@/lib/utils';
 import type { SearchResult } from '@/types';
@@ -22,6 +21,9 @@ import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 
 import { getCodeBlockRenderer } from './codeBlockRenderers';
+import { useCodeLanguage } from './codeLanguages';
+import { createMarkdownSplitter, parseMarkdown, type MarkdownBlock } from './markdownBlocks';
+import { REMARK_PLUGINS } from './markdownPlugins';
 import { closeOpenFences } from './markdownUtils';
 import { SYNTAX_THEME } from './syntaxTheme';
 
@@ -168,6 +170,7 @@ export const CollapsibleCodeBlock = memo(function CollapsibleCodeBlock({ codeStr
   const { t } = useI18n();
   const [collapsed, setCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
+  const highlightLanguage = useCodeLanguage(language);
 
   const lineCount = codeString.split('\n').length;
   const shouldCollapse = lineCount > COLLAPSE_THRESHOLD;
@@ -216,7 +219,7 @@ export const CollapsibleCodeBlock = memo(function CollapsibleCodeBlock({ codeStr
         >
           <SyntaxHighlighter
             style={SYNTAX_THEME}
-            language={language || 'text'}
+            language={highlightLanguage}
             PreTag="div"
             wrapLongLines={true}
             customStyle={{
@@ -282,13 +285,25 @@ function CodeRendererLoading() {
 // closeOpenFences moved to ./markdownUtils.ts so non-component utilities can
 // be imported and unit-tested without tripping react-refresh/only-export-components.
 
-// Stable references — avoid recreating on every render.
-// `singleTilde: false` — a lone `~` must NOT become strikethrough. Chinese
-// chat text uses `~` as a casual tone softener ("好的~", "操作了~"), and
-// remark-gfm's default (`singleTilde: true`) turns any two of them in one
-// message into a <del> span over the text between them. Require `~~` for
-// strikethrough instead.
-const remarkPluginsStable: PluggableList = [[remarkGfm, { singleTilde: false }], remarkBreaks];
+const MathFormula = lazy(() => import('./MathFormula'));
+
+/**
+ * A TeX formula. Its source shows while KaTeX loads, and stays while `pending`:
+ * a display formula still being streamed has no closing delimiter yet, and
+ * KaTeX would render every half-written frame as an error.
+ */
+function MathBlock({ tex, display, pending = false }: { tex: string; display: boolean; pending?: boolean }) {
+  const source = display
+    ? <div className="my-3 whitespace-pre-wrap font-code text-mono text-label-secondary">{tex}</div>
+    : <code className="font-code text-code-inline text-label-secondary">{tex}</code>;
+  if (pending) return source;
+  return (
+    <Suspense fallback={source}>
+      <MathFormula tex={tex} display={display} />
+    </Suspense>
+  );
+}
+
 const SAFE_URL_PATTERN = /^(https?:\/\/|mailto:|tel:|#)/i;
 
 type MarkdownVariant = 'assistant' | 'user';
@@ -327,8 +342,15 @@ function buildMarkdownComponents(
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     code({ className, children, ...props }: any) {
-      const match = /language-(\w+)/.exec(className || '');
+      const match = /language-(\S+)/.exec(className || '');
       const codeString = String(children).replace(/\n$/, '');
+
+      // `$…$`, `\(…\)` and inline `$$…$$` arrive as `math-inline`; `$$` and `\[`
+      // blocks as `math-display`, and a ```math fence as plain `language-math`.
+      if (match?.[1] === 'math') {
+        return <MathBlock tex={codeString} display={!/\bmath-inline\b/.test(className)} />;
+      }
+
       const isInline = !match && !codeString.includes('\n');
 
       if (isInline) {
@@ -371,6 +393,15 @@ function buildMarkdownComponents(
           language={match?.[1] || null}
         />
       );
+    },
+
+    // A display formula comes as <pre><code class="language-math">: it is no code
+    // block, so it is not set in the block's preformatted box.
+    pre({ node, children, ...props }: ComponentProps<'pre'> & ExtraProps) {
+      const code = node?.children[0];
+      const classes = code?.type === 'element' ? code.properties.className : undefined;
+      if (Array.isArray(classes) && classes.includes('language-math')) return <>{children}</>;
+      return <pre {...props}>{children}</pre>;
     },
 
     img() {
@@ -449,6 +480,54 @@ function buildMarkdownComponents(
 const defaultAssistantComponents = buildMarkdownComponents(null, undefined, 'assistant');
 const defaultUserComponents = buildMarkdownComponents(null, undefined, 'user');
 
+type MarkdownComponents = ReturnType<typeof buildMarkdownComponents>;
+type UrlTransform = typeof keepLocalPathTargets | undefined;
+
+/** One top-level block of a streaming reply, rendered again only when its own text changes. */
+const MarkdownBlockView = memo(function MarkdownBlockView({ block, components, urlTransform }: {
+  block: MarkdownBlock;
+  components: MarkdownComponents;
+  urlTransform: UrlTransform;
+}) {
+  if (block.pendingMath !== undefined) return <MathBlock tex={block.pendingMath} display pending />;
+  if (block.code) {
+    // Drawn the way react-markdown draws a code node (mdast-util-to-hast's `code`
+    // handler), so the block keeps its elements while its fence is open and after
+    // it closes; an open fence grows here without the block being parsed again.
+    const { lang, value, open } = block.code;
+    if (lang === 'math') return <MathBlock tex={value} display pending={open} />;
+    return <pre>{components.code({ className: lang ? `language-${lang}` : undefined, children: value ? `${value}\n` : undefined })}</pre>;
+  }
+  return (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform}>
+      {closeOpenFences(block.source)}
+    </ReactMarkdown>
+  );
+}, (before, after) =>
+  before.components === after.components
+  && before.urlTransform === after.urlTransform
+  && before.block.source === after.block.source
+  && before.block.pendingMath === after.block.pendingMath
+  && before.block.code?.value === after.block.code?.value
+  && before.block.code?.lang === after.block.code?.lang
+  && before.block.code?.open === after.block.code?.open);
+
+/** The whole reply as one document, with an unfinished display formula at its end set apart. */
+function WholeReply({ content, pendingMath, components, urlTransform }: {
+  content: string;
+  pendingMath: { start: number; tex: string } | null;
+  components: MarkdownComponents;
+  urlTransform: UrlTransform;
+}) {
+  const document = (
+    <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components} urlTransform={urlTransform}>
+      {closeOpenFences(pendingMath ? content.slice(0, pendingMath.start) : content)}
+    </ReactMarkdown>
+  );
+  // One shape with and without the formula, so the document keeps its elements when it closes.
+  return <>{document}{pendingMath && '\n'}{pendingMath && <MathBlock tex={pendingMath.tex} display pending />}</>;
+}
+
 interface MarkdownRendererProps {
   content: string;
   searchResults?: SearchResult[];
@@ -460,23 +539,51 @@ interface MarkdownRendererProps {
    * function: a new one rebuilds every rendered node.
    */
   resolveFileMention?: FileMentionResolver;
+  /**
+   * The reply is still arriving. From then on, for as long as this renderer is
+   * mounted, the reply renders block by block and a block whose text did not
+   * change is neither parsed nor rendered again; the finished reply therefore
+   * keeps the elements it streamed into.
+   */
+  streaming?: boolean;
 }
 
-export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant', resolveFileMention }: MarkdownRendererProps) {
+export default memo(function MarkdownRenderer({ content, searchResults, onCitationClick, variant = 'assistant', resolveFileMention, streaming = false }: MarkdownRendererProps) {
   const components = useMemo(
     () => ((searchResults && searchResults.length > 0) || resolveFileMention)
       ? buildMarkdownComponents(searchResults ?? null, onCitationClick, variant, resolveFileMention)
       : variant === 'user' ? defaultUserComponents : defaultAssistantComponents,
     [searchResults, onCitationClick, variant, resolveFileMention]
   );
+  const urlTransform = resolveFileMention ? keepLocalPathTargets : undefined;
+
+  const [splitter] = useState(() => createMarkdownSplitter(parseMarkdown));
+  const [blockMode, setBlockMode] = useState(streaming);
+  if (streaming && !blockMode) setBlockMode(true);
+  const split = useMemo(() => (blockMode ? splitter(content) : null), [blockMode, splitter, content]);
+
+  if (split?.mode === 'blocks') {
+    const children: ReactNode[] = [];
+    split.blocks.forEach((block, index) => {
+      if (index > 0) children.push('\n');
+      children.push(
+        <MarkdownBlockView
+          key={block.key}
+          block={block}
+          components={components}
+          urlTransform={urlTransform}
+        />,
+      );
+    });
+    return <>{children}</>;
+  }
 
   return (
-    <ReactMarkdown
-      remarkPlugins={remarkPluginsStable}
+    <WholeReply
+      content={content}
+      pendingMath={split?.mode === 'whole' ? split.pendingMath : null}
       components={components}
-      urlTransform={resolveFileMention ? keepLocalPathTargets : undefined}
-    >
-      {closeOpenFences(content)}
-    </ReactMarkdown>
+      urlTransform={urlTransform}
+    />
   );
 });

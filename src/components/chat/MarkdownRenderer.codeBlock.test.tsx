@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, screen, fireEvent, act } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import { Profiler, type ReactElement } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import MarkdownRenderer from './MarkdownRenderer';
 
@@ -48,6 +48,35 @@ describe('MarkdownRenderer code block', () => {
     expect(copied).toHaveClass('text-success');
     await act(async () => { vi.advanceTimersByTime(2000); });
     expect(screen.getByRole('button', { name: 'Copy' })).not.toHaveClass('text-success');
+  });
+
+  it('highlights a language whose grammar loads on first use', async () => {
+    vi.useRealTimers();
+    const rust = ['```rust', 'fn main() { let total: u32 = 42; }', '```'].join('\n');
+    const { container } = renderInProvider(<MarkdownRenderer content={rust} />);
+    expect(container.textContent).toContain('fn main()');
+    await vi.waitFor(() => {
+      const keyword = [...container.querySelectorAll<HTMLElement>('span')].find((span) => span.textContent === 'fn');
+      expect(keyword?.style.color).toBe('var(--ds-syntax-keyword)');
+    });
+  });
+
+  it('leaves a code block alone when a grammar loads for another language', async () => {
+    vi.useRealTimers();
+    const commits = vi.fn();
+    const go = ['```go', 'func main() { var total int = 42 }', '```'].join('\n');
+    const { container } = renderInProvider(
+      <>
+        <Profiler id="typescript" onRender={commits}><MarkdownRenderer content={CODE_BLOCK} /></Profiler>
+        <MarkdownRenderer content={go} />
+      </>,
+    );
+    const before = commits.mock.calls.length;
+    await vi.waitFor(() => {
+      const keyword = [...container.querySelectorAll<HTMLElement>('span')].find((span) => span.textContent === 'func');
+      expect(keyword?.style.color).toBe('var(--ds-syntax-keyword)');
+    });
+    expect(commits.mock.calls.length).toBe(before);
   });
 
   it('names the save button with the save-as label', () => {

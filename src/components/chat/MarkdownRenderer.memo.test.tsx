@@ -10,13 +10,13 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 const highlighterRenders = vi.fn();
 const shellRenders = vi.fn();
 
-vi.mock('react-syntax-highlighter', () => {
+vi.mock('react-syntax-highlighter/dist/esm/prism-light', () => {
   const PrismLight = ({ children }: { children: string }) => {
     highlighterRenders();
     return <div>{children}</div>;
   };
   PrismLight.registerLanguage = () => {};
-  return { PrismLight };
+  return { default: PrismLight };
 });
 
 vi.mock('./RenderableCodeBlock', () => ({

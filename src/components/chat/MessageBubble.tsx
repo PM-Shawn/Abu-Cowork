@@ -780,7 +780,7 @@ export default function MessageBubble({
 
         {textContent && (
           <div className="break-words text-label select-text">
-            <MarkdownRenderer content={textContent} />
+            <MarkdownRenderer content={textContent} streaming={message.isStreaming} />
           </div>
         )}
         {/* Tool calls - grouped in a single collapsible block */}
@@ -834,7 +834,7 @@ export default function MessageBubble({
 
         {textContent && (
           <div className="break-words text-label select-text">
-            <MarkdownRenderer content={textContent} />
+            <MarkdownRenderer content={textContent} streaming={message.isStreaming} />
           </div>
         )}
         {/* Tool calls - grouped in a single collapsible block */}

@@ -17,7 +17,7 @@ Inspired by Claude Code's Cowork mode. Features multi-agent architecture with ex
 - **State**: Zustand + Immer + persist middleware
 - **Tools**: MCP Protocol (`@modelcontextprotocol/sdk`)
 - **Icons**: Lucide React through `src/components/ds/icons.ts`
-- **Markdown**: react-markdown + remark-gfm + react-syntax-highlighter (Prism)
+- **Markdown**: react-markdown + remark-gfm + react-syntax-highlighter (Prism; each grammar loads on first use, `src/components/chat/codeLanguages.ts`) + TeX math through micromark-extension-llm-math and KaTeX (loaded on first use); a streaming reply renders block by block (`src/components/chat/markdownBlocks.ts`)
 - **Test**: Vitest (`node` env by default; DOM tests opt in with `// @vitest-environment happy-dom`)
 - **Lint**: ESLint v10 flat config + typescript-eslint
 

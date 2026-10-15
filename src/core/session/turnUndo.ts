@@ -14,6 +14,7 @@
 import { exists, mkdir, readFile, writeFile } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { exists as fileExists } from '@/core/tools/fsBridge';
+import { writeFileAtomic } from '@/utils/atomicFs';
 import { getParentDir } from '@/utils/pathUtils';
 import { assertConversationId } from './conversationPaths';
 import {
@@ -234,10 +235,11 @@ export async function planTurnUndo(
  * Gives one file the content of this direction. The file is read again right
  * before its own write, and is left as it is unless it still holds what this
  * direction starts from. The content read then is kept first when undoing; the
- * copy that is written must hold the recorded content. The write itself
- * refuses a file that appeared or went away since that read: a file that was
- * absent is written only as a new file, a file that was there only while it
- * still exists.
+ * copy that is written must hold the recorded content. The write publishes
+ * the whole content in one step, so a stop halfway leaves the file as it was,
+ * and it refuses a file that appeared or went away since that read: a file
+ * that was absent is written only as a new file, a file that was there only
+ * while it still exists.
  */
 async function restoreFile(
   dir: string,
@@ -264,7 +266,7 @@ async function restoreFile(
   const bytes = await readFile(turnCopyPath(dir, loopId, side, entry.hash));
   const recorded = side === 'before' ? entry.beforeSha256 : entry.afterSha256;
   if ((await sha256Hex(bytes)) !== recorded) throw new Error('Turn undo copy does not hold the recorded content');
-  await writeFile(entry.path, bytes, step.from === 'absent' ? { createNew: true } : { create: false });
+  await writeFileAtomic(entry.path, bytes, step.from === 'absent' ? 'create' : 'replace');
   return 'done';
 }
 

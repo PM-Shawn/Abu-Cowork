@@ -34,6 +34,7 @@ vi.mock('@/core/tools/fsBridge', () => ({
 }));
 vi.mock('@/utils/atomicFs', () => ({
   atomicWrite: (path: string, content: string) => host.fs.atomicWrite(path, content),
+  writeFileAtomic: (path: string, bytes: Uint8Array, mode: 'replace' | 'create') => host.fs.writeFileAtomic(path, bytes, mode),
 }));
 vi.mock('@/core/files/workspaceFiles', () => ({
   listConversationWorkspaceFiles: (...args: unknown[]) => host.listWorkspace(...args),
@@ -821,7 +822,7 @@ describe('turnUndo', () => {
       await expect(changes.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': { copyBytes: 15, settledAt: 1 } });
     });
 
-    it('removes the copies of an undone turn like any other, after which it cannot be put back', async () => {
+    it('removes the copies of an undone turn like any other, after which it is still undone and cannot be put back', async () => {
       await runMixedTurn();
       await undo.undoTurn('conv-1', 'loop-1', { authorize });
       changes.__testing.setConversationCopyLimit(10);
@@ -832,12 +833,52 @@ describe('turnUndo', () => {
       });
 
       expect(fs.has(`${CHANGES}/loop-1`)).toBe(false);
+      const undoneEntry = { total: 3, added: 2, deleted: 2, firstFile: 'new.md', undone: true, undoneCount: 3 };
       const index = await changes.readTurnIndex('conv-1');
-      expect(index['loop-1']).toEqual({ total: 3, added: 2, deleted: 2, firstFile: 'new.md' });
+      expect(index['loop-1']).toEqual(undoneEntry);
       expect(index['loop-2']).toMatchObject({ restorable: 1 });
       await expect(undo.planTurnUndo('conv-1', 'loop-1', 'reapply', { authorize })).resolves.toEqual({ willRestore: [], wontRestore: [] });
       await expect(undo.reapplyTurn('conv-1', 'loop-1', { authorize })).rejects.toBeInstanceOf(undo.TurnUndoRefusedError);
       expect(workspaceFiles()).toEqual({ 'plan.md': 'three\n', 'old.md': 'gone\n' });
+
+      await restart();
+      await expect(changes.readTurnIndex('conv-1')).resolves.toMatchObject({ 'loop-1': undoneEntry });
+    });
+
+    it('keeps the name of the one file an undone turn restored when its copies are removed', async () => {
+      fs.write(`${WS}/notes.md`, 'one\n');
+      await runTurn('loop-1', async (capture) => {
+        await capture(`${WS}/notes.md`);
+        fs.write(`${WS}/notes.md`, 'two\n');
+      });
+      await undo.undoTurn('conv-1', 'loop-1', { authorize });
+      changes.__testing.setConversationCopyLimit(5);
+
+      await runTurn('loop-2', async (capture) => {
+        await capture(`${WS}/other.md`);
+        fs.write(`${WS}/other.md`, 'x\n');
+      });
+
+      await expect(changes.readTurnIndex('conv-1')).resolves.toMatchObject({
+        'loop-1': { firstFile: 'notes.md', undone: true, undoneCount: 1, undoneName: 'notes.md' },
+      });
+    });
+
+    it('leaves a turn whose changes were put back saying it is edited when its copies are removed', async () => {
+      await runMixedTurn();
+      await undo.undoTurn('conv-1', 'loop-1', { authorize });
+      await undo.reapplyTurn('conv-1', 'loop-1', { authorize });
+      changes.__testing.setConversationCopyLimit(10);
+
+      await runTurn('loop-2', async (capture) => {
+        await capture(`${WS}/plan.md`);
+        fs.write(`${WS}/plan.md`, 'three\n');
+      });
+
+      await expect(changes.readTurnIndex('conv-1')).resolves.toMatchObject({
+        'loop-1': { total: 3, added: 2, deleted: 2, firstFile: 'new.md' },
+      });
+      expect((await changes.readTurnIndex('conv-1'))['loop-1'].undone).toBeUndefined();
     });
   });
 

@@ -21,7 +21,7 @@ export interface MemoryHostFs {
   listWorkspace(root: string): ConversationWorkspaceFiles;
   /** Makes the next read of `path` through either interface reject once. */
   failNextRead(path: string): void;
-  /** Makes the next plugin-fs write of `path` reject once. */
+  /** Makes the next plugin-fs or whole-file write of `path` reject once. */
   failNextWrite(path: string): void;
   /** Paths moved to the trash, in order. */
   trashed: string[];
@@ -44,6 +44,8 @@ export interface MemoryHostFs {
     readFile(path: string): Promise<Uint8Array>;
   };
   atomicWrite(path: string, content: string): Promise<void>;
+  /** The host's `write_file_atomic`: 'replace' refuses a path that holds no file, 'create' one that holds a file. */
+  writeFileAtomic(path: string, bytes: Uint8Array, mode: 'replace' | 'create'): Promise<void>;
 }
 
 export function createMemoryHostFs(): MemoryHostFs {
@@ -177,5 +179,13 @@ export function createMemoryHostFs(): MemoryHostFs {
       readFile: async (path) => readBytes(path),
     },
     atomicWrite: async (path, content) => writeBytes(path, encoder.encode(content)),
+    writeFileAtomic: async (path, bytes, mode) => {
+      if (failingWrites.delete(path)) throw new Error(`EIO: write failed, open '${path}'`);
+      if (mode === 'replace' && !files.has(path)) throw noEntry(path);
+      if (mode === 'create' && files.has(path)) {
+        throw Object.assign(new Error(`EEXIST: file already exists, link '${path}'`), { code: 'EEXIST' });
+      }
+      writeBytes(path, bytes);
+    },
   };
 }

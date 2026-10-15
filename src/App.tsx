@@ -36,6 +36,7 @@ import { resolveChatWidth, useViewportWidth } from '@/components/panel/panelWidt
 import ToasterMount from '@/components/common/ToasterMount';
 import QuitRequestListener from '@/components/common/QuitRequestListener';
 import { noteQuitConfirmedByUser } from '@/core/session/quitFlush';
+import { isConversationRunningInSidecar } from '@/core/agent/sidecarRunPredicate';
 import { setToastPlacesForDecision } from '@/stores/toastStore';
 import WindowTitleBar from '@/components/window/WindowTitleBar';
 import { registerBuiltinTools } from '@/core/tools/builtins';
@@ -692,6 +693,11 @@ function App() {
           // Do NOT auto-navigate — app always starts on welcome screen.
         }
       }).catch(() => {});
+      // Hold the kept copies of all conversations under their total limit.
+      // A failure is left unhandled so it reaches the console.
+      void import('@/core/session/outputSnapshots').then(({ enforceTotalCopyLimit }) => (
+        enforceTotalCopyLimit(isConversationRunningInSidecar)
+      ));
       // Give unattended runs a way to ask. Until this is installed the
       // confirmation seam keeps its fail-closed default ("nobody to ask, so
       // no"), so this must run alongside the inbound dispatcher that delivers

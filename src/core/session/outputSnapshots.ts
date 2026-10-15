@@ -5,8 +5,15 @@
  *
  * Storage layout:
  *   {appData}/conversations/{convId}/outputs/
- *   ├── manifest.json          (keyed by normalized originalPath)
+ *   ├── manifest-log.jsonl     (append-only records, keyed by normalized originalPath)
+ *   ├── manifest.json          (pre-log manifest; read as the base, never written)
  *   └── files/{pathHash}/{basename}
+ *
+ * The renderer and the sidecar each load this module and both record entries
+ * for the same conversation. Neither process rewrites a shared document: each
+ * record is one appended line, and a reader folds the base plus the log. The
+ * per-process cache is checked against the log's byte size before every use,
+ * so an append from the other process is seen on the next read.
  *
  * Two entry points feed snapshots into the same kernel:
  *   1. snapshotToolOutputs() — called from toolExecutor after a tool completes,
@@ -25,10 +32,10 @@
  *     new content type will silently lose data when originals are deleted. ★
  */
 
-import { exists, mkdir, readTextFile, writeTextFile, remove, stat, copyFile, rename, readFile, writeFile } from '@tauri-apps/plugin-fs';
+import { exists, mkdir, readDir, readTextFile, writeTextFile, remove, stat, copyFile, readFile, writeFile } from '@tauri-apps/plugin-fs';
 import { appDataDir, homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators, getBaseName } from '@/utils/pathUtils';
-import { createConversationPaths, type ConversationPaths } from './conversationPaths';
+import { createConversationPaths, isConversationId, type ConversationPaths } from './conversationPaths';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import { base64ToUint8Array } from '@/utils/base64';
 import { RESULT_IMAGE_EXTENSIONS } from '@/utils/imageMediaTypes';
@@ -43,10 +50,28 @@ const logger = createLogger('outputSnapshots');
 // ────────────────────────────────────────────────────────────────────────────
 
 /** Single file size cap. Above this, snapshot is skipped with reason='oversized'. */
-const MAX_FILE_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+const MAX_FILE_BYTES = 200 * 1024 * 1024; // 200 MB
+
+/** Bytes of kept copies one conversation holds; beyond it the eviction order below applies. */
+const MAX_CONVERSATION_COPY_BYTES = 1024 * 1024 * 1024; // 1 GB
+
+/** Bytes of kept copies all conversations hold together, enforced once per app start. */
+const MAX_TOTAL_COPY_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 
 /** Manifest schema version */
 const MANIFEST_VERSION = 1 as const;
+
+const LEGACY_MANIFEST_FILENAME = 'manifest.json';
+const MANIFEST_LOG_FILENAME = 'manifest-log.jsonl';
+
+/** No log file on disk; a cache taken in that state stays valid until one appears. */
+const NO_LOG = -1;
+
+/** Identity prefix of a tool-result image, which has no path of its own. */
+const TOOL_RESULT_PREFIX = 'tool-result://';
+
+/** refId of an entry installed from an incoming share bundle. */
+const SHARED_IMPORT_REF_ID = 'shared-import';
 
 // ────────────────────────────────────────────────────────────────────────────
 // Types
@@ -105,21 +130,37 @@ interface SnapshotMeta {
   refKind: string;
 }
 
+/**
+ * One line of manifest-log.jsonl. `remove` names the entry it evicts by its
+ * `snapshottedAt`, so it never cancels a newer copy of the same path that the
+ * other process recorded in the meantime.
+ */
+type ManifestLogRecord =
+  | { op: 'set'; entry: SnapshotEntry }
+  | { op: 'remove'; originalPath: string; snapshottedAt: number };
+
+interface CachedManifest {
+  manifest: OutputManifest;
+  /** Byte size of the log this manifest was folded from, or NO_LOG. */
+  logBytes: number;
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // Module-level state (caches + locks)
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * In-memory manifest cache.
- * Critical for performance: without this, every FileAttachment render
- * (potentially 100+ per conversation) would trigger a disk read.
+ * In-memory manifest cache, valid while the log's byte size is unchanged.
+ * Without it every FileAttachment render (potentially 100+ per conversation)
+ * would read and fold the log; with it a render costs one stat.
  */
-const manifestCache = new Map<string, OutputManifest>();
+const manifestCache = new Map<string, CachedManifest>();
 
 /**
- * Per-conversation serialization lock.
- * Prevents read-modify-write races when multiple snapshots run concurrently
- * (e.g. user upload + tool output finishing at the same time).
+ * Per-conversation serialization lock within this process. Keeps a copy and
+ * the record that names it together, and keeps an eviction pass from running
+ * twice at once; the other process is never blocked by it, and needs not be,
+ * because records are appended.
  */
 const convLocks = new Map<string, Promise<unknown>>();
 
@@ -217,12 +258,12 @@ async function safeStat(path: string) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Manifest read/write (cached + atomic)
+// Manifest read/write (append-only log + size-checked cache)
 // ────────────────────────────────────────────────────────────────────────────
 
-async function readManifestFromDisk(convId: string): Promise<OutputManifest> {
-  const dir = await getOutputsDir(convId);
-  const path = joinPath(dir, 'manifest.json');
+/** The manifest written before the log existed: the base every fold starts from. */
+async function readLegacyManifest(dir: string, convId: string): Promise<OutputManifest> {
+  const path = joinPath(dir, LEGACY_MANIFEST_FILENAME);
   let manifest: OutputManifest = { version: MANIFEST_VERSION, entries: {} };
 
   try {
@@ -243,52 +284,113 @@ async function readManifestFromDisk(convId: string): Promise<OutputManifest> {
   return manifest;
 }
 
-async function loadManifest(convId: string): Promise<OutputManifest> {
-  const cached = manifestCache.get(convId);
-  if (cached) return cached;
+function isLogRecord(value: unknown): value is ManifestLogRecord {
+  if (typeof value !== 'object' || value === null) return false;
+  const record = value as Record<string, unknown>;
+  if (record.op === 'remove') {
+    return typeof record.originalPath === 'string' && typeof record.snapshottedAt === 'number';
+  }
+  if (record.op !== 'set' || typeof record.entry !== 'object' || record.entry === null) return false;
+  const entry = record.entry as Record<string, unknown>;
+  return typeof entry.originalPath === 'string'
+    && typeof entry.snapshotRelPath === 'string'
+    && typeof entry.snapshottedAt === 'number';
+}
 
-  const manifest = await readManifestFromDisk(convId);
-  manifestCache.set(convId, manifest);
-  return manifest;
+function applyRecord(entries: Record<string, SnapshotEntry>, record: ManifestLogRecord): void {
+  if (record.op === 'set') {
+    entries[record.entry.originalPath] = record.entry;
+    return;
+  }
+  if (entries[record.originalPath]?.snapshottedAt === record.snapshottedAt) {
+    delete entries[record.originalPath];
+  }
+}
+
+function utf8Bytes(text: string): number {
+  return new TextEncoder().encode(text).byteLength;
 }
 
 /**
- * Bypass the process-local manifest cache and refresh it from disk.
- *
- * Sidecar snapshot writers and renderer storage writers do not share memory;
- * conversationStorage calls this immediately before dehydrating inline
- * tool-result images so a sidecar-written manifest entry can become visible
- * without imposing disk I/O on every ordinary message write.
+ * Fold the log onto the base. A line that is not a record is skipped: a
+ * process that dies inside an append can leave part of a line, and every
+ * append starts with a newline so that part never joins the next record.
  */
-export async function refreshOutputManifest(convId: string): Promise<OutputManifest> {
-  const manifest = await readManifestFromDisk(convId);
-  manifestCache.set(convId, manifest);
-  return manifest;
+function foldLog(convId: string, text: string, entries: Record<string, SnapshotEntry>): void {
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    let record: unknown;
+    try {
+      record = JSON.parse(line);
+    } catch (error) {
+      logger.warn('manifest log line skipped', {
+        convId,
+        errorKind: error instanceof Error ? error.name : 'unknown',
+      });
+      continue;
+    }
+    if (!isLogRecord(record)) {
+      logger.warn('manifest log line skipped', { convId, errorKind: 'not-a-record' });
+      continue;
+    }
+    applyRecord(entries, record);
+  }
 }
 
-/** Atomic manifest write: write to .tmp, then rename. */
-async function saveManifest(convId: string, manifest: OutputManifest): Promise<void> {
-  // Update cache immediately so subsequent reads see new state even if disk write is in flight
-  manifestCache.set(convId, manifest);
+async function logBytesOnDisk(dir: string): Promise<number> {
+  const path = joinPath(dir, MANIFEST_LOG_FILENAME);
+  if (!(await exists(path))) return NO_LOG;
+  return (await stat(path)).size;
+}
 
+async function readManifestFromDisk(convId: string): Promise<CachedManifest> {
   const dir = await getOutputsDir(convId);
-  const target = joinPath(dir, 'manifest.json');
-  const tmp = `${target}.tmp`;
-  const json = JSON.stringify(manifest, null, 2);
+  const manifest = await readLegacyManifest(dir, convId);
+  const logPath = joinPath(dir, MANIFEST_LOG_FILENAME);
+  if (!(await exists(logPath))) return { manifest, logBytes: NO_LOG };
+  // Counted on the bytes read: a line cut inside a multi-byte character
+  // decodes to U+FFFD, so the decoded text no longer re-encodes to the size on disk.
+  const bytes = await readFile(logPath);
+  foldLog(convId, new TextDecoder().decode(bytes), manifest.entries);
+  return { manifest, logBytes: bytes.byteLength };
+}
 
-  try {
-    await writeTextFile(tmp, json);
-    // rename is atomic on POSIX; on Windows it requires the target not to exist
-    try {
-      await remove(target);
-    } catch {
-      // target may not exist yet
-    }
-    await rename(tmp, target);
-  } catch (e) {
-    logger.warn('manifest save failed', { convId, err: e });
-    // Cache is already updated; next process restart will reload from disk and lose this update.
-    // Acceptable for a fire-and-forget snapshot system.
+async function loadManifest(convId: string): Promise<OutputManifest> {
+  const cached = manifestCache.get(convId);
+  if (cached && (await logBytesOnDisk(await getOutputsDir(convId))) === cached.logBytes) {
+    return cached.manifest;
+  }
+  return refreshOutputManifest(convId);
+}
+
+/**
+ * Refresh this process's cache from disk without the size check.
+ *
+ * conversationStorage calls this immediately before dehydrating inline
+ * tool-result images, then reads the cache synchronously through
+ * findToolResultImageSnapshot.
+ */
+export async function refreshOutputManifest(convId: string): Promise<OutputManifest> {
+  const fresh = await readManifestFromDisk(convId);
+  manifestCache.set(convId, fresh);
+  return fresh.manifest;
+}
+
+/**
+ * Append one record. The leading newline closes a line a dead process left
+ * unfinished. A failed append throws to the caller and leaves the cache as it
+ * was, so the cache never holds a record the disk does not.
+ */
+async function appendRecord(convId: string, record: ManifestLogRecord): Promise<void> {
+  const dir = await getOutputsDir(convId);
+  const line = `\n${JSON.stringify(record)}\n`;
+  await writeTextFile(joinPath(dir, MANIFEST_LOG_FILENAME), line, { append: true });
+  const cached = manifestCache.get(convId);
+  if (cached) {
+    applyRecord(cached.manifest.entries, record);
+    // Matches the disk only when no other process appended since this cache
+    // was taken; otherwise the next loadManifest sees a different size and folds again.
+    cached.logBytes = (cached.logBytes === NO_LOG ? 0 : cached.logBytes) + utf8Bytes(line);
   }
 }
 
@@ -322,10 +424,137 @@ function buildEntry(
 }
 
 async function recordEntry(convId: string, entry: SnapshotEntry): Promise<SnapshotEntry> {
-  const manifest = await loadManifest(convId);
-  manifest.entries[entry.originalPath] = entry;
-  await saveManifest(convId, manifest);
+  await appendRecord(convId, { op: 'set', entry });
   return entry;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Copy limits
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Copies of files that live somewhere else count toward the limits. A
+ * tool-result image is the only copy of what the conversation shows, and an
+ * attachment installed from a shared bundle is the only copy on this machine;
+ * neither counts and neither is evicted.
+ */
+function evictableRelPath(entry: SnapshotEntry): string | null {
+  if (!entry.snapshotRelPath) return null;
+  // A size that is not a byte count would turn every total into NaN.
+  if (!Number.isFinite(entry.size) || entry.size < 0) return null;
+  if (entry.originalPath.startsWith(TOOL_RESULT_PREFIX)) return null;
+  if (entry.refId === SHARED_IMPORT_REF_ID) return null;
+  const relPath = normalizeOutputRelPath(entry.snapshotRelPath);
+  return relPath && relPath.startsWith('files/') ? relPath : null;
+}
+
+/** The original is still where it was, with the size and mtime the copy was taken at. */
+async function originalUnchanged(entry: SnapshotEntry): Promise<boolean> {
+  if (!(await exists(entry.originalPath))) return false;
+  const st = await stat(entry.originalPath);
+  return st.isFile
+    && st.size === entry.size
+    && (st.mtime ? st.mtime.getTime() : 0) === entry.originalMtime;
+}
+
+interface CopyInConversation {
+  convId: string;
+  entry: SnapshotEntry;
+}
+
+/**
+ * Eviction order: first the copies whose original is unchanged in place
+ * (evicting them loses nothing today), then the copies that are the only one
+ * left; oldest first within each group.
+ */
+async function inEvictionOrder(copies: CopyInConversation[]): Promise<CopyInConversation[]> {
+  const ranked: Array<CopyInConversation & { redundant: boolean }> = [];
+  for (const copy of copies) {
+    ranked.push({ ...copy, redundant: await originalUnchanged(copy.entry) });
+  }
+  ranked.sort((a, b) => Number(b.redundant) - Number(a.redundant)
+    || a.entry.snapshottedAt - b.entry.snapshottedAt);
+  return ranked;
+}
+
+/**
+ * Evict one copy. Runs under the conversation lock and re-reads the manifest
+ * first, so a copy this process or the other one has replaced since the pass
+ * began is left alone. The record goes before the file: a reader in between
+ * sees no entry, never an entry whose file is gone.
+ *
+ * A newer copy of the same path lands on the same file. The manifest is read
+ * once more after the record, and the file stays when the other process has
+ * recorded a newer copy by then; a copy recorded between that read and the
+ * removal still loses its file, and then resolves as not backed up.
+ */
+async function evictCopy(convId: string, entry: SnapshotEntry): Promise<boolean> {
+  const current = (await loadManifest(convId)).entries[entry.originalPath];
+  if (!current || current.snapshottedAt !== entry.snapshottedAt) return false;
+  const relPath = evictableRelPath(current);
+  if (!relPath) return false;
+  await appendRecord(convId, { op: 'remove', originalPath: entry.originalPath, snapshottedAt: entry.snapshottedAt });
+  if ((await loadManifest(convId)).entries[entry.originalPath]) return true;
+  const fullPath = joinPath(await getOutputsDir(convId), relPath);
+  if (await exists(fullPath)) await remove(fullPath);
+  logger.info('kept copy evicted', { convId, size: entry.size });
+  return true;
+}
+
+/** Called with the conversation lock held, right after `kept` was recorded. */
+async function enforceConversationCopyLimit(convId: string, kept: SnapshotEntry): Promise<void> {
+  const counted = Object.values((await loadManifest(convId)).entries).filter((e) => evictableRelPath(e));
+  let total = counted.reduce((sum, e) => sum + e.size, 0);
+  if (total <= MAX_CONVERSATION_COPY_BYTES) return;
+  const candidates = counted
+    .filter((e) => e.originalPath !== kept.originalPath)
+    .map((entry) => ({ convId, entry }));
+  for (const copy of await inEvictionOrder(candidates)) {
+    if (total <= MAX_CONVERSATION_COPY_BYTES) break;
+    if (await evictCopy(convId, copy.entry)) total -= copy.entry.size;
+  }
+}
+
+/** The pass in flight, so a second caller in this process joins it. */
+let totalLimitPass: Promise<void> | null = null;
+
+/**
+ * Hold the copies of all conversations under MAX_TOTAL_COPY_BYTES. Run once
+ * per app start. A conversation `isBusy` reports as running counts toward the
+ * total and loses none of its copies; it is asked again right before each
+ * eviction, because a run can start while the pass is ranking copies.
+ */
+export function enforceTotalCopyLimit(isBusy: (convId: string) => boolean): Promise<void> {
+  totalLimitPass ??= runTotalCopyLimit(isBusy).finally(() => { totalLimitPass = null; });
+  return totalLimitPass;
+}
+
+async function runTotalCopyLimit(isBusy: (convId: string) => boolean): Promise<void> {
+  if (!cachedPaths) {
+    cachedPaths = createConversationPaths(await appDataDir());
+  }
+  const paths = cachedPaths;
+  if (!(await exists(paths.root))) return;
+
+  let total = 0;
+  const candidates: CopyInConversation[] = [];
+  for (const dirEntry of await readDir(paths.root)) {
+    if (!dirEntry.isDirectory || !isConversationId(dirEntry.name)) continue;
+    const convId = dirEntry.name;
+    if (!(await exists(paths.outputsDir(convId)))) continue;
+    for (const entry of Object.values((await loadManifest(convId)).entries)) {
+      if (!evictableRelPath(entry)) continue;
+      total += entry.size;
+      if (!isBusy(convId)) candidates.push({ convId, entry });
+    }
+  }
+  if (total <= MAX_TOTAL_COPY_BYTES) return;
+
+  for (const copy of await inEvictionOrder(candidates)) {
+    if (total <= MAX_TOTAL_COPY_BYTES) break;
+    if (isBusy(copy.convId)) continue;
+    if (await withConvLock(copy.convId, () => evictCopy(copy.convId, copy.entry))) total -= copy.entry.size;
+  }
 }
 
 /**
@@ -403,12 +632,14 @@ async function snapshotFileNormalized(
     );
   }
 
-  return await recordEntry(
+  const kept = await recordEntry(
     convId,
     buildEntry(identityPath, st.size, mtimeMs, meta, `files/${identityHash}/${targetBasename}`, {
       basename: targetBasename,
     }),
   );
+  if (evictableRelPath(kept)) await enforceConversationCopyLimit(convId, kept);
+  return kept;
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -494,7 +725,7 @@ export async function snapshotResultImage(
     refId: toolCallId,
     refKind: 'result-image',
   };
-  const originalPath = `tool-result://${toolCallId}`;
+  const originalPath = `${TOOL_RESULT_PREFIX}${toolCallId}`;
   const hash = hashPath(originalPath);
   // Never use the provider-controlled toolCallId as a path segment. Its stable
   // identity lives in the manifest; the hashed directory + fixed basename keep
@@ -716,8 +947,7 @@ export async function resolveOutputRefSource(
  */
 export function findToolResultImageSnapshot(convId: string | undefined, toolCallId: string): SnapshotEntry | null {
   if (!convId || !toolCallId) return null;
-  const manifest = manifestCache.get(convId);
-  const entry = manifest?.entries[`tool-result://${toolCallId}`];
+  const entry = manifestCache.get(convId)?.manifest.entries[`${TOOL_RESULT_PREFIX}${toolCallId}`];
   if (
     entry
     && entry.source === 'tool-output'
@@ -857,7 +1087,7 @@ export async function installSharedAttachments(
         originalMtime: 0,
         snapshottedAt: Date.now(),
         source: entry.source,
-        refId: 'shared-import',
+        refId: SHARED_IMPORT_REF_ID,
         refKind: 'shared',
       };
       await recordEntry(convId, snapshotEntry);
@@ -883,9 +1113,9 @@ export const __testing = {
   isAbsolutePath,
   loadManifest,
   refreshOutputManifest,
-  saveManifest,
+  /** Seed the cache as if folded from a conversation with no log on disk. */
   setManifest: (convId: string, manifest: OutputManifest) => {
-    manifestCache.set(convId, manifest);
+    manifestCache.set(convId, { manifest, logBytes: NO_LOG });
   },
   resetCaches: () => {
     manifestCache.clear();
@@ -893,4 +1123,6 @@ export const __testing = {
     cachedPaths = null;
   },
   MAX_FILE_BYTES,
+  MAX_CONVERSATION_COPY_BYTES,
+  MAX_TOTAL_COPY_BYTES,
 };

@@ -44,6 +44,18 @@ export async function atomicWrite(path: string, content: string): Promise<void> 
 }
 
 /**
+ * Publishes `bytes` as the whole content of `path` through the Electron host's
+ * `write_file_atomic`: a reader sees the file as it was or with all of
+ * `bytes`. 'replace' needs a regular file at `path` and keeps its permission
+ * bits; 'create' needs nothing at `path` and fails when a file appeared there.
+ *
+ * @throws If the write fails. The target is untouched on failure.
+ */
+export async function writeFileAtomic(path: string, bytes: Uint8Array, mode: 'replace' | 'create'): Promise<void> {
+  await invoke<void>('write_file_atomic', bytes, { headers: { path: encodeURIComponent(path), mode } });
+}
+
+/**
  * Like `atomicWrite`, but copies any existing file to a timestamped backup
  * first. The backup lives alongside the target as `.{filename}.backup.{ts}`.
  *

@@ -100,6 +100,13 @@ export interface TurnIndexEntry {
   restorable?: number;
   /** True while the turn is undone. */
   undone?: boolean;
+  /**
+   * For an undone turn whose copies were removed to keep the copy limit, which
+   * leaves it with nothing to restore: how many files the undo restored.
+   */
+  undoneCount?: number;
+  /** With `undoneCount` 1: the name of that file. */
+  undoneName?: string;
   /** The turn's place in the order restorable turns were settled; the lowest is the oldest. */
   settledAt?: number;
   /** Bytes of the copies the turn keeps on disk. */
@@ -284,21 +291,37 @@ function parseTurnIndex(text: string): TurnIndex {
       || !(entry.undone === undefined || typeof entry.undone === 'boolean')
       || !(entry.settledAt === undefined || isCount(entry.settledAt))
       || !(entry.copyBytes === undefined || isCount(entry.copyBytes))
+      || !(entry.undoneCount === undefined || isCount(entry.undoneCount))
+      || !(entry.undoneName === undefined || typeof entry.undoneName === 'string')
     ) {
       throw new Error('Turn changes index entry is not in the saved format');
     }
     const totals = { total: entry.total, added: entry.added, deleted: entry.deleted, firstFile: entry.firstFile };
-    index[loopId] = entry.restorable
-      ? {
+    if (entry.restorable) {
+      index[loopId] = {
         ...totals,
         restorable: entry.restorable,
         ...(entry.undone ? { undone: true } : {}),
         settledAt: entry.settledAt ?? 0,
         copyBytes: entry.copyBytes ?? 0,
-      }
-      : totals;
+      };
+    } else if (entry.undone && entry.undoneCount) {
+      index[loopId] = {
+        ...totals,
+        undone: true,
+        undoneCount: entry.undoneCount,
+        ...(entry.undoneCount === 1 && entry.undoneName !== undefined ? { undoneName: entry.undoneName } : {}),
+      };
+    } else {
+      index[loopId] = totals;
+    }
   }
   return index;
+}
+
+/** Whether `entry` is an undone turn that has no copies left, so nothing to restore. */
+function isUndoneWithoutCopies(entry: TurnIndexEntry): boolean {
+  return entry.restorable === undefined && entry.undone === true;
 }
 
 function parseTurnChanges(text: string): TurnChanges {
@@ -620,9 +643,10 @@ async function measureCopies(dir: string, loopId: string): Promise<number> {
 /**
  * Keeps the copies of a conversation within `copyLimitBytes`: while they hold
  * more, the turn settled longest ago loses its directory and, in the index,
- * everything that says it can be restored. Resolves to the turns that lost
- * their copies; listeners hear of each one but `settling`, whose own settle
- * tells them.
+ * everything that says it can be restored. An undone turn keeps saying it is
+ * undone, with the count of files its undo restored, since its files still
+ * hold what the undo wrote. Resolves to the turns that lost their copies;
+ * listeners hear of each one but `settling`, whose own settle tells them.
  */
 async function trimCopies(conversationId: string, dir: string, settling: string): Promise<string[]> {
   const index = await loadIndex(dir);
@@ -634,7 +658,17 @@ async function trimCopies(conversationId: string, dir: string, settling: string)
   for (const [loopId, entry] of kept) {
     if (bytes <= copyLimitBytes) break;
     bytes -= entry.copyBytes ?? 0;
+    const record = entry.undone ? await loadUndoRecord(dir, loopId) : null;
+    const restored = record?.state === 'undone' ? record.entries.filter((file) => file.last === 'done') : [];
     putIndexEntry(index, loopId, entry, null);
+    if (restored.length > 0) {
+      index[loopId] = {
+        ...index[loopId],
+        undone: true,
+        undoneCount: restored.length,
+        ...(restored.length === 1 ? { undoneName: fileNameOf(restored[0].path) } : {}),
+      };
+    }
     dropped.push(loopId);
   }
   if (dropped.length === 0) return dropped;
@@ -890,6 +924,8 @@ async function recoverInterruptedTurns(conversationId: string): Promise<void> {
   let changed = false;
   for (const [loopId, entry] of Object.entries(index)) {
     if (turnsOfThisRun.has(loopId)) continue;
+    // Its directory went with its copies; the index alone says it is undone.
+    if (isUndoneWithoutCopies(entry) && !records.has(loopId)) continue;
     const record = records.get(loopId);
     if (entry.restorable === record?.entries.length && Boolean(entry.undone) === (record?.state === 'undone')) continue;
     putIndexEntry(index, loopId, entry, record ? undoMarksOf(record, await measureCopies(dir, loopId)) : null);

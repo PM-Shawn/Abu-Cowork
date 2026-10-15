@@ -764,6 +764,8 @@ describe('turnChanges', () => {
       ['of a later format version', '{"version":2}'],
       ['with an entry that has no path', JSON.stringify({ version: 1, loopId: 'loop-1', state: 'applied', entries: [{ hash: 'x' }] })],
       ['of another turn', JSON.stringify({ version: 1, loopId: 'loop-2', state: 'applied', entries: [] })],
+      ['whose text is no JSON', '{"version":1,"loopId":"loop-1","sta'],
+      ['that is empty', ''],
     ];
 
     it('keeps what a modified, a created and a deleted file held before the turn, with both content hashes', async () => {

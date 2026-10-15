@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { exists, readTextFile, writeTextFile, mkdir, remove, stat, copyFile, rename, writeFile } from '@tauri-apps/plugin-fs';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { exists, readTextFile, readFile, writeTextFile, mkdir, remove, stat, copyFile, rename, writeFile, readDir } from '@tauri-apps/plugin-fs';
 
 const base64ToUint8ArrayMock = vi.hoisted(() => vi.fn());
 
@@ -18,6 +18,7 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
   return {
     ...actual,
     readTextFile: vi.fn(),
+    readFile: vi.fn(),
     writeTextFile: vi.fn(),
     exists: vi.fn(),
     mkdir: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock('@tauri-apps/plugin-fs', async () => {
     copyFile: vi.fn(),
     rename: vi.fn(),
     writeFile: vi.fn(),
+    readDir: vi.fn(),
   };
 });
 
@@ -59,8 +61,14 @@ function createMemoryFs() {
     return files.get(path)!.content;
   });
 
-  mockedWriteText.mockImplementation(async (path: string, content: string) => {
-    files.set(path, { content, size: content.length, mtime: FIXED_MTIME, isFile: true });
+  (readFile as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
+    if (!files.has(path)) throw new Error(`ENOENT: ${path}`);
+    return new TextEncoder().encode(files.get(path)!.content);
+  });
+
+  mockedWriteText.mockImplementation(async (path: string, content: string, options?: { append?: boolean }) => {
+    const text = (options?.append ? files.get(path)?.content ?? '' : '') + content;
+    files.set(path, { content: text, size: new TextEncoder().encode(text).byteLength, mtime: FIXED_MTIME, isFile: true });
     const parts = path.split('/');
     for (let i = 1; i < parts.length; i++) {
       dirs.add(parts.slice(0, i).join('/'));
@@ -113,6 +121,17 @@ function createMemoryFs() {
     if (!f) throw new Error(`ENOENT: ${src}`);
     files.set(dest, f);
     files.delete(src);
+  });
+
+  (readDir as ReturnType<typeof vi.fn>).mockImplementation(async (path: string) => {
+    const names = new Map<string, boolean>();
+    for (const dir of dirs) {
+      if (dir.startsWith(`${path}/`) && !dir.slice(path.length + 1).includes('/')) names.set(dir.slice(path.length + 1), true);
+    }
+    for (const file of files.keys()) {
+      if (file.startsWith(`${path}/`) && !file.slice(path.length + 1).includes('/')) names.set(file.slice(path.length + 1), false);
+    }
+    return [...names].map(([name, isDirectory]) => ({ name, isDirectory, isFile: !isDirectory, isSymlink: false }));
   });
 
   const mockedWriteFile = writeFile as ReturnType<typeof vi.fn>;
@@ -179,15 +198,19 @@ describe('outputSnapshots', () => {
       expect(memFs.copyFile).toHaveBeenCalledOnce();
     });
 
-    it('writes the manifest.json file via atomic rename', async () => {
+    it('appends one record to the manifest log and never writes manifest.json', async () => {
       memFs.addUserFile('/Users/testuser/Desktop/a.txt', 50);
       await mod.snapshotFile(CONV_ID, '/Users/testuser/Desktop/a.txt', {
         source: 'tool-output',
         refId: 't1',
         refKind: 'write_file',
       });
-      // Either the .tmp was renamed to manifest.json, or written directly
-      expect(memFs.files.has(`${OUTPUTS_DIR}/manifest.json`)).toBe(true);
+      const log = memFs.files.get(`${OUTPUTS_DIR}/manifest-log.jsonl`)?.content ?? '';
+      const records = log.split('\n').filter((line) => line !== '').map((line) => JSON.parse(line));
+      expect(records).toEqual([
+        { op: 'set', entry: expect.objectContaining({ originalPath: '/Users/testuser/Desktop/a.txt', refId: 't1' }) },
+      ]);
+      expect(memFs.files.has(`${OUTPUTS_DIR}/manifest.json`)).toBe(false);
     });
 
     it('overwrites manifest entry on second snapshot of same path (latest version semantics)', async () => {
@@ -880,6 +903,236 @@ describe('outputSnapshots', () => {
     it('handles an empty attachments map as a zero-install, zero-skip no-op', async () => {
       const result = await mod.installSharedAttachments(CONV_ID, {});
       expect(result).toEqual({ installed: 0, skipped: 0 });
+    });
+  });
+
+  // ──────────────────────────────────────────────────────────────────
+  describe('copy limits', () => {
+    const MB = 1024 * 1024;
+    const DESKTOP = '/Users/testuser/Desktop';
+
+    let secondsElapsed = 0;
+
+    beforeEach(() => {
+      secondsElapsed = 0;
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(FIXED_MTIME);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Snapshot a file of `size` bytes one second after the previous one. */
+    async function keep(name: string, size: number, convId = CONV_ID) {
+      secondsElapsed += 1;
+      vi.setSystemTime(FIXED_MTIME.getTime() + secondsElapsed * 1000);
+      memFs.addUserFile(`${DESKTOP}/${name}`, size);
+      return mod.snapshotFile(convId, `${DESKTOP}/${name}`, { source: 'tool-output', refId: name, refKind: 'write_file' });
+    }
+
+    async function keptNames(convId = CONV_ID): Promise<string[]> {
+      return Object.values((await mod.__testing.loadManifest(convId)).entries).map((e) => e.basename).sort();
+    }
+
+    function copyExists(entry: { snapshotRelPath: string } | null, convId = CONV_ID): boolean {
+      return memFs.files.has(`${APP_DATA}/conversations/${convId}/outputs/${entry?.snapshotRelPath}`);
+    }
+
+    it('copies a file of 200 MB and records a larger one as oversized', async () => {
+      const atLimit = await keep('at-limit.mov', 200 * MB);
+      const over = await keep('over.mov', 200 * MB + 1);
+      expect(atLimit?.snapshotRelPath).not.toBe('');
+      expect(over).toMatchObject({ snapshotRelPath: '', skipReason: 'oversized' });
+    });
+
+    it('evicts the oldest copy once a conversation holds more than 1 GB', async () => {
+      const first = await keep('first.mov', 200 * MB);
+      for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+      expect(copyExists(first)).toBe(true);
+
+      await keep('f.mov', 200 * MB);
+
+      expect(await keptNames()).toEqual(['b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+      expect(copyExists(first)).toBe(false);
+    });
+
+    it('evicts a copy whose original is still in place before the only remaining copy of a moved file', async () => {
+      const moved = await keep('moved.mov', 200 * MB);
+      const inPlace = await keep('in-place.mov', 200 * MB);
+      for (const name of ['x.mov', 'y.mov', 'z.mov']) await keep(name, 200 * MB);
+      memFs.files.delete(`${DESKTOP}/moved.mov`);
+
+      await keep('new.mov', 200 * MB);
+
+      expect(await keptNames()).toEqual(['moved.mov', 'new.mov', 'x.mov', 'y.mov', 'z.mov']);
+      expect(copyExists(moved)).toBe(true);
+      expect(copyExists(inPlace)).toBe(false);
+    });
+
+    it('treats an original that changed since the copy as gone', async () => {
+      await keep('edited.mov', 200 * MB);
+      await keep('untouched.mov', 200 * MB);
+      for (const name of ['x.mov', 'y.mov', 'z.mov']) await keep(name, 200 * MB);
+      memFs.addUserFile(`${DESKTOP}/edited.mov`, 199 * MB);
+
+      await keep('new.mov', 200 * MB);
+
+      expect(await keptNames()).toEqual(['edited.mov', 'new.mov', 'x.mov', 'y.mov', 'z.mov']);
+    });
+
+    it('never evicts the copy it has just written', async () => {
+      for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']) {
+        await keep(name, 200 * MB);
+        memFs.files.delete(`${DESKTOP}/${name}`);
+      }
+
+      // The new copy is the only one whose original is in place, so it would
+      // rank first for eviction were it a candidate.
+      const kept = await keep('new.mov', 200 * MB);
+
+      expect(copyExists(kept)).toBe(true);
+      expect(await keptNames()).toEqual(['c.mov', 'd.mov', 'e.mov', 'f.mov', 'new.mov']);
+    });
+
+    it('neither counts nor evicts tool-result images and shared attachments', async () => {
+      const base64 = btoa('x');
+      memFs.addUserFile(`${DESKTOP}/shot.png`, 150 * MB);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_1', { type: 'image', mediaType: 'image/png', base64 }, `${DESKTOP}/shot.png`);
+      await mod.installSharedAttachments(CONV_ID, {
+        shared: { basename: 'shared.pdf', originalPath: '/elsewhere/shared.pdf', source: 'tool-output', sizeBytes: 900 * MB, data: base64 },
+      });
+
+      for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+
+      expect(await keptNames()).toEqual(['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov', 'result.png', 'shared.pdf']);
+    });
+
+    it('leaves the file when the other process records a newer copy of the same path during the eviction', async () => {
+      const first = await keep('first.mov', 200 * MB);
+      for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov']) await keep(name, 200 * MB);
+      const logFile = `${OUTPUTS_DIR}/manifest-log.jsonl`;
+      const write = writeTextFile as ReturnType<typeof vi.fn>;
+      const appendOwn = write.getMockImplementation()!;
+      write.mockImplementation(async (path: string, content: string, options?: { append?: boolean }) => {
+        await appendOwn(path, content, options);
+        if (path === logFile && content.includes('"op":"remove"')) {
+          // The other process copied first.mov again onto the same file and recorded it.
+          const newer = { ...first!, snapshottedAt: first!.snapshottedAt + 500, refId: 'again' };
+          await appendOwn(path, `\n${JSON.stringify({ op: 'set', entry: newer })}\n`, { append: true });
+        }
+      });
+
+      await keep('f.mov', 200 * MB);
+
+      expect(copyExists(first)).toBe(true);
+      expect((await mod.__testing.loadManifest(CONV_ID)).entries[first!.originalPath].refId).toBe('again');
+    });
+
+    it('neither counts nor evicts an entry whose size is not a byte count', async () => {
+      const broken = await keep('broken.mov', 200 * MB);
+      await mod.__testing.refreshOutputManifest(CONV_ID);
+      const logFile = `${OUTPUTS_DIR}/manifest-log.jsonl`;
+      const sizeless = { ...broken!, size: undefined };
+      memFs.files.get(logFile)!.content += `\n${JSON.stringify({ op: 'set', entry: sizeless })}\n`;
+
+      for (const name of ['b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']) await keep(name, 200 * MB);
+
+      // The other five hold 1000 MB, under the limit: a NaN total would have evicted them all.
+      expect(await keptNames()).toEqual(['b.mov', 'broken.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+      expect(copyExists(broken)).toBe(true);
+    });
+
+    it('keeps an evicted entry gone for a process that reads the log afresh', async () => {
+      for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']) await keep(name, 200 * MB);
+
+      mod.__testing.resetCaches();
+
+      expect(await keptNames()).toEqual(['b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']);
+    });
+
+    describe('enforceTotalCopyLimit', () => {
+      const OTHER = 'conv_other';
+
+      /** Copies taken before the limits existed, as a 1 GB-per-file legacy manifest. */
+      function seedLegacy(convId: string, names: string[], snapshottedAtStart: number) {
+        const outputs = `${APP_DATA}/conversations/${convId}/outputs`;
+        const entries: Record<string, unknown> = {};
+        names.forEach((name, i) => {
+          const originalPath = `${DESKTOP}/${convId}-${name}`;
+          memFs.addUserFile(originalPath, 1024 * MB);
+          const snapshotRelPath = `files/${name}/${name}`;
+          memFs.files.set(`${outputs}/${snapshotRelPath}`, { content: 'x', size: 1024 * MB, mtime: FIXED_MTIME, isFile: true });
+          entries[originalPath] = {
+            originalPath, basename: name, snapshotRelPath, size: 1024 * MB,
+            originalMtime: new Date(2025, 0, 1).getTime(), snapshottedAt: snapshottedAtStart + i,
+            source: 'tool-output', refId: name, refKind: 'write_file',
+          };
+        });
+        memFs.files.set(`${outputs}/manifest.json`, {
+          content: JSON.stringify({ version: 1, entries }), size: 1, mtime: FIXED_MTIME, isFile: true,
+        });
+        memFs.dirs.add(`${APP_DATA}/conversations`);
+        memFs.dirs.add(`${APP_DATA}/conversations/${convId}`);
+        memFs.dirs.add(outputs);
+      }
+
+      it('evicts the oldest copies across conversations down to 5 GB', async () => {
+        seedLegacy(CONV_ID, ['a1', 'a2', 'a3'], 1);
+        seedLegacy(OTHER, ['b1', 'b2', 'b3'], 100);
+
+        await mod.enforceTotalCopyLimit(() => false);
+
+        expect(await keptNames(CONV_ID)).toEqual(['a2', 'a3']);
+        expect(await keptNames(OTHER)).toEqual(['b1', 'b2', 'b3']);
+        expect(memFs.files.has(`${APP_DATA}/conversations/${CONV_ID}/outputs/files/a1/a1`)).toBe(false);
+      });
+
+      it('counts a running conversation but takes nothing from it', async () => {
+        seedLegacy(CONV_ID, ['a1', 'a2', 'a3'], 1);
+        seedLegacy(OTHER, ['b1', 'b2', 'b3'], 100);
+
+        await mod.enforceTotalCopyLimit((convId) => convId === CONV_ID);
+
+        expect(await keptNames(CONV_ID)).toEqual(['a1', 'a2', 'a3']);
+        expect(await keptNames(OTHER)).toEqual(['b2', 'b3']);
+      });
+
+      it('takes nothing from a conversation that starts running while the pass ranks copies', async () => {
+        seedLegacy(CONV_ID, ['a1', 'a2', 'a3'], 1);
+        seedLegacy(OTHER, ['b1', 'b2', 'b3'], 100);
+        const asked = new Set<string>();
+
+        // Not running when the copies are counted; running by the time one would go.
+        await mod.enforceTotalCopyLimit((convId) => {
+          if (convId !== CONV_ID) return false;
+          const running = asked.has(convId);
+          asked.add(convId);
+          return running;
+        });
+
+        expect(await keptNames(CONV_ID)).toEqual(['a1', 'a2', 'a3']);
+        expect(await keptNames(OTHER)).toEqual(['b2', 'b3']);
+      });
+
+      it('runs one pass when called twice at once', async () => {
+        seedLegacy(CONV_ID, ['a1', 'a2', 'a3'], 1);
+        seedLegacy(OTHER, ['b1', 'b2', 'b3'], 100);
+
+        await Promise.all([mod.enforceTotalCopyLimit(() => false), mod.enforceTotalCopyLimit(() => false)]);
+
+        expect(await keptNames(CONV_ID)).toEqual(['a2', 'a3']);
+        expect(await keptNames(OTHER)).toEqual(['b1', 'b2', 'b3']);
+      });
+
+      it('does nothing at or under the limit', async () => {
+        seedLegacy(CONV_ID, ['a1', 'a2'], 1);
+        seedLegacy(OTHER, ['b1', 'b2', 'b3'], 100);
+
+        await mod.enforceTotalCopyLimit(() => false);
+
+        expect(await keptNames(CONV_ID)).toEqual(['a1', 'a2']);
+        expect(await keptNames(OTHER)).toEqual(['b1', 'b2', 'b3']);
+      });
     });
   });
 

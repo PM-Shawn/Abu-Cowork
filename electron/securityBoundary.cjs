@@ -29,6 +29,11 @@ const TEXT_RAW_BODY_COMMANDS = new Map([
   ['append_file_text', { required: ['path'], optional: [], singleLine: false }],
   ['atomic_write_text', { required: ['path'], optional: [], singleLine: false }],
 ]);
+// A file's bytes published whole: the body is the content as it is, the
+// `path` and `mode` headers say where and how (fsHost.cjs writeFileAtomic).
+// It has no plain-args form.
+const ATOMIC_FILE_WRITE_COMMAND = 'write_file_atomic';
+const ATOMIC_FILE_WRITE_MODES = new Set(['replace', 'create']);
 const RESTRICTED_WINDOW_COMMANDS = new Map([
   [
     'pet',
@@ -573,6 +578,39 @@ function validateTextRawBody(cmd, spec, args, body, headers) {
   return { cmd, args: { path: decodedPath }, body: bytes, headers: rest };
 }
 
+// The one form of `write_file_atomic`: bytes in `body`, exactly the `path`
+// and `mode` headers. Returns the decoded path and the mode as `args`.
+function validateAtomicFileWrite(cmd, args, body, headers) {
+  if (args !== undefined && args !== null) throw new Error(`${cmd} must not carry args`);
+  const bodyBytes = bodyByteLength(body);
+  if (bodyBytes == null) throw new Error(`${cmd} requires a binary body`);
+  const limit = rawBodyLimitFor(cmd);
+  if (bodyBytes > limit) throw createPayloadTooLargeError({ bytes: bodyBytes, limit, method: cmd });
+  if (!isPlainRecord(headers)) throw new Error(`${cmd} requires plain-object headers`);
+  for (const key of Object.keys(headers)) {
+    if (key !== 'path' && key !== 'mode') throw new Error(`${cmd} header ${key} is not allowed`);
+  }
+  const { path: encodedPath, mode } = headers;
+  if (
+    typeof encodedPath !== 'string'
+    || encodedPath.length === 0
+    || encodedPath.includes('\0')
+    || byteLength(encodedPath) > MAX_PATH_BYTES
+  ) {
+    throw new Error(`${cmd} header path is invalid`);
+  }
+  if (!ATOMIC_FILE_WRITE_MODES.has(mode)) throw new Error(`${cmd} header mode is invalid`);
+  let decodedPath;
+  try {
+    decodedPath = decodeURIComponent(encodedPath);
+  } catch {
+    throw new Error(`${cmd} path header is not valid URI encoding`);
+  }
+  assertSafePath(decodedPath, `${cmd} path header`);
+  assertAbsolutePath(decodedPath, `${cmd} path header`);
+  return { cmd, args: { path: decodedPath, mode }, body: toBuffer(body) };
+}
+
 function validateInvokePayload(record, payload) {
   if (!isPlainRecord(payload)) throw new Error('IPC payload must be a plain object');
   for (const key of Object.keys(payload)) {
@@ -596,6 +634,7 @@ function validateInvokePayload(record, payload) {
   if (textSpec && (body !== undefined || headers !== undefined)) {
     return validateTextRawBody(cmd, textSpec, args, body, headers);
   }
+  if (cmd === ATOMIC_FILE_WRITE_COMMAND) return validateAtomicFileWrite(cmd, args, body, headers);
 
   if (args != null) {
     if (!isPlainRecord(args)) throw new Error('IPC args must be a plain object');

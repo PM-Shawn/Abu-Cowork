@@ -98,13 +98,17 @@ function ChangedFilesCard({ conversationId, loopId }: { conversationId: string; 
   const moreFiles = detail.turn?.moreFiles ?? 0;
 
   const restored = undone && record ? record.entries.filter((file) => file.last === 'done') : [];
-  const title = !undone
+  // An undone turn whose copies are gone has nothing to restore; the index keeps what its undo restored.
+  const undoneWithoutCopies = !restorable && entry.undone === true && (entry.undoneCount ?? 0) > 0;
+  const undoneCount = undone ? restored.length : entry.undoneCount ?? 0;
+  const undoneName = undone ? (restored.length === 1 ? fileNameOf(restored[0].path) : undefined) : entry.undoneName;
+  const title = !undone && !undoneWithoutCopies
     ? many
       ? format(t.chat.changedFilesTitle, { count: entry.total })
       : format(t.chat.changedFileSingleTitle, { name: entry.firstFile })
-    : restored.length === 1
-      ? format(t.chat.undoneFileSingleTitle, { name: fileNameOf(restored[0].path) })
-      : format(t.chat.undoneFilesTitle, { count: restored.length });
+    : undoneCount === 1 && undoneName !== undefined
+      ? format(t.chat.undoneFileSingleTitle, { name: undoneName })
+      : format(t.chat.undoneFilesTitle, { count: undoneCount });
 
   const direction: TurnUndoDirection = undone ? 'reapply' : 'undo';
   const unavailable = busy || turnRunning;

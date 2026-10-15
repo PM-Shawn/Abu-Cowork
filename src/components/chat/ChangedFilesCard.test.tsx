@@ -508,6 +508,24 @@ describe('ChangedFilesCard', () => {
       expect(reapplyButton()).toBeInTheDocument();
     });
 
+    it.each<[string, Partial<TurnIndex[string]>, RegExp]>([
+      ['by the count of files its undo restored', { undoneCount: 2 }, /^已撤销 2 个文件的改动/],
+      ['by the name of the one file its undo restored', { undoneCount: 1, undoneName: 'b.md' }, /^已撤销 b\.md 的改动/],
+    ])('titles an undone turn whose copies are gone %s, with no button and no row marks', async (_label, marks, title) => {
+      const turn = saveTurn(THREE_FILES);
+      mocks.readTurnIndex.mockResolvedValue({
+        [LOOP_ID]: { total: turn.total, added: turn.added, deleted: turn.deleted, firstFile: 'a.md', undone: true, ...marks },
+      } satisfies TurnIndex);
+      render(<ChangedFilesCard conversationId={CONVERSATION_ID} loopId={LOOP_ID} />);
+
+      expect(await screen.findByRole('button', { name: title })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /^已编辑/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: '撤销' })).toBeNull();
+      expect(screen.queryByRole('button', { name: '放回改动' })).toBeNull();
+      expect(rows().map((row) => row.textContent)).toEqual(['a.md+3−1', 'b.md+2−0', 'c.md+4−0']);
+      expect(mocks.readTurnUndoRecord).not.toHaveBeenCalled();
+    });
+
     it('shows the undone turn once the undo has been saved', async () => {
       saveRestorableTurn(THREE_FILES, THREE_FILES.map((file) => entryOf(file.display)));
       await renderCard();

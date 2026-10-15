@@ -108,7 +108,7 @@ function openForPluginWrite(resolved, options) {
   return fs.openSync(resolved, append ? 'a' : 'w', mode);
 }
 
-function openExclusiveSibling(parent, prefix) {
+function openExclusiveSibling(parent, prefix, fileMode = 0o600) {
   const flags =
     fs.constants.O_WRONLY |
     fs.constants.O_CREAT |
@@ -117,7 +117,7 @@ function openExclusiveSibling(parent, prefix) {
   for (let attempt = 0; attempt < 32; attempt++) {
     const candidate = path.join(parent, `${prefix}.${crypto.randomBytes(16).toString('hex')}`);
     try {
-      return { path: candidate, fd: fs.openSync(candidate, flags, 0o600) };
+      return { path: candidate, fd: fs.openSync(candidate, flags, fileMode) };
     } catch (err) {
       if (!err || err.code !== 'EEXIST') throw err;
     }
@@ -209,6 +209,72 @@ function writeAtomic(target, content) {
       fs.rmSync(tmp.path, { force: true });
     } catch {
       /* temp may not exist */
+    }
+    throw err;
+  }
+}
+
+/**
+ * Publishes `content` as the whole of `target`: it is written to a sibling
+ * temp file and synced, then made the target in one step, so a reader sees the
+ * file as it was or with all of `content`, never a part.
+ *   - 'replace': `target` must be a regular file now that this process may
+ *     write; the new file keeps its permission bits and takes its place by
+ *     rename.
+ *   - 'create': nothing may be at `target`. Once the content is synced, the
+ *     name is taken with an exclusive create, which fails with EEXIST when a
+ *     file appeared meanwhile and works on every file system (a hard link
+ *     does not on FAT and exFAT), and the temp file is renamed over it. The
+ *     file gets the permissions a newly created file gets.
+ * On any failure before that step the temp file, and a name this call took,
+ * are removed and `target` is left as it was.
+ * @param {string} target absolute, already scope-checked
+ * @param {Buffer} content
+ * @param {'replace' | 'create'} mode
+ */
+function writeFileAtomic(target, content, mode) {
+  const parent = path.dirname(target);
+  let keptMode;
+  if (mode === 'replace') {
+    const info = fs.lstatSync(target);
+    if (!info.isFile()) throw new Error(`fs: not a regular file: ${target}`);
+    // A rename needs write access to the folder only; a file that cannot be written stays as it is.
+    fs.accessSync(target, fs.constants.W_OK);
+    keptMode = info.mode & 0o7777;
+  }
+  // 0o666 is the mode open() asks for a new file; the process umask applies to it.
+  const tmp = openExclusiveSibling(parent, `.${path.basename(target)}.tmp.${process.pid}`, keptMode ?? 0o666);
+  let tookName = false;
+  try {
+    writeAll(tmp.fd, content);
+    if (keptMode !== undefined) fs.fchmodSync(tmp.fd, keptMode);
+    fs.fsyncSync(tmp.fd);
+    fs.closeSync(tmp.fd);
+    tmp.fd = undefined;
+    if (mode === 'create') {
+      fs.closeSync(fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | noFollowFlag()));
+      tookName = true;
+    }
+    fs.renameSync(tmp.path, target);
+  } catch (err) {
+    if (tmp.fd !== undefined) {
+      try {
+        fs.closeSync(tmp.fd);
+      } catch {
+        /* already closed */
+      }
+    }
+    try {
+      fs.rmSync(tmp.path, { force: true });
+    } catch {
+      /* temp may not exist */
+    }
+    if (tookName) {
+      try {
+        fs.rmSync(target, { force: true });
+      } catch {
+        /* the empty file this call made stays; the error below is the one to report */
+      }
     }
     throw err;
   }
@@ -672,6 +738,13 @@ function fsDispatch(app, cmd, payload) {
         resolveScoped(app, a.path, undefined),
         Buffer.isBuffer(body) ? body : String(a.content),
       );
+      return null;
+    }
+
+    case 'write_file_atomic': {
+      // securityBoundary.validateAtomicFileWrite gave the decoded path, the
+      // mode and the bytes as a Buffer.
+      writeFileAtomic(resolveScoped(app, a.path, undefined), body, a.mode);
       return null;
     }
 

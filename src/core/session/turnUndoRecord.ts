@@ -104,14 +104,25 @@ function parseEntry(value: unknown): TurnUndoEntry | null {
   };
 }
 
+/** The JSON value of `text`, or undefined when the text is no JSON (a write cut off halfway, a damaged disk). */
+function jsonValueOf(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
+
 /**
- * Reads the text of an `undo.json`. Resolves to null when the JSON does not
- * have the saved shape, which a record of another format version does not;
- * rejects when the text is no JSON. An entry whose `hash` is not the hash of
- * its `path` is left out.
+ * Reads the text of an `undo.json`. Resolves to null when the text is no JSON
+ * or the JSON does not have the saved shape, which a record of another format
+ * version does not: like a record that is not there, it costs the turn its
+ * undo and nothing else. An entry whose `hash` is not the hash of its `path`
+ * is left out.
  */
 export async function parseTurnUndoRecord(text: string): Promise<TurnUndoRecord | null> {
-  const value: unknown = JSON.parse(text);
+  const value = jsonValueOf(text);
   if (
     !isRecord(value)
     || value.version !== FORMAT_VERSION

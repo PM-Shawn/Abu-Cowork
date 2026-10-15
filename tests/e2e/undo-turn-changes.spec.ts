@@ -218,8 +218,25 @@ async function confirmFromCard(page: Page, opener: Locator, question: string, co
   await expect(dialog).toHaveCount(0);
 }
 
-async function reopenConversation(): Promise<Page> {
+/** The `changes` folders of the conversations in the test's data root. */
+function changesDirs(): string[] {
+  return fs.readdirSync(dataRoot!.rootDir, { recursive: true, encoding: 'utf8' })
+    .filter((entry) => path.basename(entry) === 'changes' && fs.existsSync(path.join(dataRoot!.rootDir, entry, 'index.json')))
+    .map((entry) => path.join(dataRoot!.rootDir, entry));
+}
+
+/** The one turn of the conversation that has an undo record: its folder in the conversation's `changes` folder. */
+function onlyTurnDir(): { changes: string; loopId: string } {
+  const [changes] = changesDirs();
+  const turns = fs.readdirSync(changes).filter((name) => fs.existsSync(path.join(changes, name, 'undo.json')));
+  expect(turns).toHaveLength(1);
+  return { changes, loopId: turns[0] };
+}
+
+/** Restarts the app and opens the conversation again; `whileClosed` runs between the two. */
+async function reopenConversation(whileClosed?: () => void): Promise<Page> {
   await closeAbuElectron(app!);
+  whileClosed?.();
   app = (await launchAbuElectron(dataRoot!)).app;
   const reopened = await app.firstWindow({ timeout: READY_TIMEOUT });
   await waitForApp(reopened);
@@ -237,6 +254,8 @@ test.describe('story 1: putting the files of a turn back to how they were', () =
   test('undoing a turn that edited two files and created one restores both, moves the new file to the trash and says so on the card', async () => {
     test.setTimeout(200_000);
     const { page, workspace } = await launchInProject(twoEditsAndOneNewFile, seedPlanAndBudget);
+    const posix = process.platform !== 'win32';
+    if (posix) fs.chmodSync(path.join(workspace, '方案.md'), 0o640);
     const card = await runTurn(page);
     expect(read(workspace, '方案.md')).toBe(PLAN_AFTER);
     expect(read(workspace, '预算.md')).toBe(BUDGET_AFTER);
@@ -260,6 +279,9 @@ test.describe('story 1: putting the files of a turn back to how they were', () =
     expect(read(workspace, '方案.md')).toBe(PLAN_BEFORE);
     expect(read(workspace, '预算.md')).toBe(BUDGET_BEFORE);
     expect(has(workspace, '提纲.md')).toBe(false);
+    // The restored file is a new file on disk that took the old one's place, with its permissions.
+    if (posix) expect(fs.statSync(path.join(workspace, '方案.md')).mode & 0o777).toBe(0o640);
+    expect(fs.readdirSync(workspace).filter((name) => name.includes('.tmp.'))).toEqual([]);
     await expect(reapplyButton(card)).toBeVisible();
     await expect(undoButton(card)).toHaveCount(0);
     // The rows stay, none of them marked, and nothing failed, so there is no notice.
@@ -577,5 +599,69 @@ test.describe('story 3: putting the changes back after an undo', () => {
     expect(read(workspace, '方案.md')).toBe(mine);
     expect(read(workspace, '提纲.md')).toBe(OUTLINE);
     expect(has(workspace, '草稿.md')).toBe(false);
+  });
+});
+
+test.describe('a turn whose undo record is damaged, or whose copies were removed', () => {
+  test('an undo record cut off halfway costs that turn its undo, and its card and changes tab still show what it changed', async () => {
+    test.setTimeout(300_000);
+    const { page, workspace } = await launchInProject(twoEditsAndOneNewFile, seedPlanAndBudget);
+    const card = await runTurn(page);
+    await expect(undoButton(card)).toBeVisible();
+    await card.getByRole('button', { name: /^已编辑 3 个文件/ }).click();
+    await expect(panel(page).getByTestId('changes-tab')).toBeVisible();
+    const { changes, loopId } = onlyTurnDir();
+    const record = path.join(changes, loopId, 'undo.json');
+    const cutOff = fs.readFileSync(record, 'utf8').slice(0, 40);
+
+    const reopened = await reopenConversation(() => fs.writeFileSync(record, cutOff));
+
+    const reopenedCard = reopened.getByTestId('changed-files-card');
+    await expect(reopenedCard.getByRole('button', { name: /^已编辑 3 个文件/ })).toBeVisible({ timeout: RECORD_TIMEOUT });
+    await expect(reopenedCard.getByRole('listitem')).toHaveText(['提纲.md+2−0', '方案.md+3−3', '预算.md+2−1']);
+    await expect(undoButton(reopenedCard)).toHaveCount(0);
+    await expect(reapplyButton(reopenedCard)).toHaveCount(0);
+    await reopenedCard.getByRole('button', { name: /^方案\.md/ }).click();
+    const tab = panel(reopened).getByTestId('changes-tab');
+    await expect(tab.getByTestId('changes-diff')).toContainText('目标一');
+    await expect(tab.getByText('这一轮的改动已经撤销')).toHaveCount(0);
+    await shot(reopened, '20-card-of-a-turn-whose-undo-record-is-damaged');
+    expect(read(workspace, '方案.md')).toBe(PLAN_AFTER);
+    // The damaged record stays where it is.
+    expect(fs.readFileSync(record, 'utf8')).toBe(cutOff);
+  });
+
+  test('an undone turn whose copies were removed still says it is undone, offers nothing to put back, and keeps the files as the undo left them', async () => {
+    test.setTimeout(300_000);
+    const { page, workspace } = await launchInProject(twoEditsAndOneNewFile, seedPlanAndBudget);
+    const card = await runTurn(page);
+    await confirmFromCard(page, undoButton(card), UNDO_QUESTION, '撤销');
+    await expect(card.getByRole('button', { name: /^已撤销 3 个文件的改动/ })).toBeVisible();
+    await card.getByRole('button', { name: /^已撤销 3 个文件的改动/ }).click();
+    await expect(panel(page).getByTestId('changes-tab')).toBeVisible();
+    const { changes, loopId } = onlyTurnDir();
+
+    // What the copy limit of a conversation leaves of this turn (turnChanges trimCopies): no folder, and an
+    // index entry that keeps the undone mark with the count of files its undo restored.
+    const reopened = await reopenConversation(() => {
+      fs.rmSync(path.join(changes, loopId), { recursive: true });
+      const indexPath = path.join(changes, 'index.json');
+      const index = JSON.parse(fs.readFileSync(indexPath, 'utf8')) as { turns: Record<string, Record<string, unknown>> };
+      const { total, added, deleted, firstFile } = index.turns[loopId];
+      index.turns[loopId] = { total, added, deleted, firstFile, undone: true, undoneCount: 3 };
+      fs.writeFileSync(indexPath, JSON.stringify(index));
+    });
+
+    const reopenedCard = reopened.getByTestId('changed-files-card');
+    await expect(reopenedCard.getByRole('button', { name: /^已撤销 3 个文件的改动/ })).toBeVisible({ timeout: RECORD_TIMEOUT });
+    await expect(reapplyButton(reopenedCard)).toHaveCount(0);
+    await expect(undoButton(reopenedCard)).toHaveCount(0);
+    await expect(reopenedCard.getByRole('listitem')).toHaveText(['提纲.md+2−0', '方案.md+3−3', '预算.md+2−1']);
+    await reopenedCard.getByRole('button', { name: /^方案\.md/ }).click();
+    await expect(panel(reopened).getByTestId('changes-tab').getByText('这一轮的改动已经撤销')).toBeVisible();
+    await shot(reopened, '21-card-of-an-undone-turn-whose-copies-were-removed');
+    expect(read(workspace, '方案.md')).toBe(PLAN_BEFORE);
+    expect(read(workspace, '预算.md')).toBe(BUDGET_BEFORE);
+    expect(has(workspace, '提纲.md')).toBe(false);
   });
 });

@@ -217,6 +217,123 @@ test('raw fs text commands still hit the dispatch-time scope guard', { skip: pro
   }
 });
 
+const atomicWrite = (file, bytes, mode) => {
+  const payload = validateInvokePayload(record, {
+    cmd: 'write_file_atomic', body: bytes, headers: { path: encodeURIComponent(file), mode },
+  });
+  return fsDispatch({}, payload.cmd, payload);
+};
+
+test('write_file_atomic takes exactly a binary body with a path and a mode header', (t) => {
+  const dir = tempDir(t);
+  const file = encodeURIComponent(path.join(dir, 'a.bin'));
+  const attempt = (payload) => validateInvokePayload(record, { cmd: 'write_file_atomic', ...payload });
+  const accepted = attempt({ body: new Uint8Array([0, 0xff, 1]), headers: { path: file, mode: 'replace' } });
+  assert.deepEqual(accepted.args, { path: path.join(dir, 'a.bin'), mode: 'replace' });
+  assert.ok(Buffer.isBuffer(accepted.body));
+  assert.deepEqual([...accepted.body], [0, 0xff, 1]);
+  assert.equal(accepted.headers, undefined);
+
+  assert.throws(() => attempt({ args: { path: path.join(dir, 'a.bin'), content: 'x' } }), /must not carry args/);
+  assert.throws(() => attempt({ headers: { path: file, mode: 'create' } }), /requires a binary body/);
+  assert.throws(() => attempt({ args: {}, body: bytesOf('x'), headers: { path: file, mode: 'create' } }), /must not carry args/);
+  assert.throws(() => attempt({ body: bytesOf('x'), headers: { path: file } }), /header mode is invalid/);
+  assert.throws(() => attempt({ body: bytesOf('x'), headers: { path: file, mode: 'append' } }), /header mode is invalid/);
+  assert.throws(() => attempt({ body: bytesOf('x'), headers: { path: file, mode: 'create', options: '{}' } }), /header options is not allowed/);
+  assert.throws(() => attempt({ body: bytesOf('x'), headers: { mode: 'create' } }), /header path is invalid/);
+  assert.throws(() => attempt({ body: bytesOf('x'), headers: { path: 'relative.bin', mode: 'create' } }), /absolute/);
+  assert.throws(() => attempt({ body: bytesOf('x'), headers: { path: '%E0%A4%A', mode: 'create' } }), /not valid URI encoding/);
+});
+
+test('write_file_atomic replaces a file whole and keeps its permission bits', { skip: process.platform === 'win32' }, (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'plan.md');
+  fs.writeFileSync(file, 'one\n');
+  fs.chmodSync(file, 0o640);
+  atomicWrite(file, bytesOf('two\n'), 'replace');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'two\n');
+  assert.equal(fs.statSync(file).mode & 0o777, 0o640);
+  assert.deepEqual(fs.readdirSync(dir), ['plan.md']);
+});
+
+test('write_file_atomic replace refuses a missing file and a folder, and leaves no temp file', (t) => {
+  const dir = tempDir(t);
+  assert.throws(() => atomicWrite(path.join(dir, 'gone.md'), bytesOf('x'), 'replace'), { code: 'ENOENT' });
+  fs.mkdirSync(path.join(dir, 'folder'));
+  assert.throws(() => atomicWrite(path.join(dir, 'folder'), bytesOf('x'), 'replace'), /not a regular file/);
+  assert.equal(fs.existsSync(path.join(dir, 'gone.md')), false);
+  assert.deepEqual(fs.readdirSync(dir), ['folder']);
+});
+
+test('write_file_atomic replace leaves a read-only file as it is, as a plain write does', { skip: process.platform === 'win32' }, (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'locked.md');
+  fs.writeFileSync(file, 'one\n');
+  fs.chmodSync(file, 0o444);
+  assert.throws(() => atomicWrite(file, bytesOf('two\n'), 'replace'), { code: 'EACCES' });
+  assert.equal(fs.readFileSync(file, 'utf8'), 'one\n');
+  assert.deepEqual(fs.readdirSync(dir), ['locked.md']);
+});
+
+// The scope guard resolves a final symlink to the file it names, as it does for plugin:fs writes.
+test('write_file_atomic replace through a symlink replaces the file it names and keeps the link', { skip: process.platform === 'win32' }, (t) => {
+  const dir = tempDir(t);
+  fs.writeFileSync(path.join(dir, 'real.md'), 'real\n');
+  fs.symlinkSync(path.join(dir, 'real.md'), path.join(dir, 'link.md'));
+  atomicWrite(path.join(dir, 'link.md'), bytesOf('x\n'), 'replace');
+  assert.equal(fs.readFileSync(path.join(dir, 'real.md'), 'utf8'), 'x\n');
+  assert.ok(fs.lstatSync(path.join(dir, 'link.md')).isSymbolicLink());
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['link.md', 'real.md']);
+});
+
+test('write_file_atomic create writes a new file and refuses one that is there', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'new.md');
+  atomicWrite(file, bytesOf('n\n'), 'create');
+  assert.equal(fs.readFileSync(file, 'utf8'), 'n\n');
+  assert.throws(() => atomicWrite(file, bytesOf('other\n'), 'create'), { code: 'EEXIST' });
+  assert.equal(fs.readFileSync(file, 'utf8'), 'n\n');
+  assert.deepEqual(fs.readdirSync(dir), ['new.md']);
+});
+
+test('write_file_atomic leaves the target as it was when the write fails before it is published', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'plan.md');
+  fs.writeFileSync(file, 'one\n');
+  const fsync = fs.fsyncSync;
+  fs.fsyncSync = () => {
+    throw Object.assign(new Error('EIO: i/o error, fsync'), { code: 'EIO' });
+  };
+  t.after(() => {
+    fs.fsyncSync = fsync;
+  });
+  assert.throws(() => atomicWrite(file, bytesOf('two\n'), 'replace'), { code: 'EIO' });
+  fs.fsyncSync = fsync;
+  assert.equal(fs.readFileSync(file, 'utf8'), 'one\n');
+  assert.deepEqual(fs.readdirSync(dir), ['plan.md']);
+});
+
+test('write_file_atomic create removes the name it took when the content cannot be moved there', (t) => {
+  const dir = tempDir(t);
+  const file = path.join(dir, 'new.md');
+  const rename = fs.renameSync;
+  fs.renameSync = () => {
+    throw Object.assign(new Error('EIO: i/o error, rename'), { code: 'EIO' });
+  };
+  t.after(() => {
+    fs.renameSync = rename;
+  });
+  assert.throws(() => atomicWrite(file, bytesOf('n\n'), 'create'), { code: 'EIO' });
+  fs.renameSync = rename;
+  assert.deepEqual(fs.readdirSync(dir), []);
+});
+
+test('write_file_atomic still hits the dispatch-time scope guard', { skip: process.platform === 'win32' }, () => {
+  const target = '/etc/abu-undo-should-not-exist.txt';
+  assert.throws(() => atomicWrite(target, bytesOf('x'), 'create'), /outside the allowed scope/);
+  assert.equal(fs.existsSync(target), false);
+});
+
 test('plain-form append/atomic keep working unchanged', (t) => {
   const dir = tempDir(t);
   const file = path.join(dir, 'a.txt');

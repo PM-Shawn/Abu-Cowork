@@ -83,8 +83,12 @@ describe('turnUndoRecord', () => {
       await expect(parseTurnUndoRecord(text)).resolves.toBeNull();
     });
 
-    it('rejects text that is no JSON', async () => {
-      await expect(parseTurnUndoRecord('{"version":1,')).rejects.toBeInstanceOf(SyntaxError);
+    it.each([
+      ['text cut off halfway', '{"version":1,'],
+      ['empty text', ''],
+      ['bytes of another kind of file', '\u0000\u0001PK'],
+    ])('gives null for %s', async (_label, text) => {
+      await expect(parseTurnUndoRecord(text)).resolves.toBeNull();
     });
 
     it.each<[string, Record<string, unknown>]>([

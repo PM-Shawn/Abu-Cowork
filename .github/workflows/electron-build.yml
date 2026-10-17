@@ -275,6 +275,11 @@ jobs:
               "--config.extraMetadata.abuRelease.officialBuild=true"
               "--config.publish.provider=generic"
               "--config.publish.url=${ABU_ELECTRON_FEED}"
+              # Aliyun OSS answers multi-range requests with 206 + only the first
+              # range, so electron-updater's differential download always fails
+              # its multipart/byteranges check and falls back to a full download.
+              # Per-segment single-range requests are what OSS supports.
+              "--config.publish.useMultipleRangeRequest=false"
             )
           fi
           if [[ "$TRANSITION_RELEASE" == "true" || "$LEGACY_MIGRATION_SUPPORT" == "true" ]]; then
@@ -612,7 +617,12 @@ jobs:
             $builderArgs += @(
               "--config.extraMetadata.abuRelease.officialBuild=true",
               "--config.publish.provider=generic",
-              "--config.publish.url=$env:ABU_ELECTRON_FEED"
+              "--config.publish.url=$env:ABU_ELECTRON_FEED",
+              # Aliyun OSS answers multi-range requests with 206 + only the first
+              # range, so electron-updater's differential download always fails
+              # its multipart/byteranges check and falls back to a full download.
+              # Per-segment single-range requests are what OSS supports.
+              "--config.publish.useMultipleRangeRequest=false"
             )
           }
           if (

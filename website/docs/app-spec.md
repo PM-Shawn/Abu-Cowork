@@ -213,7 +213,7 @@
 | 应用的 logo | `interface.logo`、`interface.logoDark` | PNG 或 SVG | 256×256，透明背景，浅色和深色各一张 |
 | 模式、场景、导航项的图标 | `icon` | PNG 或 SVG | 32×32，单色线条 |
 
-所有图片必须位于应用目录内，用相对路径引用。没有 logo 的应用显示名称的第一个字。
+所有图片必须位于应用目录内，用相对路径引用。没有 logo 的应用显示跟随明暗主题的中性应用图标。
 
 ## 5. 市场里的应用
 
@@ -280,6 +280,8 @@
 
 `minAbuVersion` 高于用户的 Abu 时，应用市场里显示「需要先升级阿布」，不能使用。
 
+使用 `git-subdir` 或 `url` 的远程应用来源需要固定 `sha`。没有固定版本的条目会在市场显示不可用；发布者补充 `sha` 后，用户可以刷新市场并添加。
+
 ## 6. 从文件夹添加
 
 在应用市场点「从文件夹添加」，选择一个应用目录（里面有 `.abu-app/app.json`）。Abu 复制这个目录，校验以后显示和市场里相同的确认页。从文件夹添加的应用没有自己所在的市场，用到的插件从 5.2 的第 2、3 步查找。再次从文件夹添加同一个 `name` 的应用，会替换原来的那一个。开发时用它预览自己的应用。
@@ -311,7 +313,8 @@
 | `…run.team`、`…run.expert`、`…run.skill` | 写法不在 3.4 的表里；内置专家团或内置专家不存在；`plugin:` 的插件没有列在 `plugins` 里 |
 | `…templates` | 少于 3 条或者多于 6 条 |
 | `allowedOrigins` | 来源写了路径、通配符或者不是 HTTPS |
-| `nav.items[n].target` | `url:` 写的不是 `https://` 或本机预览的 `http://`；来源不在 `allowedOrigins` 里；没有写 `title` |
+| `nav.items[n].target` | `url:` 地址协议无效；来源不在 `allowedOrigins` 里 |
+| `nav.items[n].title` | `url:` 导航项没有写 `title` |
 | `requiredConnectors[n]` | 不是 `<插件名称>/<连接器名称>`；插件没有列在 `plugins` 里 |
 | 任意路径 | 写了表里没有的字段（多数是拼写错误） |
 

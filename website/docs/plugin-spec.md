@@ -48,7 +48,7 @@
 | `skills` | 否 | string 或 string[] | 技能目录的相对路径，必须位于包内 | 0.50.0 |
 | `mcpServers` | 否 | string 或 object | 字符串：包内一个 JSON 文件的相对路径；对象：直接内联声明。规则见第 7 节 | 0.50.0 |
 | `interface` | 否 | object | 展示信息，见 3.2 | 0.50.0 |
-| `minAbuVersion` | 使用 `teams/` 时必填 | string | 这个包要求的最低 Abu 版本。低于这个版本的 Abu 不展示这个包；已经安装的显示为不可用并提示升级 | 0.51.0 |
+| `minAbuVersion` | 使用 `teams/` 时必填 | string | 这个包要求的最低 Abu 版本。安装时检查版本，当前 Abu 未满足要求时拒绝安装并提示升级 | 0.51.0 |
 
 Abu 不认识的顶层字段会原样保留，不会导致清单被拒绝。
 
@@ -327,7 +327,7 @@ JSON 文件的内容可以直接是 server 的映射，也可以包在 `{ "mcpSe
 | `owner` | 否 | `{ name?, email? }` |
 | `description` | 否 | 市场介绍 |
 | `renames` | 否 | 旧插件名称到新名称的映射。用旧名称安装的插件，会按这张表对应到改名以后的条目 |
-| `plugins` | 是 | 插件条目的数组 |
+| `plugins` | 与 `apps` 至少提供一项 | 插件条目的数组，可以为空 |
 | `apps` | 否 | 应用条目的数组，见[应用规范第 5 节](app-spec.md#5-市场里的应用) |
 
 | 条目字段 | 必填 | 说明 | 最低 Abu 版本 |
@@ -336,7 +336,7 @@ JSON 文件的内容可以直接是 server 的映射，也可以包在 `{ "mcpSe
 | `displayName` | 否 | 市场卡片上显示的名称，与清单的 `interface.displayName` 相同。不写时卡片显示 `name` | 0.51.0 |
 | `description`、`version`、`author`、`category`、`homepage`、`keywords`、`tags` | 否 | 市场列表里显示的信息 | 0.50.0 |
 | `source` | 是 | 插件从哪里取，见下表 | 0.50.0 |
-| `minAbuVersion` | 否 | 与清单里的 `minAbuVersion` 相同。Abu 用它在市场列表里隐藏自己用不了的包；官方市场收录时核对它和清单一致 | 0.51.0 |
+| `minAbuVersion` | 否 | 与清单里的 `minAbuVersion` 相同。安装时检查当前 Abu 是否满足要求；官方市场收录时核对它和清单一致 | 0.51.0 |
 
 | `source` 的写法 | 含义 |
 |---|---|

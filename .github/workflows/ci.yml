@@ -228,13 +228,39 @@ jobs:
           node --input-type=module -e "import { recordSourceDigest } from './scripts/check-browser-artifacts.mjs'; recordSourceDigest('src-tauri/browser-extension/content.js');"
           npm run check:browser-artifacts
 
+  # Electron security-boundary tests (plugin git/snapshot/registry/operations,
+  # filesystem, computer-use permissions, attachments, raw IPC bodies). Plain
+  # `node --test`; guiHost.cjs requires `electron` at load time, so the root
+  # `npm ci` (which downloads the Electron binary) is the whole setup. macOS
+  # matches the runner electron-build.yml has always run this suite on; several
+  # cases are POSIX-only and skip themselves on Windows, where the Windows
+  # release build still runs the same script.
+  security-test:
+    runs-on: macos-15
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        id: install
+        run: npm ci
+      - name: Electron security-boundary tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run electron:security-test
+
   # Facade carrying the required check context `check`. Branch protection on
   # dev requires this exact name, so the parallel jobs above deliberately do
   # NOT use it. `if: always()` is load-bearing: without it this job is SKIPPED
   # when an upstream job fails, and a skipped required check can be treated as
   # success — silently bypassing the gate.
   check:
-    needs: [leak-guard, lint, typecheck, test, build]
+    needs: [leak-guard, lint, typecheck, test, build, security-test]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -249,6 +275,7 @@ jobs:
             typecheck=${{ needs['typecheck'].result }}
             test=${{ needs['test'].result }}
             build=${{ needs['build'].result }}
+            security-test=${{ needs['security-test'].result }}
         run: |
           echo "gate results: $RESULTS"
           for pair in $RESULTS; do

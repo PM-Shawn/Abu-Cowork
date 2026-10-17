@@ -171,7 +171,7 @@ test('CI uploads coverage and test-results artifacts even when tests fail', () =
 
 test('only the test job gets pull-requests write; every other job is contents-read only', () => {
   assert.doesNotMatch(ci, /^permissions:/m, 'permissions must be job-scoped, not workflow-level');
-  for (const job of ['test-windows', 'audit', 'leak-guard', 'lint', 'typecheck', 'build', 'check']) {
+  for (const job of ['test-windows', 'audit', 'leak-guard', 'lint', 'typecheck', 'build', 'security-test', 'check']) {
     const block = jobBlock(ci, job);
     assert.ok(!block.includes('pull-requests: write'), `${job} must not get pull-requests: write`);
     assert.ok(!block.includes('checks: write'), `${job} must not get checks: write`);
@@ -193,17 +193,38 @@ test('the check facade fails loud when any parallel gate job did not succeed', (
   assert.ok(Array.isArray(facade.needs), 'check must depend on the parallel jobs');
   assert.deepEqual(
     [...facade.needs].sort(),
-    ['build', 'leak-guard', 'lint', 'test', 'typecheck'],
+    ['build', 'leak-guard', 'lint', 'security-test', 'test', 'typecheck'],
     'the check facade must depend on every parallel gate job',
   );
   // Without `if: always()` the facade is SKIPPED when an upstream job fails,
   // and a skipped required check can read as success — a silent bypass.
   assert.equal(facade.if, 'always()', 'check facade must use `if: always()`');
   const steps = JSON.stringify(facade.steps);
-  for (const dep of ['leak-guard', 'lint', 'typecheck', 'test', 'build']) {
+  for (const dep of ['leak-guard', 'lint', 'typecheck', 'test', 'build', 'security-test']) {
     assert.ok(steps.includes(`needs['${dep}'].result`), `facade must inspect ${dep}.result`);
   }
   assert.match(steps, /exit 1/, 'facade must fail when an upstream job did not succeed');
+});
+
+test('Electron security-boundary tests gate check on every pull request', () => {
+  const workflow = YAML.parse(ci);
+  const job = workflow.jobs?.['security-test'];
+  assert.ok(job, 'security-test job missing');
+  assert.equal(job.needs, undefined, 'security-test must run independently');
+  assert.equal(job.if, undefined, 'security-test must run on every CI event, pull requests included');
+  assert.equal(job['continue-on-error'], undefined, 'security-test must remain blocking');
+  assert.equal(job['runs-on'], 'macos-15');
+  assert.equal(job.steps.find((step) => step.id === 'install')?.run.trim(), 'npm ci');
+  assert.ok(
+    requiredCheckStep('Electron security-boundary tests', 'security-test').includes(
+      'run: npm run electron:security-test\n',
+    ),
+  );
+  assert.ok(workflow.jobs.check.needs.includes('security-test'), 'check must depend on security-test');
+  assert.ok(
+    JSON.stringify(workflow.jobs.check.steps).includes("security-test=${{ needs['security-test'].result }}"),
+    'check must fail when security-test did not succeed',
+  );
 });
 
 test('only the test job fetches full history, for changed-line coverage', () => {

@@ -19,6 +19,7 @@ import { getBaseName } from '@/utils/pathUtils';
 import type { FileChange } from '@/types/fileChange';
 import { DiffLines, type DiffFold } from '@/components/diff/DiffLines';
 import DetailBlockView from './DetailBlockView';
+import { blockFullText } from './toolResultTexts';
 
 type StepGlyph = ComponentProps<typeof Icon>['icon'];
 
@@ -265,6 +266,8 @@ interface TaskBlockProps {
   onRetry?: () => void;
   /** File changes of this turn's own tool calls, by tool call id. */
   fileChanges?: ReadonlyMap<string, FileChange>;
+  /** Each step's whole result as Abu read it, by tool call id. */
+  toolResults?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -276,7 +279,7 @@ const PREVIEW_LIMIT = 3;
 
 type DisplayMode = 'collapsed' | 'preview' | 'expanded';
 
-export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges }: TaskBlockProps) {
+export default function TaskBlock({ steps, executionSteps, isActive, isStopped = false, onRetry, fileChanges, toolResults }: TaskBlockProps) {
   const { t, locale } = useI18n();
 
   // Convert to unified steps
@@ -412,6 +415,7 @@ export default function TaskBlock({ steps, executionSteps, isActive, isStopped =
                 locale={locale}
                 t={t}
                 fileChange={step.toolCallId ? fileChanges?.get(step.toolCallId) : undefined}
+                toolResults={toolResults}
               />
             );
           })}
@@ -510,9 +514,11 @@ export interface TaskStepItemProps {
   t: TranslationDict;
   /** What the step's write_file, edit_file or delete_file call did to its file. */
   fileChange?: FileChange;
+  /** Whole results by tool call id; left out for an expert's nested steps. */
+  toolResults?: ReadonlyMap<string, string>;
 }
 
-export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t, fileChange }: TaskStepItemProps) {
+export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t, fileChange, toolResults }: TaskStepItemProps) {
   const stepGlyph = getStepIcon(step);
   const typeLabel = getTypeLabel(step, t);
   const isRunning = step.status === 'running';
@@ -609,6 +615,7 @@ export function TaskStepItem({ step, showConnector, hasLaterToolStep, locale, t,
             key={block.id}
             block={block}
             onToggle={() => handleToggleDetailBlock(block.id)}
+            fullText={blockFullText(block, step, toolResults)}
           />
         ))}
       </div>

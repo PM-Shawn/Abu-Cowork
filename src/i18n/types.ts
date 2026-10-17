@@ -500,8 +500,20 @@ export interface TranslationDict {
     /** Button on the offline notice: switch this conversation to the user's own model. */
     useMyOwnModel: string;
     // DetailBlockView
-    characters: string;
-    viewMore: string;
+    /** Button in the middle of a folded tool result; `{count}` is the number of lines Abu read. */
+    toolResultShowAllLines: string;
+    /** Same button for a result folded by characters; `{count}` is the number of characters Abu read. */
+    toolResultShowAllChars: string;
+    /** Line where Abu read only the start and end of a long result; `{count}` lines were left out. */
+    toolResultLinesNotRead: string;
+    /** Same line for characters; `{count}` characters were left out. */
+    toolResultCharsNotRead: string;
+    /** Line where the end of a command's output was not kept. */
+    toolResultRestNotKept: string;
+    /** Line where the conversation record had no room for part of a step (its end, or its images). */
+    toolResultPartNotSaved: string;
+    /** Under a step result whose whole text the conversation does not hold. */
+    toolResultFullUnavailable: string;
     moreItems: string;
     moreRows: string;
     setupRequired: string;

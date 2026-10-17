@@ -14,6 +14,7 @@ import UserQuestionCard from './UserQuestionCard';
 import PlanStepsCard from './PlanStepsCard';
 import ShowWidgetCard from './ShowWidgetCard';
 import TaskBlock from './TaskBlock';
+import { collectToolResultTexts } from './toolResultTexts';
 import McpAppBlock from './McpAppBlock';
 import { resolveToolCallAppUi } from '@/core/mcp/appHost';
 import SmoothHeight from './SmoothHeight';
@@ -618,6 +619,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     }
     return byToolCallId;
   }, [allToolCalls]);
+  // Each step's whole result as Abu read it, saved with the conversation.
+  const toolResults = useMemo(() => collectToolResultTexts(messages), [messages]);
   const legacyWorkflowToolCalls = useMemo<ToolCall[]>(() => {
     const seenBatchKeys = new Set<string>();
     return assistantMsgs.flatMap((message) => (message.toolCalls || []).filter((toolCall) => {
@@ -1186,6 +1189,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             isStopped={isStopped}
             onRetry={seg.isLastGroup && hasError && !isStreaming ? handleRetry : undefined}
             fileChanges={fileChanges}
+            toolResults={toolResults}
           />
         ) : hasLegacySteps && (
           <TaskBlock

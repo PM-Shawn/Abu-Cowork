@@ -99,6 +99,21 @@ export function getContextPressureScale(contextUsagePercent?: number): number {
   return 0.25;                                // critical — aggressive truncation
 }
 
+/** The line `truncateToolResult` writes where it dropped lines from the middle. */
+export function linesOmittedMarker(count: number): string {
+  return `[... ${count} lines omitted ...]`;
+}
+
+/** The line `truncateToolResult` writes where it dropped characters from the middle. */
+export function charsOmittedMarker(count: number): string {
+  return `[... ${count} characters omitted ...]`;
+}
+
+/** A whole line written by `linesOmittedMarker`, its count captured. */
+export const LINES_OMITTED_LINE = /^\[\.\.\. (\d+) lines omitted \.\.\.\]$/;
+/** A whole line written by `charsOmittedMarker`, its count captured. */
+export const CHARS_OMITTED_LINE = /^\[\.\.\. (\d+) characters omitted \.\.\.\]$/;
+
 /**
  * Truncate a tool result based on the tool type.
  *
@@ -135,7 +150,7 @@ export function truncateToolResult(toolName: string, result: string, contextUsag
       const omitted = lines.length - rule.headLines - rule.tailLines;
       const truncated = [
         ...head,
-        `\n[... ${omitted} lines omitted ...]\n`,
+        `\n${linesOmittedMarker(omitted)}\n`,
         ...tail,
       ].join('\n');
 
@@ -164,5 +179,5 @@ function charTruncate(text: string, maxChars: number): string {
   const tail = text.slice(-tailChars);
   const omitted = text.length - headChars - tailChars;
 
-  return `${head}\n\n[... ${omitted} characters omitted ...]\n\n${tail}`;
+  return `${head}\n\n${charsOmittedMarker(omitted)}\n\n${tail}`;
 }

@@ -536,3 +536,51 @@ describe('convertExecutionStep label (persisted snapshots keep their label)', ()
     expect(convertExecutionStep({ ...base, toolName: 'run_command', toolInput: { command: 'ls -la' }, label: 'stale' } as never, 'zh-CN').label).not.toBe('stale');
   });
 });
+
+describe('TaskBlock — whole tool results', () => {
+  const t = getI18n();
+  afterEach(() => cleanup());
+
+  function commandStep(overrides: Partial<ExecutionStep> = {}): ExecutionStep {
+    return {
+      id: 'step-1', executionId: '', toolCallId: 'call-1', type: 'command', label: 'Ran a command', status: 'completed',
+      toolName: 'run_command', toolInput: {}, source: 'agent',
+      detailBlocks: [{
+        id: 'step-1-result', stepId: 'step-1', type: 'result', label: 'Result', labelKey: 'result',
+        content: 'line 1', isTruncated: true, fullContentLength: 500, isExpanded: true,
+      }],
+      ...overrides,
+    };
+  }
+  const sixty = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n');
+  const showAll = () => screen.queryByRole('button', { name: format(t.chat.toolResultShowAllLines, { count: 60 }) });
+
+  it('hands each step the whole result stored under its tool call id', () => {
+    render(<TaskBlock executionSteps={[commandStep()]} isActive={false} toolResults={new Map([['call-1', sixty]])} />);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+
+    fireEvent.click(showAll()!);
+    expect(screen.getByText(/line 30/)).toBeInTheDocument();
+  });
+
+  it('switches from the partial block to the whole result once it arrives', () => {
+    const { rerender } = render(<TaskBlock executionSteps={[commandStep()]} isActive toolResults={new Map()} />);
+    expect(screen.getByText(t.chat.toolResultFullUnavailable)).toBeInTheDocument();
+
+    rerender(<TaskBlock executionSteps={[commandStep()]} isActive toolResults={new Map([['call-1', sixty]])} />);
+    expect(showAll()).not.toBeNull();
+    expect(screen.queryByText(t.chat.toolResultFullUnavailable)).toBeNull();
+  });
+
+  it('keeps the nested steps of an expert as they were', () => {
+    const child = commandStep({ id: 'child', toolCallId: 'call-child' });
+    const delegate = commandStep({
+      id: 'd', toolCallId: 'call-d', type: 'delegate', toolName: 'delegate_to_agent', detailBlocks: [], childSteps: [child],
+    });
+    render(<TaskBlock executionSteps={[delegate]} isActive toolResults={new Map([['call-child', sixty]])} />);
+
+    expect(screen.getByText('line 1')).toBeInTheDocument();
+    expect(showAll()).toBeNull();
+    expect(screen.queryByText(t.chat.toolResultFullUnavailable)).toBeNull();
+  });
+});

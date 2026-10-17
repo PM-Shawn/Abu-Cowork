@@ -7,8 +7,9 @@ import { Link } from '@/components/ds/link';
 import { Pressable } from '@/components/ds/pressable';
 import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon } from '@/components/ds/status-icon';
-import { useI18n, format } from '@/i18n';
+import { useI18n, format, type TranslationDict } from '@/i18n';
 import { getDetailBlockLabel } from '@/utils/toolLabels';
+import { foldToolResult, type ToolResultRow } from '@/utils/toolResultFold';
 import type { DetailBlock } from '@/types/execution';
 import { useChatStore } from '@/stores/chatStore';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
@@ -18,7 +19,12 @@ import { loadLocalImage } from '@/utils/pathUtils';
 interface DetailBlockViewProps {
   block: DetailBlock;
   onToggle: () => void;
-  onLoadMore?: () => void;
+  /**
+   * The step's whole result: a string shows it folded with a button for all of
+   * it, null says the conversation no longer holds it, undefined keeps the
+   * block's own content (expert steps, lists, images, scripts).
+   */
+  fullText?: string | null;
 }
 
 type OutputRefImageState = 'idle' | 'loading' | 'ready' | 'unavailable';
@@ -32,12 +38,77 @@ function formatImageSize(bytes: number | undefined): string | null {
   return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
 }
 
+/** A JSON result indented by two spaces; text that does not parse stays as it is. */
+function formatJsonText(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2);
+  } catch {
+    return text;
+  }
+}
+
+function noteText(row: Extract<ToolResultRow, { kind: 'note' }>, t: TranslationDict): string {
+  if (row.note === 'restNotKept') return t.chat.toolResultRestNotKept;
+  if (row.note === 'partNotSaved') return t.chat.toolResultPartNotSaved;
+  const template = row.note === 'linesNotRead' ? t.chat.toolResultLinesNotRead : t.chat.toolResultCharsNotRead;
+  return format(template, { count: row.count ?? 0 });
+}
+
+/** Result rows: runs of the result's own lines in one `<pre>` each, a note on a line of its own. */
+function ResultRows({ rows, t }: { rows: ToolResultRow[]; t: TranslationDict }) {
+  const groups: ({ kind: 'text'; lines: string[] } | Extract<ToolResultRow, { kind: 'note' }>)[] = [];
+  for (const row of rows) {
+    const last = groups.at(-1);
+    if (row.kind === 'note') groups.push(row);
+    else if (last?.kind === 'text') last.lines.push(row.text);
+    else groups.push({ kind: 'text', lines: [row.text] });
+  }
+  return (
+    <>
+      {groups.map((group, index) => (group.kind === 'text' ? (
+        <pre key={index} className="m-0 whitespace-pre-wrap break-all font-code text-mono">{group.lines.join('\n')}</pre>
+      ) : (
+        <div key={index} data-tool-result-note className="my-1 text-caption text-label-tertiary">
+          {noteText(group, t)}
+        </div>
+      )))}
+    </>
+  );
+}
+
+/** A step's whole result: its start and end until the button shows all of it. */
+function WholeResult({ text, isError }: { text: string; isError: boolean }) {
+  const { t } = useI18n();
+  const fold = useMemo(() => foldToolResult(text), [text]);
+  const [showAll, setShowAll] = useState(false);
+  const folded = fold.hidden !== null && !showAll;
+  return (
+    <div
+      data-tool-result
+      className={cn('max-h-[300px] overflow-y-auto px-3 py-2', isError ? 'text-danger' : 'text-label')}
+    >
+      <ResultRows rows={folded ? fold.head : fold.rows} t={t} />
+      {folded && fold.hidden && (
+        <div className="py-1">
+          <Button variant="plain" size="sm" onClick={() => setShowAll(true)}>
+            {format(
+              fold.hidden.unit === 'lines' ? t.chat.toolResultShowAllLines : t.chat.toolResultShowAllChars,
+              { count: fold.hidden.count },
+            )}
+          </Button>
+        </div>
+      )}
+      {folded && <ResultRows rows={fold.tail} t={t} />}
+    </div>
+  );
+}
+
 /**
  * DetailBlockView - Collapsible content area for tool input/output
  * Supports multiple types: script, result, error, list, json, diff, table
  * Uses local state for toggle with optional store sync via onToggle.
  */
-export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailBlockViewProps) {
+export default function DetailBlockView({ block, onToggle, fullText }: DetailBlockViewProps) {
   const { locale, t } = useI18n();
   const outputRef = block.type === 'image' ? block.imageData?.outputRef : undefined;
   const activeConversationId = useChatStore((state) => (
@@ -146,6 +217,12 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
     }
   };
 
+  const renderFullUnavailable = () => (
+    <div className="border-t border-separator px-3 py-2 text-caption text-label-tertiary">
+      {t.chat.toolResultFullUnavailable}
+    </div>
+  );
+
   // Render plain text/code content
   const renderTextContent = () => (
     <>
@@ -156,22 +233,17 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         </div>
       )}
 
-      {/* Content area */}
-      <pre className={cn(
-        'px-3 py-2 font-code text-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
-        block.type === 'error' ? 'text-danger' : 'text-label'
-      )}>
-        {block.content}
-      </pre>
-
-      {/* Load more button */}
-      {block.isTruncated && onLoadMore && (
-        <div className="border-t border-separator px-3 py-2">
-          <Button variant="plain" size="sm" onClick={onLoadMore}>
-            {t.chat.viewMore} ({(block.fullContentLength || 0) - block.content.length} {t.chat.characters})
-          </Button>
-        </div>
+      {typeof fullText === 'string' ? (
+        <WholeResult text={fullText} isError={block.type === 'error'} />
+      ) : (
+        <pre className={cn(
+          'px-3 py-2 font-code text-mono whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto',
+          block.type === 'error' ? 'text-danger' : 'text-label'
+        )}>
+          {block.content}
+        </pre>
       )}
+      {fullText === null && renderFullUnavailable()}
     </>
   );
 
@@ -298,18 +370,14 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
 
   // Render JSON content with syntax highlighting
   const renderJsonContent = () => {
-    let formattedJson = block.content;
-    try {
-      const parsed = JSON.parse(block.content);
-      formattedJson = JSON.stringify(parsed, null, 2);
-    } catch {
-      // If parsing fails, show as-is
-    }
-
+    if (typeof fullText === 'string') return <WholeResult text={formatJsonText(fullText)} isError={false} />;
     return (
-      <pre className="px-3 py-2 font-code text-mono text-label whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
-        {formattedJson}
-      </pre>
+      <>
+        <pre className="px-3 py-2 font-code text-mono text-label whitespace-pre-wrap break-all overflow-x-auto max-h-[300px] overflow-y-auto">
+          {formatJsonText(block.content)}
+        </pre>
+        {fullText === null && renderFullUnavailable()}
+      </>
     );
   };
 
@@ -365,11 +433,6 @@ export default function DetailBlockView({ block, onToggle, onLoadMore }: DetailB
         <Icon icon={localExpanded ? AppIcons.expand : AppIcons.disclose} size="sm" />
         {block.type === 'error' && <StatusIcon tone="danger" size="sm" />}
         {headerLabel}
-        {block.isTruncated && !localExpanded && (
-          <span>
-            ({block.fullContentLength} {t.chat.characters})
-          </span>
-        )}
         {block.type === 'list' && block.parsedItems && (
           <span>
             ({block.parsedItems.length})

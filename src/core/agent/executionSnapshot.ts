@@ -3,6 +3,9 @@ import type { DetailBlock, ExecutionStep } from '../../types/execution';
 import type { ExecutionStepSnapshot } from '../../types/execution';
 import { firstImageContent } from '../tools/toolResultContent';
 
+/** Characters of a detail block a snapshot keeps; a longer block is cut and gets "...". */
+const SNAPSHOT_CONTENT_CHARS = 500;
+
 /**
  * Convert full ExecutionStep[] to compact ExecutionStepSnapshot[] for persistence.
  * Strips large fields (toolInput, toolResult) and keeps only display-relevant data.
@@ -40,12 +43,11 @@ function snapshotStep(step: ExecutionStep): ExecutionStepSnapshot {
   if (step.detailBlocks.length > 0) {
     snapshot.detailBlocks = step.detailBlocks.map((b) => {
       // Truncate content for persistence (keep first 500 chars)
-      const maxLen = 500;
-      const truncated = b.content.length > maxLen
-        ? b.content.slice(0, maxLen) + '...'
+      const truncated = b.content.length > SNAPSHOT_CONTENT_CHARS
+        ? b.content.slice(0, SNAPSHOT_CONTENT_CHARS) + '...'
         : b.content;
       const fullContentLength = b.fullContentLength
-        ?? (b.content.length > maxLen ? b.content.length : undefined);
+        ?? (b.content.length > SNAPSHOT_CONTENT_CHARS ? b.content.length : undefined);
       return {
         id: b.id,
         title: b.label,
@@ -82,7 +84,10 @@ export function snapshotToExecutionSteps(snapshots: ExecutionStepSnapshot[]): Ex
       label: b.title,
       labelKey: b.labelKey,
       content: b.content || '',
-      isTruncated: b.content ? b.content.endsWith('...') : false,
+      // snapshotStep keeps a full length when it cuts a block. Snapshots written
+      // before it did so carry none, but a block they cut is the only content
+      // longer than SNAPSHOT_CONTENT_CHARS ("..." appended).
+      isTruncated: b.fullContentLength != null || (b.content?.length ?? 0) > SNAPSHOT_CONTENT_CHARS,
       fullContentLength: b.fullContentLength,
       isExpanded: false,
     })) ?? [],

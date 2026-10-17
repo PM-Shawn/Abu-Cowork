@@ -218,3 +218,96 @@ describe('DetailBlockView neutral surfaces', () => {
     expect(link).toHaveClass('text-link');
   });
 });
+
+describe('DetailBlockView whole result', () => {
+  beforeEach(() => {
+    initLanguage('zh-CN');
+  });
+
+  afterEach(() => {
+    cleanup();
+    initLanguage('en-US');
+  });
+
+  const resultBlock = (overrides: Partial<DetailBlock> = {}): DetailBlock => ({
+    id: 'r', stepId: 's', type: 'result', label: '结果', labelKey: 'result',
+    content: 'line 1', isTruncated: true, fullContentLength: 4000, isExpanded: true, ...overrides,
+  });
+  const sixty = Array.from({ length: 60 }, (_, i) => `line ${i + 1}`).join('\n');
+
+  it('folds a long result to its first and last lines and shows all of it on the button', () => {
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={sixty} />);
+
+    expect(screen.getByText(/line 5$/)).toBeInTheDocument();
+    expect(screen.getByText(/^line 57/)).toBeInTheDocument();
+    expect(screen.queryByText(/line 30/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '显示全部 60 行' }));
+    expect(screen.getByText(/line 30/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '显示全部 60 行' })).toBeNull();
+  });
+
+  it('writes the notes in words the user reads', () => {
+    const text = 'a\n\n[... 4820 lines omitted ...]\n\nb\n[truncated: output too large]';
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={text} />);
+
+    expect(screen.getByText('内容过长，阿布没有读取中间的 4820 行')).toBeInTheDocument();
+    expect(screen.getByText('内容过长，后面的部分没有留下')).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('omitted');
+  });
+
+  it('says part of the step was not saved where the conversation record ran out of room', () => {
+    const text = 'Screenshot taken\n\n[Rich tool result omitted from durable history to stay within the storage budget]';
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={text} />);
+
+    expect(screen.getByText('这一步有部分内容没有保存下来')).toBeInTheDocument();
+    expect(screen.queryByText('内容过长，后面的部分没有留下')).toBeNull();
+  });
+
+  it('folds one long line by characters', () => {
+    render(<DetailBlockView block={resultBlock()} onToggle={() => {}} fullText={'x'.repeat(3000)} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '显示全部 3000 个字符' }));
+    expect(screen.getByText('x'.repeat(3000))).toBeInTheDocument();
+  });
+
+  it('folds a long error the same way, in the danger color', () => {
+    render(<DetailBlockView block={resultBlock({ type: 'error', labelKey: 'error' })} onToggle={() => {}} fullText={sixty} />);
+
+    expect(screen.getByRole('button', { name: '显示全部 60 行' }).closest('[data-tool-result]')).toHaveClass('text-danger');
+  });
+
+  it('says when the conversation has no whole result for the step', () => {
+    render(<DetailBlockView block={resultBlock({ content: 'first part...' })} onToggle={() => {}} fullText={null} />);
+
+    expect(screen.getByText('first part...')).toBeInTheDocument();
+    expect(screen.getByText('这段对话里没有这一步的完整结果')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /显示全部/ })).toBeNull();
+  });
+
+  it('shows the summary block of an expert step with the same fold', () => {
+    render(<DetailBlockView block={resultBlock({ labelKey: 'summary', label: '执行摘要' })} onToggle={() => {}} fullText={sixty} />);
+
+    expect(screen.getByRole('button', { name: '显示全部 60 行' })).toBeInTheDocument();
+  });
+
+  it('labels a collapsed block with its name only', () => {
+    render(<DetailBlockView block={resultBlock({ isExpanded: false })} onToggle={() => {}} fullText={sixty} />);
+
+    expect(screen.getByRole('button', { name: '结果' })).toBeInTheDocument();
+  });
+
+  it('formats a JSON result before folding it', () => {
+    const json = JSON.stringify(Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, i])));
+    render(<DetailBlockView block={resultBlock({ type: 'json' })} onToggle={() => {}} fullText={json} />);
+
+    expect(screen.getByRole('button', { name: '显示全部 22 行' })).toBeInTheDocument();
+  });
+
+  it('keeps a block as it was when no whole text is given', () => {
+    render(<DetailBlockView block={resultBlock({ content: 'first part' })} onToggle={() => {}} />);
+
+    expect(screen.getByText('first part')).toBeInTheDocument();
+    expect(screen.queryByText('这段对话里没有这一步的完整结果')).toBeNull();
+    expect(screen.queryByRole('button', { name: /显示全部/ })).toBeNull();
+  });
+});

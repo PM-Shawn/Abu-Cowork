@@ -46,7 +46,8 @@ const DEFAULT_LIMITS: ResolvedLimits = {
 };
 
 const textEncoder = new TextEncoder();
-const OMITTED_NOTE = '[Rich tool result omitted from durable history to stay within the storage budget]';
+/** The line that takes the place of a result's end once the storage budget runs out. */
+export const DURABLE_RESULT_OMITTED_NOTE = '[Rich tool result omitted from durable history to stay within the storage budget]';
 const TRUNCATED_INPUT = Object.freeze({ _durableTruncated: true });
 const JSON_ARRAY_ENVELOPE_BYTES = 2;
 
@@ -298,10 +299,10 @@ function retainContent(
 }
 
 function resultWithOmissionNote(source: string, maxBytes: number): string {
-  if (source.includes(OMITTED_NOTE) && jsonUtf8ByteLength(source) <= maxBytes) return source;
+  if (source.includes(DURABLE_RESULT_OMITTED_NOTE) && jsonUtf8ByteLength(source) <= maxBytes) return source;
   const separator = source.length > 0 ? '\n\n' : '';
-  const suffix = `${separator}${OMITTED_NOTE}`;
-  if (jsonUtf8ByteLength(suffix) > maxBytes) return fitJsonString(OMITTED_NOTE, maxBytes);
+  const suffix = `${separator}${DURABLE_RESULT_OMITTED_NOTE}`;
+  if (jsonUtf8ByteLength(suffix) > maxBytes) return fitJsonString(DURABLE_RESULT_OMITTED_NOTE, maxBytes);
 
   let low = 0;
   let high = Math.min(source.length, maxBytes);
@@ -547,7 +548,7 @@ export function appendBoundedSubagentToolCall(
 }
 
 export const __testing = {
-  OMITTED_NOTE,
+  OMITTED_NOTE: DURABLE_RESULT_OMITTED_NOTE,
   jsonUtf8ByteLength,
   jsonValueFits,
   retainContent,

@@ -35,6 +35,7 @@
 import { exists, mkdir, readDir, readTextFile, writeTextFile, remove, stat, copyFile, readFile, writeFile } from '@tauri-apps/plugin-fs';
 import { appDataDir, homeDir } from '@tauri-apps/api/path';
 import { joinPath, normalizeSeparators, getBaseName } from '@/utils/pathUtils';
+import { isMissingPathError } from '@/utils/fsErrors';
 import { createConversationPaths, isConversationId, type ConversationPaths } from './conversationPaths';
 import { extractFileOutputs } from '@/utils/workflowExtractor';
 import { base64ToUint8Array } from '@/utils/base64';
@@ -448,13 +449,30 @@ function evictableRelPath(entry: SnapshotEntry): string | null {
   return relPath && relPath.startsWith('files/') ? relPath : null;
 }
 
-/** The original is still where it was, with the size and mtime the copy was taken at. */
-async function originalUnchanged(entry: SnapshotEntry): Promise<boolean> {
-  if (!(await exists(entry.originalPath))) return false;
-  const st = await stat(entry.originalPath);
+/**
+ * - `unchanged`: the original is where it was, with the size and mtime the copy was taken at.
+ * - `gone`: the original is missing or no longer the file the copy was taken of.
+ * - `unknown`: the original could not be read (permissions, I/O); the copy may be the only one.
+ */
+type OriginalState = 'unchanged' | 'gone' | 'unknown';
+
+async function originalState(convId: string, entry: SnapshotEntry): Promise<OriginalState> {
+  let st: Awaited<ReturnType<typeof stat>>;
+  try {
+    st = await stat(entry.originalPath);
+  } catch (error) {
+    if (isMissingPathError(error)) return 'gone';
+    logger.warn('kept copy left out of eviction: its original could not be read', {
+      convId,
+      errorKind: error instanceof Error ? error.name : 'unknown',
+    });
+    return 'unknown';
+  }
   return st.isFile
     && st.size === entry.size
-    && (st.mtime ? st.mtime.getTime() : 0) === entry.originalMtime;
+    && (st.mtime ? st.mtime.getTime() : 0) === entry.originalMtime
+    ? 'unchanged'
+    : 'gone';
 }
 
 interface CopyInConversation {
@@ -465,12 +483,16 @@ interface CopyInConversation {
 /**
  * Eviction order: first the copies whose original is unchanged in place
  * (evicting them loses nothing today), then the copies that are the only one
- * left; oldest first within each group.
+ * left; oldest first within each group. A copy whose original cannot be read
+ * is not ranked: it stays, and counts toward the limit until a later pass can
+ * read its original.
  */
 async function inEvictionOrder(copies: CopyInConversation[]): Promise<CopyInConversation[]> {
   const ranked: Array<CopyInConversation & { redundant: boolean }> = [];
   for (const copy of copies) {
-    ranked.push({ ...copy, redundant: await originalUnchanged(copy.entry) });
+    const state = await originalState(copy.convId, copy.entry);
+    if (state === 'unknown') continue;
+    ranked.push({ ...copy, redundant: state === 'unchanged' });
   }
   ranked.sort((a, b) => Number(b.redundant) - Number(a.redundant)
     || a.entry.snapshottedAt - b.entry.snapshottedAt);

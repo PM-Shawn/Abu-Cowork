@@ -6,6 +6,7 @@
 import { homeDir, tempDir } from '@tauri-apps/api/path';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
+import { isMissingPathError } from '../../utils/fsErrors';
 import { normalizeLexicalPath, normalizeSeparators } from '../../utils/pathUtils';
 import { isMacOS, isWindows } from '../../utils/platform';
 import { createLogger } from '../logging/logger';
@@ -607,14 +608,6 @@ async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blo
   }
 
   return { blocked: false };
-}
-
-function isMissingPathError(error: unknown): boolean {
-  const code = typeof error === 'object' && error !== null && 'code' in error
-    ? String((error as { code?: unknown }).code ?? '')
-    : '';
-  if (code === 'ENOENT' || code === 'ENOTDIR') return true;
-  return /enoent|enotdir|not found|no such file|cannot find/i.test(String(error));
 }
 
 function pathComponentPrefixes(path: string, trustedRoot?: string): string[] {

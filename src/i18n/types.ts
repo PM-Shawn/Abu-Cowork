@@ -4277,6 +4277,9 @@ export interface TranslationDict {
     errAccountPending: string;
     errAccountSuspended: string;
     errGeneric: string;
+    errLoginExpired: string;
+    loginCancelled: string;
+    loginAgain: string;
     /** Rate-limited; interpolates {seconds} when Retry-After is available. */
     errSlowDown: string;
     /** Rate-limited fallback when no Retry-After header is present. */

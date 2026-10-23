@@ -526,6 +526,17 @@ if (!app.requestSingleInstanceLock()) {
     try {
       transitionInspection = inspectTransition(app);
     } catch (error) {
+      // Debug branch only: record why the legacy inspection failed.
+      fs.appendFileSync(
+        path.join(process.env.LOCALAPPDATA || app.getPath('temp'), 'abu-smoke-debug.log'),
+        JSON.stringify({
+          at: 'inspect-transition-failed',
+          time: new Date().toISOString(),
+          message: error instanceof Error ? error.message : String(error),
+          stack: error instanceof Error ? error.stack : null,
+          code: error && typeof error === 'object' ? error.code : null,
+        }) + '\n',
+      );
       const isZh = app.getLocale().toLowerCase().startsWith('zh');
       await dialog.showMessageBox({
         type: 'error',

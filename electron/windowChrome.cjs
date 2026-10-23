@@ -53,8 +53,7 @@ function windowMaterial(platform = process.platform, systemVersion = process.get
   if (platform !== 'win32') return 'none';
   const build = Number(String(systemVersion).split('.')[2]);
   if (!Number.isInteger(build)) throw new Error(`Unrecognised Windows version: ${systemVersion}`);
-  // Debug branch only: Windows never gets mica, to test whether mica stops the installed smoke.
-  return build >= MICA_MIN_BUILD && false ? 'mica' : 'none';
+  return build >= MICA_MIN_BUILD ? 'mica' : 'none';
 }
 
 function mainWindowPlatformOptions(platform = process.platform, dark = false, material = windowMaterial(platform)) {

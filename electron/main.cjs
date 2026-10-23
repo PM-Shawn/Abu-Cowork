@@ -230,7 +230,8 @@ function showTransitionSuccess(appInstance, win) {
 }
 
 function createWindow(transitionWindow = null) {
-  const material = windowMaterial();
+  // Debug branch only: the main window never takes a system material, to test whether mica stops the installed smoke.
+  const material = process.platform === 'win32' ? 'none' : windowMaterial();
   const win = new BrowserWindow({
     show: false,
     width: 1200,

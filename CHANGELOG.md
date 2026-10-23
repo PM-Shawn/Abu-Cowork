@@ -58,6 +58,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **The copies Abu keeps of its files have a size limit.** Abu copies a file up to 200 MB (it was 5 GB), keeps up to 1 GB of copies per conversation, and up to 5 GB across all conversations, which it checks each time it starts. Past a limit the oldest copies go first, starting with those whose file is still where it was and unchanged; the copies of files that are gone go only after those. A file whose copy was removed shows as missing once the file itself is gone. A copy whose file Abu cannot read at that moment, because of a missing permission or a disk error, is kept and still counts toward the limit. Images in tool results and the files of an imported shared conversation are always kept.
 - **Approvals and questions take no click in their first half second, and a held key acts once.** A click that was already on its way when an approval or a question appeared answers nothing during the first 0.5 seconds; the keyboard works at once. Holding Enter, Space or Escape answers or closes one thing per press, so a key still down from the step before does not approve, send or close the next one.
 
+### 🐛 Fixes
+
+- **Opening a file from Abu no longer starts a program or a script.** The "Open" button on a file card and "Open in default app" in the preview hand the file to the system, and for a program, an installer, a shortcut or a script the system's way of opening it is to run it: one click ran a file in the workspace, outside command approval. Abu now refuses to open those files on macOS and Windows, also when a link with a document's name points to one, and both places offer "Show in File Manager" for them. Documents open as before.
+
 ## v0.50.0 · 2026-09-16
 
 ### ✨ Features

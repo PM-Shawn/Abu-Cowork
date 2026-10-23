@@ -227,6 +227,14 @@ try {
       Start-Sleep -Milliseconds 250
     }
     if ($legacySystemComponent -ne 1) {
+      # Debug branch only: show what the main process recorded at ready-to-show.
+      $debugLog = Join-Path $env:LOCALAPPDATA "abu-smoke-debug.log"
+      Write-Host "=== abu-smoke-debug.log exists: $(Test-Path $debugLog)"
+      if (Test-Path $debugLog) { Get-Content $debugLog | Write-Host }
+      Write-Host "=== legacy uninstall key:"
+      Get-ItemProperty -Path $tauriLegacyUninstallKey -ErrorAction SilentlyContinue | Format-List | Out-String | Write-Host
+      Write-Host "=== Abu processes:"
+      Get-Process -Name "Abu" -ErrorAction SilentlyContinue | Select-Object Id, MainWindowHandle, MainWindowTitle | Format-Table | Out-String | Write-Host
       throw "Electron did not hide the recognized legacy Tauri uninstall entry"
     }
     $legacyTransitionMarker = Get-ItemPropertyValue -Path $tauriLegacyUninstallKey `

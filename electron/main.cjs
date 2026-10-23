@@ -230,8 +230,7 @@ function showTransitionSuccess(appInstance, win) {
 }
 
 function createWindow(transitionWindow = null) {
-  // Debug branch only: the main window never takes a system material, to test whether mica stops the installed smoke.
-  const material = process.platform === 'win32' ? 'none' : windowMaterial();
+  const material = windowMaterial();
   const win = new BrowserWindow({
     show: false,
     width: 1200,
@@ -282,6 +281,18 @@ function createWindow(transitionWindow = null) {
     },
   });
   win.once('ready-to-show', () => {
+    // Debug branch only: record the migration gate state for the installed smoke.
+    fs.appendFileSync(
+      path.join(process.env.LOCALAPPDATA || app.getPath('temp'), 'abu-smoke-debug.log'),
+      JSON.stringify({
+        at: 'ready-to-show',
+        time: new Date().toISOString(),
+        block: getMigrationStartupBlock(),
+        pending: isMigrationStartupPending(),
+        destroyed: win.isDestroyed(),
+        transitionBuild: isTauriTransitionBuild(app),
+      }) + '\n',
+    );
     if (
       !getMigrationStartupBlock() &&
       !isMigrationStartupPending() &&
@@ -295,6 +306,10 @@ function createWindow(transitionWindow = null) {
       // rollback component; it never removes old binaries or user data.
       if (process.platform === 'win32' && isTauriTransitionBuild(app)) {
         const legacyInstall = hideLegacyTauriUninstallEntry();
+        fs.appendFileSync(
+          path.join(process.env.LOCALAPPDATA || app.getPath('temp'), 'abu-smoke-debug.log'),
+          JSON.stringify({ at: 'hide-legacy', time: new Date().toISOString(), legacyInstall }) + '\n',
+        );
         log(
           legacyInstall.reason === 'registry-write-failed' ? 'warn' : 'info',
           'legacy Tauri install convergence',

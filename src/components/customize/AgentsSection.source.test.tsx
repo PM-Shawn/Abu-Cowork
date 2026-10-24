@@ -129,7 +129,9 @@ describe('AgentsSection — which shelf an expert lands on', () => {
     expect(screen.getByText('我的助手')).toBeInTheDocument();
     expect(screen.queryByText('产品经理')).toBeNull();
     const card = screen.getByText('reviewer').closest('[role="button"]') as HTMLElement;
-    expect(within(card).getByTestId('source-badge')).toHaveTextContent('来自插件 Weather Pack');
+    const badge = within(card).getByTestId('source-badge');
+    expect(badge).toHaveTextContent(/^来自插件$/);
+    expect(within(badge).getByTitle('来自插件 Weather Pack')).toBeInTheDocument();
     expect(within(screen.getByText('我的助手').closest('[role="button"]') as HTMLElement).queryByTestId('source-badge')).toBeNull();
   });
 });

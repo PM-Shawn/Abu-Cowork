@@ -220,14 +220,13 @@ describe('ToolCard shell', () => {
 });
 
 describe('SourceBadge', () => {
-  it('shows a plugin source as a neutral tag whose full text is readable on hover', () => {
+  it('shows a plugin source as a short neutral tag that names the plugin on hover', () => {
     render(<SourceBadge source={{ kind: 'plugin', plugin: 'Weather Pack' }} />);
     const badge = screen.getByTestId('source-badge');
     expect(badge).toHaveAttribute('data-source-kind', 'plugin');
     const text = badge.querySelector('[title]')!;
-    expect(text.getAttribute('title')).toBe(badge.textContent);
-    expect(badge.textContent).toContain('Weather Pack');
-    expect(text.className.split(/\s+/)).toContain('truncate');
+    expect(badge.textContent).toBe('From a plugin');
+    expect(text.getAttribute('title')).toBe('From plugin Weather Pack');
     // The design-system tag: neutral fill, control corners.
     expect(text.parentElement!.className.split(/\s+/)).toContain('bg-fill');
     expect(text.parentElement!.className.split(/\s+/)).toContain('rounded-control');

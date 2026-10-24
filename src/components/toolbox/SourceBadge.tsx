@@ -18,14 +18,14 @@ export type ItemSource =
 export default function SourceBadge({ source, className }: { source: ItemSource; className?: string }) {
   const { t } = useI18n();
   if (source.kind === 'user') return null;
-  const label = source.kind === 'plugin'
-    ? (source.plugin ? format(t.toolbox.sourceFromPlugin, { plugin: source.plugin }) : t.toolbox.sourcePlugin)
-    : t.toolbox.sourceEnterprise;
+  // The pill stays short so the card's title keeps its room; which plugin it is
+  // shows on hover and in the item's detail.
+  const label = source.kind === 'plugin' ? t.toolbox.sourcePlugin : t.toolbox.sourceEnterprise;
+  const title = source.kind === 'plugin' && source.plugin ? format(t.toolbox.sourceFromPlugin, { plugin: source.plugin }) : label;
   return (
     <span data-testid="source-badge" data-source-kind={source.kind} className={cn('inline-flex shrink-0', className)}>
       <Tag>
-        {/* A long plugin name is cut at 12rem; the native title keeps it readable. */}
-        <span className="max-w-48 truncate" title={label}>{label}</span>
+        <span title={title}>{label}</span>
       </Tag>
     </span>
   );

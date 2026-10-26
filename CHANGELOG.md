@@ -91,6 +91,10 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 - **No follow-up suggestions above the message field, and no unverified note on a member's card.** After a team turn, the field used to carry suggestions reading Redo step N or Ask someone for another version; they are gone, and a follow-up is simply typed. The amber note reading No tool was called, the content is unverified is gone from member cards as well: a reply in plain text is a normal way to deliver work.
 - **A command that simulates keyboard or mouse input asks first.** On every platform, a command that synthesizes keyboard or mouse input, or that activates a window and clicks in it, now asks for your confirmation before it runs.
 
+### 🐛 Fixes
+
+- **Opening a file from Abu no longer starts a program or a script.** The "Open" button on a file card and "Open in default app" in the preview hand the file to the system, and for a program, an installer, a shortcut or a script the system's way of opening it is to run it: one click ran a file in the workspace, outside command approval. Abu now refuses to open those files on macOS and Windows, also when a link with a document's name points to one, and both places offer "Show in File Manager" for them. Documents open as before.
+
 ## v0.50.0 · 2026-09-16
 
 ### ✨ Features

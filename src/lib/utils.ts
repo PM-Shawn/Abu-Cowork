@@ -37,7 +37,7 @@ const twMerge = extendTailwindMerge({
     classGroups: {
       // The type scale (--text-*): interface sizes, then content sizes.
       "font-size": [{ text: [
-        "caption", "title-lg", "title", "ui", "ui-sm",
+        "caption", "title-lg", "title", "ui", "ui-sm", "nav",
         "body", "h1", "h2", "h3", "mono", "code-inline",
       ] }],
       "text-color": [{ text: DS_TEXT_COLORS }],
@@ -50,6 +50,7 @@ const twMerge = extendTailwindMerge({
       duration: [{ duration: ["fast", "base", "slow"] }],
       ease: [{ ease: ["enter", "exit"] }],
       "font-family": [{ font: ["code"] }],
+      h: [{ h: ["sidebar-row"] }],
     },
   },
 })

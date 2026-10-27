@@ -1,12 +1,42 @@
 {
   "_comment": [
-    "DeepSeek models the pinned models.dev snapshot does not carry yet.",
-    "Fields mirror deepseek-v4-flash (the vision route is that model plus image input,",
-    "and official pricing lists both identically) except vision + toolResultImages.",
-    "pricing is omitted on purpose so findPricing's id-prefix match inherits flash's.",
-    "See ../README.md 'Add a model models.dev doesn't have' for the full rationale."
+    "DeepSeek Flash and its official compatibility names accept image input.",
+    "Capacity source: https://api-docs.deepseek.com/api/list-models/ (2026-10-27).",
+    "Pricing source: https://api-docs.deepseek.com/quick_start/pricing/ (peak rates)."
   ],
   "models": [
+    {
+      "id": "deepseek-flash",
+      "label": "DeepSeek V4.1 Flash",
+      "family": "deepseek-flash",
+      "providers": ["deepseek"],
+      "vision": true,
+      "thinking": "uncontrollable",
+      "toolResultImages": "workaround",
+      "documentBlock": false,
+      "contextWindow": 1048576,
+      "maxOutputTokens": 32768,
+      "outputCeiling": 393216,
+      "reasoning": true,
+      "pdfInput": false,
+      "pricing": { "input": 0.3, "output": 1.2, "cacheRead": 0.006, "cacheCreation": 0 }
+    },
+    {
+      "id": "deepseek-v4-flash",
+      "label": "DeepSeek V4 Flash",
+      "family": "deepseek-flash",
+      "providers": ["deepseek"],
+      "vision": true,
+      "thinking": "uncontrollable",
+      "toolResultImages": "workaround",
+      "documentBlock": false,
+      "contextWindow": 1048576,
+      "maxOutputTokens": 32768,
+      "outputCeiling": 393216,
+      "reasoning": true,
+      "pdfInput": false,
+      "pricing": { "input": 0.3, "output": 1.2, "cacheRead": 0.006, "cacheCreation": 0 }
+    },
     {
       "id": "deepseek-v4-flash-vision-exp",
       "label": "DeepSeek V4 Flash Vision (Exp)",
@@ -16,9 +46,9 @@
       "thinking": "uncontrollable",
       "toolResultImages": "workaround",
       "documentBlock": false,
-      "contextWindow": 1000000,
+      "contextWindow": 1048576,
       "maxOutputTokens": 32768,
-      "outputCeiling": 384000,
+      "outputCeiling": 393216,
       "reasoning": true,
       "pdfInput": false
     }

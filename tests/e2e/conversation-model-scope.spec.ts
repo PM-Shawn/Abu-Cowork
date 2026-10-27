@@ -2,9 +2,9 @@
  * Per-conversation model scope (issue #545) through the real Electron renderer,
  * sidecar, and conversation storage.
  *
- * - The global model is only the default for NEW conversations; it changes
- *   only when a model is picked on the new-task page.
- * - A pick inside a conversation changes that conversation alone.
+ * - Every explicit model pick becomes the default for new conversations.
+ * - A pick inside a conversation also saves that conversation's own model.
+ * - Opening an existing conversation preserves the latest default.
  * - Every chat request (including a delegate's) runs on the conversation's model.
  *
  * The only model endpoint is a loopback OpenAI-compatible mock that records the
@@ -348,7 +348,7 @@ test.describe('per-conversation model scope (#545)', () => {
     dataRoot = undefined;
   });
 
-  test('a pick scopes to its conversation, new tasks keep the default, and both survive a restart', async () => {
+  test('new tasks remember the latest pick and existing conversations keep their models across a restart', async () => {
     test.setTimeout(300_000);
     mock = await startModelMock();
     dataRoot = createElectronDataRoot();
@@ -362,23 +362,23 @@ test.describe('per-conversation model scope (#545)', () => {
     await sendAndAwait(page, 'cms-a1', MODEL_X.id, mock);
     await expectComposerModel(page, MODEL_X.label);
 
-    // 2. Pick Y inside conversation A → A runs on Y; the new-task default stays X.
+    // 2. Pick Y inside conversation A: A and the next new conversation use Y.
     await pickModel(page, MODEL_Y.label);
     await sendAndAwait(page, 'cms-a2', MODEL_Y.id, mock);
     await shot(page, '02-conv-a-switched-to-y');
 
     await openNewTask(page);
-    await expectComposerModel(page, MODEL_X.label);
-    await shot(page, '03-new-task-still-x');
-    await sendAndAwait(page, 'cms-b1', MODEL_X.id, mock);
-    await expectComposerModel(page, MODEL_X.label);
+    await expectComposerModel(page, MODEL_Y.label);
+    await shot(page, '03-new-task-latest-y');
+    await sendAndAwait(page, 'cms-b1', MODEL_Y.id, mock);
+    await pickModel(page, MODEL_X.label);
 
     // 3. Switching conversations shows and uses each one's own model.
     await openConversation(page, 'cms-a1');
     await expectComposerModel(page, MODEL_Y.label);
     await sendAndAwait(page, 'cms-a3', MODEL_Y.id, mock);
 
-    // Picking Z in A leaves B (and the default) untouched.
+    // Picking Z in A remembers Z for new tasks and preserves B's selected X.
     await pickModel(page, MODEL_Z.label);
     await shot(page, '04-conv-a-z');
     await openConversation(page, 'cms-b1');
@@ -396,12 +396,12 @@ test.describe('per-conversation model scope (#545)', () => {
     await sendAndAwait(page, 'cms-b3', MODEL_Y.id, mock);
 
     await openNewTask(page);
-    await expectComposerModel(page, MODEL_X.label);
+    await expectComposerModel(page, MODEL_Y.label);
     const persistedDefault = await page.evaluate(() => {
       const raw = window.localStorage.getItem('abu-settings');
       return raw ? (JSON.parse(raw) as { state: { activeModel?: unknown } }).state.activeModel : null;
     });
-    expect(persistedDefault).toMatchObject({ modelId: MODEL_X.id });
+    expect(persistedDefault).toMatchObject({ modelId: MODEL_Y.id });
 
     // Only task requests matter here; no request of any kind ever used an unknown model.
     const knownModels = [MODEL_X.id, MODEL_Y.id, MODEL_Z.id];
@@ -421,7 +421,7 @@ test.describe('per-conversation model scope (#545)', () => {
     page = await app.firstWindow({ timeout: READY_TIMEOUT });
     await page.waitForLoadState('domcontentloaded');
     await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
-    await expectComposerModel(page, MODEL_X.label);
+    await expectComposerModel(page, MODEL_Y.label);
 
     await openConversation(page, 'cms-a1');
     await expectComposerModel(page, MODEL_Z.label);
@@ -436,7 +436,7 @@ test.describe('per-conversation model scope (#545)', () => {
     await sendAndAwait(page, 'cms-b4', MODEL_Y.id, mock);
 
     await openNewTask(page);
-    await expectComposerModel(page, MODEL_X.label);
+    await expectComposerModel(page, MODEL_Y.label);
     expectOnlyAgentRequestsCounted(mock);
   });
 
@@ -465,6 +465,8 @@ test.describe('per-conversation model scope (#545)', () => {
     await openConversation(page, 'cms-q1');
     await expectComposerModel(page, MODEL_Y.label);
     await sendAndAwait(page, 'cms-q2', MODEL_Y.id, mock);
+    await openNewTask(page);
+    await expectComposerModel(page, MODEL_Y.label);
   });
 
   test('a delegate launched from a Y conversation runs on Y while the default is X', async () => {
@@ -477,6 +479,11 @@ test.describe('per-conversation model scope (#545)', () => {
 
     await sendAndAwait(page, 'cms-d0', MODEL_X.id, mock);
     await pickModel(page, MODEL_Y.label);
+    await openNewTask(page);
+    await expectComposerModel(page, MODEL_Y.label);
+    await pickModel(page, MODEL_X.label);
+    await openConversation(page, 'cms-d0');
+    await expectComposerModel(page, MODEL_Y.label);
 
     const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
     await input.fill(`Please delegate this. ${DELEGATE_TRIGGER}`);
@@ -492,7 +499,7 @@ test.describe('per-conversation model scope (#545)', () => {
     expect(byKind('parent-after-tool').length).toBeGreaterThan(0);
     for (const model of byKind('parent-after-tool')) expect(model).toBe(MODEL_Y.id);
 
-    // The default for new conversations is still X.
+    // Opening and running Y preserves the last explicit choice of X.
     await openNewTask(page);
     await expectComposerModel(page, MODEL_X.label);
     expectOnlyAgentRequestsCounted(mock!);

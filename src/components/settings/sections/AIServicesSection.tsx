@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useConversationModel } from '@/hooks/useConversationModel';
 import { useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ds/button';
@@ -67,7 +68,7 @@ export default function AIServicesSection() {
   const { t } = useI18n();
   const confirm = useConfirm();
   const providers = useSettingsStore((s) => s.providers);
-  const activeModel = useSettingsStore((s) => s.activeModel);
+  const activeModel = useConversationModel();
   const customWebSearch = useSettingsStore((s) => s.auxiliaryServices.webSearch);
   const clearAllStoredKeys = useSettingsStore((s) => s.clearAllStoredKeys);
   const imageGenBackends = useSettingsStore((s) => s.imageGeneration.backends);

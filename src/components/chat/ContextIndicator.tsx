@@ -5,7 +5,8 @@ import { Spinner } from '@/components/ds/spinner';
 import { Tooltip } from '@/components/ds/tooltip';
 import { useI18n, format } from '@/i18n';
 import { useChatStore } from '@/stores/chatStore';
-import { useSettingsStore, getEffectiveModel } from '@/stores/settingsStore';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { useConversationModel } from '@/hooks/useConversationModel';
 import { calculateWarningLevel, getDisplayPercent } from '@/core/context/autoCompact';
 import { isCompactBoundary } from '@/core/context/compactBoundary';
 import { estimateMessageTokens } from '@/core/context/tokenEstimator';
@@ -103,13 +104,10 @@ export default function ContextIndicator({ conversationId }: { conversationId: s
   const messages = useChatStore((s) => s.conversations[conversationId]?.messages);
   const isCompressing = useChatStore((s) => s.conversations[conversationId]?.isCompressing ?? false);
   const userContextWindow = useSettingsStore((s) => s.contextWindowSize);
-  const convModel = useChatStore((s) => s.conversations[conversationId]?.model);
-  const globalModelId = useSettingsStore(getEffectiveModel);
-  const globalProviderId = useSettingsStore((s) => s.activeModel.providerId);
+  const model = useConversationModel(conversationId);
   const providers = useSettingsStore((s) => s.providers);
-  // The ring describes THIS conversation, so size it from its own model (#545).
-  const activeModelId = convModel?.modelId ?? globalModelId;
-  const provider = providers.find((p) => p.id === (convModel?.providerId ?? globalProviderId));
+  const activeModelId = model.modelId;
+  const provider = providers.find((p) => p.id === model.providerId);
   const discoveredWindow = useDiscoveredCapsStore((s) => (provider ? s.get(provider.id, activeModelId)?.contextWindow : undefined));
   const discoveredProbe = useDiscoveredCapsStore((s) => (provider ? s.get(provider.id, activeModelId)?.contextWindowProbe : undefined));
 

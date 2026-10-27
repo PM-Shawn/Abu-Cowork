@@ -11,6 +11,7 @@ import { Pressable } from '@/components/ds/pressable';
 import { StatusIcon } from '@/components/ds/status-icon';
 import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useConversationModel } from '@/hooks/useConversationModel';
 import { useMCPStore } from '@/stores/mcpStore';
 import { useToastStore } from '@/stores/toastStore';
 import {
@@ -74,6 +75,7 @@ type CapabilityDetailView = CapabilitySetupTarget | 'builtin' | 'sites' | 'downl
 
 
 interface CapabilitiesSectionProps {
+  conversationId?: string;
   setupTarget?: CapabilitySetupTarget;
   requestedByTask?: boolean;
   computerUseRequirements?: ComputerUsePermissionRequirements;
@@ -158,6 +160,7 @@ function ChannelCard({
 }
 
 export default function CapabilitiesSection({
+  conversationId,
   setupTarget,
   requestedByTask = false,
   computerUseRequirements,
@@ -168,7 +171,7 @@ export default function CapabilitiesSection({
 }: CapabilitiesSectionProps = {}) {
   const { t } = useI18n();
   const computerUseEnabled = useSettingsStore((state) => state.computerUseEnabled);
-  const activeModel = useSettingsStore((state) => state.activeModel);
+  const activeModel = useConversationModel(conversationId);
   const providers = useSettingsStore((state) => state.providers);
   const setComputerUseEnabled = useSettingsStore((state) => state.setComputerUseEnabled);
   const closeSystemSettings = useSettingsStore((state) => state.closeSystemSettings);

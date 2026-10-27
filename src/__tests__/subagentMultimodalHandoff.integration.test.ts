@@ -213,10 +213,10 @@ describe('multimodal delegation route × runtime matrix', () => {
     // adapter itself remains the deterministic provider double above. The
     // pinned-model guard also requires ollama to be on and to list the model.
     useSettingsStore.setState({
-      activeModel: { providerId: 'ollama', modelId: 'llama3.2' },
+      activeModel: { providerId: 'ollama', modelId: 'llama3.2-vision' },
       providers: useSettingsStore.getState().providers.map((p) =>
         p.id === 'ollama'
-          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2') ? p.models : [...p.models, { id: 'llama3.2', label: 'llama3.2' }] }
+          ? { ...p, enabled: true, models: p.models.some((m) => m.id === 'llama3.2-vision') ? p.models : [...p.models, { id: 'llama3.2-vision', label: 'llama3.2-vision' }] }
           : p),
     } as never);
   });

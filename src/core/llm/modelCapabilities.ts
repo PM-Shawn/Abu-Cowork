@@ -9,7 +9,7 @@ import { GENERATED_KNOWN_MODELS } from './generated/modelData.generated';
 import { FALLBACK_DEFAULT, bareModelId, hasVisionName, resolveFamilyCapabilities } from './model-data/families';
 import type { DeclaredCapabilities, ProviderSource } from '@/types/provider';
 
-export { hasVisionName } from './model-data/families';
+export { hasVisionName, resolveModelVisionUpdate } from './model-data/families';
 
 // How images in tool results are handled
 export type ToolResultImageSupport = 'native' | 'workaround' | 'none';

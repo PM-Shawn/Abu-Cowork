@@ -286,7 +286,7 @@ describe('scoped grants and V53 hydration', () => {
     await useSettingsStore.persist.rehydrate();
     await drained();
     const blob = JSON.parse(localStorage.getItem('abu-settings')!);
-    expect(blob.version).toBe(54);
+    expect(blob.version).toBe(55);
     expect(blob.state.browserPermissionConfigV2.defaults).toEqual({ browse: 'ask', upload: 'deny', script: 'ask' });
     expect(blob.state.browserPermissionConfigV2.sites[other].blocked).toBe(true);
     expect(blob.state.browserPermissionConfigV2.sites[SITE]).toBeUndefined();

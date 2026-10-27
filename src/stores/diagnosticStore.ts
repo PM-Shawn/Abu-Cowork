@@ -13,6 +13,7 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { ALL_CATEGORIES, runCategoryChecks } from '@/core/diagnostic/runner';
 import { redactCheckResult } from '@/core/diagnostic/scrub';
+import { COMPUTER_USE_MODEL_CHECK_ID, getComputerUseModelCheck } from '@/core/diagnostic/checks/computerUseModel';
 import type { CheckCategory, CheckResult, OverallStatus } from '@/core/diagnostic/types';
 
 interface DiagnosticState {
@@ -44,6 +45,7 @@ interface DiagnosticActions {
    * services, MCP, …) were re-run too.
    */
   refreshApp: () => Promise<void>;
+  refreshComputerUseModel: () => void;
   runItem: (id: string) => Promise<void>;
   setIncludeRawText: (v: boolean) => void;
   setExportInProgress: (v: boolean) => void;
@@ -117,6 +119,16 @@ export const useDiagnosticStore = create<DiagnosticStore>()(
           for (const r of rows) next[r.id] = r;
           // Deliberately NOT touching lastCheckedAt — see refreshApp docs.
           return { results: next };
+        });
+      },
+
+      refreshComputerUseModel: () => {
+        const row = getComputerUseModelCheck();
+        set((state) => {
+          const results = { ...state.results };
+          delete results[COMPUTER_USE_MODEL_CHECK_ID];
+          if (row) results[row.id] = redactCheckResult(row);
+          return { results };
         });
       },
 

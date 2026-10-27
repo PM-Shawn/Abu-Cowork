@@ -24,7 +24,6 @@ export function ManagedProviderOfflineBar({
   const { t } = useI18n();
   const providers = useSettingsStore((s) => s.providers);
   const selectModel = useSettingsStore((s) => s.selectModel);
-  const touchRecentModel = useSettingsStore((s) => s.touchRecentModel);
   const setConversationModel = useChatStore((s) => s.setConversationModel);
   const fallback = findPersonalFallbackModel({ providers }, readManagedProviderPersonalFallback(provider.id));
 
@@ -38,7 +37,7 @@ export function ManagedProviderOfflineBar({
             size="sm"
             onClick={() => applyModelPick(
               { activeConversationId: conversationId, ...fallback },
-              { selectModel, touchRecentModel, setConversationModel },
+              { selectModel, setConversationModel },
             )}
           >
             {t.chat.useMyOwnModel}

@@ -11,8 +11,7 @@ import { useSettingsStore } from '@/stores/settingsStore';
 import { providerHasCredentials } from '@/utils/settingsSelectors';
 import { checkProviderHealth, type HealthCheckResult } from '@/core/llm/healthCheck';
 import { getProviderCallHealth } from '@/core/llm/providerCallHealth';
-import { resolveAgentModelCapabilities } from '@/core/llm/modelCapabilities';
-import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
+import { getComputerUseModelCheck } from './computerUseModel';
 import { getI18n, format } from '@/i18n';
 import { mapAIServiceError } from '../errorMap';
 import type { CheckResult } from '../types';
@@ -155,51 +154,8 @@ export async function runAIServicesChecks(): Promise<CheckResult[]> {
     };
   });
 
-  if (settings.computerUseEnabled) {
-    const provider = providers.find((p) => p.id === settings.activeModel.providerId);
-    const modelId = settings.activeModel.modelId;
-    if (provider && modelId) {
-      const declared = resolveModelDeclared(provider, modelId);
-      const caps = resolveAgentModelCapabilities({
-        modelId,
-        providerSource: provider.source,
-        declared,
-      });
-      const tier = caps.computerUseTier;
-      rows.push({
-        id: 'ai-services:computer-use-model',
-        category: 'ai-services',
-        name: t.diagnostic.aiComputerUseModel,
-        status: tier === 'full'
-          ? 'passed'
-          : tier === 'structured'
-            ? 'warning'
-            : 'failed',
-        metric: `${modelId} · ${tier === 'full'
-          ? t.diagnostic.aiComputerUseFull
-          : tier === 'structured'
-            ? t.diagnostic.aiComputerUseStructured
-            : tier === 'unsupported'
-              ? t.diagnostic.aiComputerUseUnsupported
-              : t.diagnostic.aiComputerUseUnknown}`,
-        ...(tier === 'unsupported' ? {
-          errorMessage: t.diagnostic.aiComputerUseToolsMissing,
-        } : tier === 'unknown' ? {
-          errorMessage: t.diagnostic.aiComputerUseUnknownReason,
-        } : tier === 'structured' ? {
-          errorMessage: t.diagnostic.aiComputerUseVisionMissing,
-        } : {}),
-        suggestedAction: tier !== 'full' ? {
-          type: 'open-settings' as const,
-          target: 'ai-services',
-          label: t.diagnostic.actionOpenAIServices,
-        } : undefined,
-        checkedAt: Date.now(),
-        durationMs: 0,
-        freshness: 'fresh',
-      });
-    }
-  }
+  const computerModel = getComputerUseModelCheck();
+  if (computerModel) rows.push(computerModel);
 
   return rows;
 }

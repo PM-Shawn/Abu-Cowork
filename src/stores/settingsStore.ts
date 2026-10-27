@@ -7,7 +7,7 @@ import { persist, createJSONStorage, type StateStorage } from 'zustand/middlewar
 import { invoke } from '@tauri-apps/api/core';
 import type { LLMProvider, ApiFormat, CustomService } from '../types';
 import type { ProviderInstance, ActiveModel, AuxiliaryServices, ModelInfo, ManagedProviderInput, ImageGenBackend, ImageGenerationSettings } from '../types/provider';
-import { deriveUiCaps } from '../core/llm/modelCapabilities';
+import { deriveUiCaps, resolveModelVisionUpdate } from '../core/llm/modelCapabilities';
 import { resolveImageVendor } from '../core/llm/imageGen/vendorResolve';
 import type { PermissionMode } from '../core/permissions/permissionMode';
 import {
@@ -494,8 +494,6 @@ interface SettingsActions {
 
   // ── Model selection (V2) ──
   selectModel: (providerId: string, modelId: string) => void;
-  /** Bump a model to the front of recents WITHOUT changing the new-conversation default (activeModel). */
-  touchRecentModel: (providerId: string, modelId: string) => void;
   toggleFavorite: (providerId: string, modelId: string) => void;
 
   // ── Provider model management ──
@@ -1517,10 +1515,6 @@ export const useSettingsStore = create<SettingsStore>()(
         return { activeModel: newActive, recentModels: bumpRecentModels(s.recentModels, newActive) };
       }),
 
-      touchRecentModel: (providerId, modelId) => set((s) => ({
-        recentModels: bumpRecentModels(s.recentModels, { providerId, modelId }),
-      })),
-
       toggleFavorite: (providerId, modelId) => set((s) => {
         const exists = s.favoriteModels.some(
           f => f.providerId === providerId && f.modelId === modelId
@@ -2001,7 +1995,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 54,
+      version: 55,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -2010,7 +2004,18 @@ export const useSettingsStore = create<SettingsStore>()(
       // matches `name: '<key>', version: N` with only whitespace and comments
       // allowed between the two, so anything else in that gap silently breaks
       // the probe that keeps e2e seeds from drifting.
-      storage: createJSONStorage(() => settingsStateStorage),
+      storage: createJSONStorage(() => {
+        const isPetWindow = typeof window !== 'undefined'
+          && new URL(window.location.href).pathname.endsWith('/pet.html');
+        if (!isPetWindow) return settingsStateStorage;
+        // The main window owns saved settings. Pet actions send their changes
+        // there; hydration and permission synchronization only update this copy.
+        return {
+          getItem: settingsStateStorage.getItem,
+          setItem: () => {},
+          removeItem: () => {},
+        };
+      }),
       migrate: (persisted: unknown, version: number) => {
         const state = persisted as Record<string, unknown>;
 
@@ -2924,6 +2929,24 @@ export const useSettingsStore = create<SettingsStore>()(
         // last because the V42 step above writes 'light' for stores older than 42. The blocking
         // script in index.html paints by the same rule before this store has loaded.
         if (version < 54) state.theme = 'system';
+
+        // V55: apply these models' published image capabilities once. Declarations
+        // saved from V55 onward remain authoritative. Other models keep their
+        // shared provider declarations.
+        if (version < 55 && Array.isArray(state.providers)) {
+          for (const provider of state.providers as ProviderInstance[]) {
+            if (!provider || !Array.isArray(provider.models)) continue;
+            for (const model of provider.models) {
+              if (!model || typeof model.id !== 'string') continue;
+              const vision = resolveModelVisionUpdate(model.id);
+              if (vision === undefined) continue;
+              const declared = model.declaredCapabilities?.supportsImages
+                ?? provider.declaredCapabilities?.supportsImages;
+              if (typeof declared !== 'boolean' || declared === vision) continue;
+              model.declaredCapabilities = { ...model.declaredCapabilities, supportsImages: vision };
+            }
+          }
+        }
         return state;
       },
       partialize: (state) => ({

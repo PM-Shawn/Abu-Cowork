@@ -267,7 +267,7 @@ const zhCN: TranslationDict = {
     stop: '停止',
     welcomeTitle: '交给阿布就行啦 ✨',
     welcomeSubtitle: '嘿～我是阿布，你的桌面小伙伴！从今天起啥都交给我吧～',
-    disclaimer: '阿布可能会犯小迷糊，重要信息记得核查哦～',
+    disclaimer: '内容为AI生成，重要信息记得核查哦~',
     thinking: '思考中…',
     dropFilesHere: '拖放文件到这里',
     pasteOrDropImages: '粘贴或拖放图片',

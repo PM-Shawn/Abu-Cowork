@@ -253,9 +253,13 @@ win:
   artifactName: "${productName}-${version}-windows-${arch}-setup.${ext}"
 
 nsis:
-  oneClick: true
+  oneClick: false
   perMachine: false
   allowElevation: false
+  allowToChangeInstallationDirectory: false
+  installerLanguages:
+    - en_US
+    - zh_CN
   packElevateHelper: false
   # Keep the Windows Installed Apps identity stable across the Tauri -> Electron
   # transition. The old Tauri entry is hidden only after migration succeeds.

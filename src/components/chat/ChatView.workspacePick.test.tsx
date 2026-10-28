@@ -15,6 +15,7 @@ import {
   drainWorkspaceRequest,
   getPendingWorkspaceRequest,
   requestWorkspace,
+  resolveWorkspaceRequest,
 } from '@/core/agent/permissionBridge';
 import type { Message } from '@/types';
 
@@ -41,8 +42,6 @@ vi.mock('./ChapterMenu', () => ({ default: () => null }));
 
 // The folder request is a design-system window, which needs the provider the app root gives it.
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
-
-const WORKSPACE_REQUEST_TIMEOUT_MS = 60_000;
 
 interface OpenPicker {
   close: (selected: string | null) => Promise<void>;
@@ -124,7 +123,10 @@ describe('ChatView workspace request folder pick', () => {
     expect(useToastStore.getState().toasts).toEqual([]);
   });
 
-  it('drops a folder picked after the request timed out', async () => {
+  it('drops a folder picked after the request was already answered', async () => {
+    // Workspace requests have no auto-timeout (they wait for the user's answer),
+    // so the stale-pick guard is exercised by ending the request explicitly —
+    // e.g. it was answered some other way while the system folder picker was open.
     render(<ChatView />);
     let answer = track(Promise.resolve(null));
     await act(async () => {
@@ -134,9 +136,9 @@ describe('ChatView workspace request folder pick', () => {
     clickChooseFolder();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(WORKSPACE_REQUEST_TIMEOUT_MS);
+      resolveWorkspaceRequest('/answered-elsewhere');
     });
-    expect(answer).toEqual({ settled: true, value: null });
+    expect(answer).toEqual({ settled: true, value: '/answered-elsewhere' });
 
     await picker.close('/Users/me/late-pick');
 

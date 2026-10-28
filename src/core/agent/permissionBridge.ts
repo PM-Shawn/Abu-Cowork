@@ -431,7 +431,7 @@ export function drainWorkspaceRequest(): void {
 /**
  * Request the user to select a workspace folder.
  * Called from the request_workspace tool.
- * Auto-resolves to null after timeout to prevent indefinite hangs.
+ * No timeout: settles only on the user's explicit answer (or on abort/drain).
  *
  * NOTE: a second concurrent call silently overwrites the first — the first
  * request's promise is then abandoned (see approvalBridge.ts's module doc,

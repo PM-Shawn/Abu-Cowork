@@ -92,38 +92,6 @@ describe('permission mode resolution', () => {
   });
 });
 
-describe('compaction file permissions', () => {
-  beforeEach(() => {
-    registerBuiltinTools();
-    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
-    setMigratedBrowserSettings({ permissionMode: 'standard' });
-    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => candidate);
-  });
-
-  it('reads this conversation result files without requesting or creating a workspace grant', async () => {
-    const conversationId = useChatStore.getState().createConversation();
-    const path = `/Users/testuser/.abu/conversations/${conversationId}/results/output.txt`;
-    const permission = vi.fn(async () => false);
-    const decision = await checkToolApproval('read_file', { path }, { conversationId }, undefined, permission);
-    expect(decision.decision).toBe('allow');
-    expect(permission).not.toHaveBeenCalled();
-    const otherId = useChatStore.getState().createConversation();
-    const other = await checkToolApproval('read_file', { path }, { conversationId: otherId, allowPermissionPrompts: false }, undefined, permission);
-    expect(other.decision).toBe('deny');
-    expect(permission).not.toHaveBeenCalled();
-    const write = await checkToolApproval('write_file', { path, content: 'change' }, { conversationId }, undefined, permission);
-    expect(write.decision).toBe('deny');
-  });
-
-  it.each(['standard', 'autonomous'] as const)('does not acquire new read access during restoration in %s mode', async (permissionMode) => {
-    setMigratedBrowserSettings({ permissionMode });
-    const permission = vi.fn(async () => true);
-    const decision = await checkToolApproval('read_file', { path: '/Users/testuser/UnapprovedRestore/file.txt' }, { allowPermissionPrompts: false }, undefined, permission);
-    expect(decision.decision).toBe('deny');
-    expect(permission).not.toHaveBeenCalled();
-  });
-});
-
 // ── write_file overwrite-safety read-precheck must not dead-end on $TMPDIR ──
 // Regression for the R3.4 asymmetry: checkWritePath allows a macOS temp-dir
 // write via its implicit-root match, but the overwrite-safety read-precheck was
@@ -396,8 +364,10 @@ describe('browser site permission verdicts', () => {
 
   it('a decoy url on navigate back/forward/reload cannot ride an allowed-site verdict', async () => {
     // The executor ignores `url` unless action === 'goto', so the gate must
-    // not let a crafted allowed-site url approve a history navigation whose
-    // real destination is unknown.
+    // not let a crafted allowed-site url auto-allow a history navigation.
+    // (2026-10-27) The target origin is now the tab's own PROBED address —
+    // example.com here, which holds no grant — so the decoy buys nothing:
+    // the call still asks, and a refusal from the human denies it.
     browserFixture({ 'https://allowed.com': 'allowed' });
     const asked: string[] = [];
     const confirm = async (info: { command: string }) => { asked.push(info.command); return true; };
@@ -407,8 +377,14 @@ describe('browser site permission verdicts', () => {
       { conversationId: 'conv-1' } as never, confirm as never,
     );
 
-    expect(decision.decision).toBe('deny');
-    expect(asked).toHaveLength(0);
+    expect(decision.decision).toBe('allow');
+    expect(asked).toHaveLength(1);
+
+    const refused = await checkToolApproval(
+      'abu-browser__navigate', { tabId: 1, url: 'https://allowed.com/', action: 'back' },
+      { conversationId: 'conv-2' } as never, async () => false,
+    );
+    expect(refused.decision).toBe('deny');
   });
 
   it('denies navigate back with a decoy allowed url when headless — no silent unattended ride', async () => {

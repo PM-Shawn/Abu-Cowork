@@ -74,6 +74,16 @@ const TOOL_ARGS: Record<string, Record<string, unknown>> = {
     action: 'click',
     locator: '{"css":"a#export"}',
   },
+  /**
+   * `saveToFile` is `z.coerce.boolean()` and `savePath` a plain string — ANY
+   * value parses, so the argument filler above would stuff them truthy and
+   * flip the tool into saveMode, where the chrome channel refuses without
+   * sending. A screenshot's default is the image-bound capture; the
+   * file-delivery mode is covered in tools.test.ts. (`savePath: undefined`
+   * keeps the KEY present, which is what the filler checks.)
+   */
+  screenshot: { tabId: PROBE_TAB, saveToFile: false, savePath: undefined },
+  screenshot_full_page: { tabId: PROBE_TAB, saveToFile: false, savePath: undefined },
   batch: {
     tabId: PROBE_TAB,
     steps: JSON.stringify([

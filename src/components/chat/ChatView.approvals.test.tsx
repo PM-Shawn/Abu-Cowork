@@ -766,20 +766,15 @@ describe('ChatView approvals', () => {
       expect(heading(t().permission.folderSelect?.authorizeTitle ?? '')).toBeNull();
     });
 
-    it('answers itself with no folder 60 seconds after it was asked, and leaves the page', async () => {
+    it('waits for an explicit answer: the folder request never answers itself', async () => {
       const id = conversation();
       render(<ChatView />);
       const answers = askWorkspace(id);
       await settle();
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(59_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       expect(answers).toEqual([]);
       expect(heading(t().permission.folderSelect?.authorizeTitle ?? '')).toBeInTheDocument();
-
-      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
-      expect(answers).toEqual([null]);
-      expect(heading(t().permission.folderSelect?.authorizeTitle ?? '')).toBeNull();
-      expect(useWorkspaceStore.getState().currentPath).toBeNull();
     });
 
     it('shows the newer request when a second one arrives; the first is never answered', async () => {

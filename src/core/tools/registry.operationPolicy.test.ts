@@ -1211,6 +1211,20 @@ describe('browser gate — operation-class policy', () => {
       expect(decision.browserExecution).toEqual({ runMode: 'attended', expectedOrigin: ALLOWED_SITE, popupOrigin: ALLOWED_SITE });
     });
 
+    it('stamps the popup lease pin for browser_download too (B1)', async () => {
+      withTabOrigin(ALLOWED_URL);
+
+      const decision = await checkToolApproval(
+        'abu-browser__download', { tabId: OWNED_TAB_ID, locator: '{}' },
+        attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      // 2026-10-27 B1：download 与 click 同权 —— 站点用新窗口承载下载时，
+      // 专用下载动作必须拿到弹窗租约章，否则 host 侧必拦。
+      expect(decision.browserExecution).toEqual({ runMode: 'attended', expectedOrigin: ALLOWED_SITE, popupOrigin: ALLOWED_SITE });
+    });
+
     describe('page-derived state can refuse, never authorize (anti-injection)', () => {
       it('an authState the host never emits is treated as absent, not as approval', async () => {
         // The forged shapes an injected page would reach for. None of them may
@@ -2485,4 +2499,137 @@ describe('browser gate — operation-class policy', () => {
       expect(decision.browserExecution?.expectedOrigin).toBe(ALLOWED_SITE);
     });
   });
+
+  describe('browser gate — unattended origin self-rescue (2026-10-27)', () => {
+  beforeEach(() => {
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
+  });
+
+  it('an unattended reload passes the gate on an allowed site (修 1)', async () => {
+    withTabOrigin(ALLOWED_URL);
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'reload', tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    // 修复前：reload 的落点被判「不可知」→ origin null → 无人值守硬拒，
+    // 会话 mvo1nv4cdjj5y7 里同一个 reload 被原样重试了 8 次。
+    expect(decision.decision).toBe('allow');
+  });
+
+  it('an unattended back and forward resolve the tab origin too (修 1)', async () => {
+    withTabOrigin(ALLOWED_URL);
+
+    for (const action of ['back', 'forward']) {
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { action, tabId: OWNED_TAB_ID },
+        unattendedOwner, (async () => true) as never,
+      );
+      expect(decision.decision).toBe('allow');
+    }
+  });
+
+  it('an unattended reload on a blocked site stays denied (防线不松)', async () => {
+    currentPermissions('allow');
+    withTabOrigin(`${BLOCKED_SITE}/page`);
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'reload', tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('will not change on retry');
+  });
+
+  it('an unattended reload on a high-risk site is denied as high-risk (防线不松)', async () => {
+    withTabOrigin('https://paypal.com/withdraw');
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'reload', tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('will not change on retry');
+  });
+
+  it('a reload on a non-web tab denies with the non-web-page hint (修 2)', async () => {
+    withTabOrigin('about:blank');
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'reload', tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('not on a web page');
+    // 原句保留 —— e2e 锚点（browser-unattended.spec.ts）匹配它。
+    expect(decision.reason).toContain('could not be determined');
+  });
+
+  it('a create_tab to a file:// URL denies with the local-file hint (修 2)', async () => {
+    const decision = await checkToolApproval(
+      'abu-browser__create_tab', { url: 'file:///D:/reports/结果.md' },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('local file');
+  });
+
+  it('a tab-less query_js resolves the task current tab in the gate (修 3)', async () => {
+    // query_js 的 tabId 是可选的（省略 = 本任务最近操作的 tab，host 执行侧
+    // 支持）；gate 必须解析同一个 tab，否则无人值守必拒。
+    mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
+      Promise.resolve(
+        params._meta?.['abu/conversationId'] === OWNER
+          ? {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  summary: { currentTabId: OWNED_TAB_ID },
+                  windows: [{ windowId: 1, tabs: [{ tabId: OWNED_TAB_ID, url: ALLOWED_URL }] }],
+                }),
+              }],
+            }
+          : { content: [{ type: 'text', text: JSON.stringify({ windows: [] }, ) }] },
+      ),
+    );
+
+    const decision = await checkToolApproval(
+      'abu-browser__query_js', { code: 'document.title' },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+  });
+
+  it('a tab-less query_js with no current tab denies with the tab hint (修 3)', async () => {
+    withTabOrigin(ALLOWED_URL); // listing has no summary.currentTabId
+
+    const decision = await checkToolApproval(
+      'abu-browser__query_js', { code: 'document.title' },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('get_tabs');
+  });
+
+  it('a blocked-site denial carries the no-retry hint for goto too (修 2)', async () => {
+    currentPermissions('allow');
+    withTabOrigin(ALLOWED_URL);
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'goto', url: `${BLOCKED_SITE}/page`, tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('will not change on retry');
+  });
 });
+});
+

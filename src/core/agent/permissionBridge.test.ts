@@ -135,12 +135,13 @@ describe('permissionBridge — UserQuestion queue', () => {
   });
 
   describe('timeout', () => {
-    it('auto-resolves to null after USER_QUESTION_TIMEOUT_MS', async () => {
+    it('has no timeout — a user question stays pending until answered or drained', async () => {
       vi.useFakeTimers();
-      const promise = requestUserQuestion('tc-timeout', 'conv-e', MINIMAL_PAYLOAD);
-      await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 100);
-      const result = await promise;
-      expect(result).toBeNull();
+      let settled = false;
+      const promise = requestUserQuestion('tc-long', 'conv-e', MINIMAL_PAYLOAD);
+      void promise.then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000); // 1 hour — nothing should auto-resolve
+      expect(settled).toBe(false);
       vi.useRealTimers();
     });
   });

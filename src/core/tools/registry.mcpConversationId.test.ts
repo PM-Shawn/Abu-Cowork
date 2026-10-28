@@ -9,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { executeAnyTool } from './registry';
 import { mcpManager } from '../mcp/client';
 import type { ToolDefinition } from '../../types';
+import { useChatStore } from '../../stores/chatStore';
+import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
+import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 
 // Mirrors the private `ConnectedServer` shape in client.ts — not exported
 // there (see src/core/mcp/client.test.ts for the same injection technique,
@@ -153,5 +156,81 @@ describe('executeAnyTool → mcpManager.callTool → _meta (MCP tool dispatch)',
       undefined,
       { timeout: 30000 }
     );
+  });
+});
+
+// Screenshot file delivery: a non-vision model cannot consume the image block
+// a screenshot tool returns — the adapter strips it on the way out anyway. The
+// executor stamps `screenshotDelivery: 'file'` onto the call opts (which
+// client.ts maps into `_meta`), keyed on ToolExecutionContext.supportsVision.
+// A vision-capable call — or one whose context says nothing — keeps the exact
+// pre-existing shape. Same fake-browser-host technique as
+// registry.browserDialogGate.test.ts, because `screenshot` is a READ-classified
+// browser tool and has to pass the same gate before the dispatch happens.
+describe('executeAnyTool stamps screenshotDelivery for non-vision models', () => {
+  const OWNER = 'conv-shot';
+  const TAB = 41;
+  const SITE = 'https://erp.example.com';
+  let mockCallTool: ReturnType<typeof vi.fn>;
+  // `screenshot` is a browser-classified tool, so in standard permission mode
+  // the gate wants a confirmation channel — hand it one that always allows.
+  const confirm = vi.fn().mockResolvedValue(true);
+
+  beforeEach(() => {
+    mockCallTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] });
+    const listCall = vi.fn().mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({ windows: [{ windowId: 1, tabs: [{ tabId: TAB, url: `${SITE}/form` }] }] }),
+      }],
+    });
+    const fakeServer: FakeConnectedServer = {
+      config: { name: 'abu-browser' },
+      client: { callTool: vi.fn((...args: unknown[]) => (
+        (args[0] as { name?: string }).name === 'get_tabs' ? listCall() : mockCallTool(...(args as []))
+      )) },
+      transport: {},
+      tools: new Map(),
+      appTools: new Map(),
+    };
+    (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
+      'abu-browser',
+      fakeServer
+    );
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    setMigratedBrowserSettings({ permissionMode: 'standard', browserSitePermissions: {} });
+    __resetBrowserGrantsForTests();
+  });
+
+  afterEach(() => {
+    (mcpManager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.delete('abu-browser');
+    __resetBrowserGrantsForTests();
+  });
+
+  it.each(['screenshot', 'screenshot_full_page'])('%s: supportsVision:false delivers as a file', async (toolName) => {
+    const result = await executeAnyTool(`abu-browser__${toolName}`, { tabId: TAB }, confirm, undefined, {
+      conversationId: OWNER,
+      supportsVision: false,
+    });
+
+    expect(result).toBe('ok');
+    // The executor's opts are consumed inside mcpManager.callTool, which maps
+    // them into `_meta` on the params — the same flight as the conversationId
+    // pin above.
+    const params = mockCallTool.mock.calls[0][0];
+    expect(params._meta).toMatchObject({ 'abu/screenshotDelivery': 'file' });
+  });
+
+  it.each([
+    ['a vision-capable model', true],
+    ['a context with no vision flag', undefined],
+  ])('%s keeps the pre-existing opts shape', async (_label, supportsVision) => {
+    await executeAnyTool('abu-browser__screenshot', { tabId: TAB }, confirm, undefined, {
+      conversationId: OWNER,
+      ...(supportsVision !== undefined ? { supportsVision } : {}),
+    });
+
+    const params = mockCallTool.mock.calls[0][0];
+    expect(params._meta).not.toHaveProperty('abu/screenshotDelivery');
   });
 });

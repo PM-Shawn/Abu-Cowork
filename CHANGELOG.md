@@ -7,6 +7,22 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.61.0 · 2026-10-28
+
+### ✨ Improvements
+
+- **The sidebar is easier to read.** Main navigation, project names and task names use 14px text and 30px rows, including the task rename field. The note below the message field reminds you that content is AI-generated and important information should be checked.
+- **The macOS installer has an Abu background.** The installation window shows the Abu name, installation instructions and a drag arrow, with standard and Retina artwork.
+
+### 🐛 Fixes
+
+- **New conversations remember your last model choice.** A model selected in a conversation becomes the choice for new conversations and survives a restart; existing conversations keep their own models. Model settings, computer-control capability checks, diagnostics and task settings use the corresponding conversation's model. The pet window shares settings with the main window, which owns saving them.
+- **Image capability declarations match the model.** `deepseek-flash` and its official aliases are recognized as image-capable, while Llama 3.2 text models and Vision models are distinguished correctly. Existing saved declarations for these models are updated once; changes you make afterwards are preserved.
+- **Enlarged diagrams open at a readable size.** Diagram previews have bounded windows below the native title area, explicit image dimensions and controls for zoom, actual size and fit to window. Large diagrams can be scrolled and dragged, and the toolbar remains visible.
+- **Settings headings and actions stay visible while scrolling.** The title, section actions and close button remain above the form. Profile editing is available beside your identity on hover or keyboard focus. The image-generation add action sits beside its title, and service status labels wrap onto their own row in narrow windows.
+
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.60.0...v0.61.0
+
 ## v0.60.0 · 2026-10-24
 
 ### ✨ Features

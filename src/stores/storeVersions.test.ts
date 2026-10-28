@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // All persisted stores must be registered here.
 // When adding a new persist store, add it to this list — otherwise this test fails.
 const PERSISTED_STORES = [
-  { key: 'abu-settings', minVersion: 54 },
+  { key: 'abu-settings', minVersion: 55 },
   { key: 'abu-chat', minVersion: 17 },
   { key: 'abu-app', minVersion: 1 },
     { key: 'abu-app-drafts', minVersion: 2 },

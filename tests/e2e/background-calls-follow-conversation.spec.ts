@@ -5,9 +5,8 @@
  *
  * Two loopback OpenAI-compatible mocks stand in for provider A (the default)
  * and provider B, each with its own key, and record every request with its
- * Authorization header. The conversation is moved to B while A stays the
- * default; the extractor's request must then reach B with B's key and never
- * reach A.
+ * Authorization header. The conversation uses B and a later new-task pick
+ * selects A; the extractor's request must reach B with B's key.
  */
 import { expect, test } from '@playwright/test';
 import { createServer, type Server, type ServerResponse } from 'node:http';
@@ -227,11 +226,21 @@ test.describe('background calls follow the conversation', () => {
       await send(page, 'bcf-turn-1 on the default', 'MOCK-A-REPLY');
     });
 
-    await test.step('the conversation is moved to provider B while A stays the default', async () => {
+    await test.step('the conversation uses B and a later new-task pick selects A', async () => {
+      const conversationId = await page.locator('[data-conversation-row]').first().getAttribute('data-conversation-row');
+      expect(conversationId).toBeTruthy();
       await composerModelButton(page, PROVIDER_A.modelLabel).click();
       const row = page.locator('div[role="button"]').filter({ has: page.getByText('Model B', { exact: true }) }).last();
       await expect(row).toBeVisible();
       await row.click();
+      await expect(composerModelButton(page, PROVIDER_B.modelLabel)).toBeVisible();
+      const showSidebar = page.getByRole('button', { name: '显示侧栏', exact: true });
+      if (await showSidebar.isVisible()) await showSidebar.click();
+      await page.getByRole('button', { name: '新任务', exact: true }).first().click();
+      await composerModelButton(page, PROVIDER_B.modelLabel).click();
+      await page.locator('div[role="button"]').filter({ has: page.getByText('Model A', { exact: true }) }).last().click();
+      await expect(composerModelButton(page, PROVIDER_A.modelLabel)).toBeVisible();
+      await page.locator(`[data-conversation-row="${conversationId}"]`).click();
       await expect(composerModelButton(page, PROVIDER_B.modelLabel)).toBeVisible();
       // The extractor reads the transcript from disk once a turn completes and
       // needs four messages there; the reply of the turn that just ended may

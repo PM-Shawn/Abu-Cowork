@@ -3276,6 +3276,8 @@ export interface TranslationDict {
     pdfNextPage: string;
     pdfFitWidth: string;
     pdfFit: string;
+    previewFitWindow: string;
+    previewActualSize: string;
     pdfRotate: string;
     // Preview: XLSX
     xlsxSheetLabel: string;

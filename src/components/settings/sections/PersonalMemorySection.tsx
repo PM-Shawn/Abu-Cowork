@@ -21,6 +21,7 @@ import { Tag } from '@/components/ds/tag';
 import { TextField } from '@/components/ds/text-field';
 import { Tooltip } from '@/components/ds/tooltip';
 import { cn } from '@/lib/utils';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 
 /**
  * The icon button that opens the explanation of the three kinds of memory. It hands the
@@ -533,11 +534,10 @@ export default function PersonalMemorySection() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <div className="flex items-center gap-2">
-          <h3 className="text-title text-label">
-            {t.sidebar.personalMemoryTitle}
-          </h3>
+      <SettingsSectionHeader
+        title={t.sidebar.personalMemoryTitle}
+        description={t.sidebar.personalMemoryDesc}
+        titleAccessory={(
           <Popover
             align="start"
             className="w-85"
@@ -553,11 +553,8 @@ export default function PersonalMemorySection() {
               <p className="border-t border-separator pt-2 text-caption text-label-tertiary">{t.sidebar.memoryGuideTip}</p>
             </div>
           </Popover>
-        </div>
-        <p className="mt-1 text-ui-sm text-label-secondary">
-          {t.sidebar.personalMemoryDesc}
-        </p>
-      </div>
+        )}
+      />
 
       {loading ? (
         <div className="flex items-center justify-center py-16">

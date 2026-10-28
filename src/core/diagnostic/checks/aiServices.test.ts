@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useChatStore } from '@/stores/chatStore';
 import type { ProviderInstance } from '@/types/provider';
 
 vi.mock('@/core/llm/healthCheck', () => ({
@@ -38,6 +39,7 @@ function makeProvider(overrides: Partial<ProviderInstance> = {}): ProviderInstan
 
 describe('runAIServicesChecks — recent real-call failures', () => {
   beforeEach(() => {
+    useChatStore.setState({ activeConversationId: null, conversations: {}, conversationIndex: {} });
     vi.useFakeTimers();
     vi.setSystemTime(FIXED_NOW);
     getProviderCallHealthMock.mockReset();
@@ -45,6 +47,7 @@ describe('runAIServicesChecks — recent real-call failures', () => {
   });
 
   afterEach(() => {
+    useChatStore.setState({ activeConversationId: null, conversations: {}, conversationIndex: {} });
     vi.useRealTimers();
   });
 
@@ -68,6 +71,25 @@ describe('runAIServicesChecks — recent real-call failures', () => {
 
     expect(support?.status).toBe('warning');
     expect(support?.metric).toContain('deepseek-text');
+  });
+
+  it('checks the open conversation model with its own provider declarations', async () => {
+    getProviderCallHealthMock.mockReturnValue(undefined);
+    const defaultProvider = makeProvider({ id: 'latest', models: [{ id: 'shared-model', label: 'Latest', declaredCapabilities: { supportsTools: true, supportsImages: true } }] });
+    const ownProvider = makeProvider({ id: 'own', models: [{ id: 'shared-model', label: 'Own', declaredCapabilities: { supportsTools: true, supportsImages: false } }] });
+    useSettingsStore.setState({ providers: [defaultProvider, ownProvider], activeModel: { providerId: 'latest', modelId: 'shared-model' }, computerUseEnabled: true });
+    useChatStore.setState({
+      activeConversationId: 'saved',
+      conversationIndex: {
+        saved: { id: 'saved', title: 'Saved', createdAt: 1, updatedAt: 1, lastUserMessageAt: null, messageCount: 0, model: { providerId: 'own', modelId: 'shared-model' } },
+      },
+    });
+
+    const own = (await runAIServicesChecks()).find((row) => row.id === 'ai-services:computer-use-model');
+    expect(own).toMatchObject({ status: 'warning', metric: 'shared-model · Structured limited mode' });
+    useChatStore.setState({ activeConversationId: null });
+    const latest = (await runAIServicesChecks()).find((row) => row.id === 'ai-services:computer-use-model');
+    expect(latest).toMatchObject({ status: 'passed', metric: 'shared-model · Full mode' });
   });
 
   it('classifies the built-in DeepSeek text model as structured-only Computer Use', async () => {

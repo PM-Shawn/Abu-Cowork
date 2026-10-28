@@ -629,13 +629,13 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     contextWindow: 1050000
   },
   'deepseek-v4-flash': {
-    vision: false,
+    vision: true,
     thinking: 'uncontrollable',
-    toolResultImages: 'none',
+    toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
-    outputCeiling: 384000,
-    contextWindow: 1000000
+    outputCeiling: 393216,
+    contextWindow: 1048576
   },
   'deepseek-v4-pro': {
     vision: false,
@@ -1637,7 +1637,7 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     contextWindow: 128000
   },
   'llama3.2': {
-    vision: true,
+    vision: false,
     thinking: false,
     toolResultImages: 'none',
     documentBlock: false,
@@ -1798,14 +1798,23 @@ export const GENERATED_KNOWN_MODELS: Record<string, ModelCapabilities> = {
     outputCeiling: 8192,
     contextWindow: 204800
   },
+  'deepseek-flash': {
+    vision: true,
+    thinking: 'uncontrollable',
+    toolResultImages: 'workaround',
+    documentBlock: false,
+    maxOutputTokens: 32768,
+    outputCeiling: 393216,
+    contextWindow: 1048576
+  },
   'deepseek-v4-flash-vision-exp': {
     vision: true,
     thinking: 'uncontrollable',
     toolResultImages: 'workaround',
     documentBlock: false,
     maxOutputTokens: 32768,
-    outputCeiling: 384000,
-    contextWindow: 1000000
+    outputCeiling: 393216,
+    contextWindow: 1048576
   }
 };
 
@@ -2416,9 +2425,9 @@ export const GENERATED_MODEL_PRICING: [string, { input: number; output: number; 
   [
     'deepseek-v4-flash',
     {
-      input: 0.14,
-      output: 0.28,
-      cacheRead: 0.0028,
+      input: 0.3,
+      output: 1.2,
+      cacheRead: 0.006,
       cacheCreation: 0
     }
   ],
@@ -2698,6 +2707,15 @@ export const GENERATED_MODEL_PRICING: [string, { input: number; output: number; 
       input: 1,
       output: 2,
       cacheRead: 0.2,
+      cacheCreation: 0
+    }
+  ],
+  [
+    'deepseek-flash',
+    {
+      input: 0.3,
+      output: 1.2,
+      cacheRead: 0.006,
       cacheCreation: 0
     }
   ],

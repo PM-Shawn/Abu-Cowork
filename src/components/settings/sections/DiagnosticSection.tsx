@@ -6,6 +6,7 @@ import { Switch } from '@/components/ds/switch';
 import { useI18n } from '@/i18n';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useConversationModel } from '@/hooks/useConversationModel';
 import { ALL_CATEGORIES } from '@/core/diagnostic/runner';
 import type { CheckCategory, CheckResult } from '@/core/diagnostic/types';
 import DiagnosticBanner from './diagnostic/DiagnosticBanner';
@@ -28,6 +29,10 @@ export default function DiagnosticSection() {
   const isChecking = useDiagnosticStore((s) => s.isChecking);
   const runAll = useDiagnosticStore((s) => s.runAll);
   const refreshApp = useDiagnosticStore((s) => s.refreshApp);
+  const refreshComputerUseModel = useDiagnosticStore((s) => s.refreshComputerUseModel);
+  const model = useConversationModel();
+  const providers = useSettingsStore((s) => s.providers);
+  const computerUseEnabled = useSettingsStore((s) => s.computerUseEnabled);
   const setActiveSystemTab = useSettingsStore((s) => s.setActiveSystemTab);
   const telemetryOptOut = useSettingsStore((s) => s.telemetryOptOut);
   const setTelemetryOptOut = useSettingsStore((s) => s.setTelemetryOptOut);
@@ -46,6 +51,10 @@ export default function DiagnosticSection() {
   // run-once on mount; deps intentionally empty
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    refreshComputerUseModel();
+  }, [model, providers, computerUseEnabled, refreshComputerUseModel]);
 
   const grouped = useMemo<Record<CheckCategory, CheckResult[]>>(() => {
     const out: Record<CheckCategory, CheckResult[]> = {

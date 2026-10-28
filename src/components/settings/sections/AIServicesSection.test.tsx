@@ -1,12 +1,13 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import AIServicesSection from './AIServicesSection';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useChatStore } from '@/stores/chatStore';
 import type { ProviderInstance } from '@/types/provider';
 import { passSettleInterval } from '@/test/dsWindows';
 
@@ -117,6 +118,7 @@ describe('AIServicesSection web search status', () => {
 
 describe('AIServicesSection providers', () => {
   beforeEach(() => {
+    useChatStore.setState({ activeConversationId: null, conversations: {}, conversationIndex: {} });
     initLanguage('en-US');
     useSettingsStore.setState({
       providers: [],
@@ -128,6 +130,7 @@ describe('AIServicesSection providers', () => {
 
   afterEach(() => {
     cleanup();
+    useChatStore.setState({ activeConversationId: null, conversations: {}, conversationIndex: {} });
     useSettingsStore.setState(originals, true);
   });
 
@@ -170,6 +173,28 @@ describe('AIServicesSection providers', () => {
 
     expect(screen.getByText('Service Low').closest('div.group')).toHaveClass('bg-fill-selected');
     expect(screen.getByText('Service High').closest('div.group')).not.toHaveClass('bg-fill-selected');
+  });
+
+  it('marks the open conversation provider and follows the latest choice on the new-task page', () => {
+    useSettingsStore.setState({
+      providers: [provider({ id: 'first', name: 'First provider' }), provider({ id: 'latest', name: 'Latest provider' })],
+      activeModel: { providerId: 'latest', modelId: 'model-a' },
+    });
+    useChatStore.setState({
+      activeConversationId: 'saved',
+      conversationIndex: {
+        saved: { id: 'saved', title: 'Saved', createdAt: 1, updatedAt: 1, lastUserMessageAt: null, messageCount: 0, model: { providerId: 'first', modelId: 'model-a' } },
+      },
+    });
+    renderSection();
+    const first = screen.getByText('First provider').closest('[data-testid="provider-card"]');
+    const latest = screen.getByText('Latest provider').closest('[data-testid="provider-card"]');
+    expect(first).toHaveClass('bg-fill-selected');
+    expect(latest).not.toHaveClass('bg-fill-selected');
+
+    act(() => useChatStore.setState({ activeConversationId: null }));
+    expect(latest).toHaveClass('bg-fill-selected');
+    expect(first).not.toHaveClass('bg-fill-selected');
   });
 
   it('has one filled button, with or without services', () => {

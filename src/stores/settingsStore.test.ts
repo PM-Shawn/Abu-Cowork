@@ -1864,8 +1864,8 @@ describe('default activeModel stays in the curated list', () => {
   });
 });
 
-describe('touchRecentModel', () => {
-  it('moves the model to the front of recents without changing activeModel', () => {
+describe('selectModel recents', () => {
+  it('remembers the selected model and moves it to the front of recents', () => {
     useSettingsStore.setState({
       activeModel: { providerId: 'p-default', modelId: 'm-default' },
       recentModels: [
@@ -1873,9 +1873,9 @@ describe('touchRecentModel', () => {
         { providerId: 'p2', modelId: 'b' },
       ],
     });
-    useSettingsStore.getState().touchRecentModel('p2', 'b');
+    useSettingsStore.getState().selectModel('p2', 'b');
     const s = useSettingsStore.getState();
-    expect(s.activeModel).toEqual({ providerId: 'p-default', modelId: 'm-default' });
+    expect(s.activeModel).toEqual({ providerId: 'p2', modelId: 'b' });
     expect(s.recentModels).toEqual([
       { providerId: 'p2', modelId: 'b' },
       { providerId: 'p1', modelId: 'a' },
@@ -1886,7 +1886,7 @@ describe('touchRecentModel', () => {
     useSettingsStore.setState({
       recentModels: ['1', '2', '3', '4', '5'].map((m) => ({ providerId: 'p', modelId: m })),
     });
-    useSettingsStore.getState().touchRecentModel('p', '6');
+    useSettingsStore.getState().selectModel('p', '6');
     const ids = useSettingsStore.getState().recentModels.map((r) => r.modelId);
     expect(ids).toEqual(['6', '1', '2', '3', '4']);
   });

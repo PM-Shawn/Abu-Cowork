@@ -5,6 +5,7 @@ import { cn } from '@/lib/utils';
 import type { DataAttributes } from './dialog';
 import { dropsHeldEscape, dropsHeldRepeat, useHeldKeys } from './heldKey';
 import { Icon } from './icon';
+import { IconButton } from './button';
 import { AppIcons } from './icons';
 import { LayerScope } from './layer';
 import { useFloatingLevel, useLayer, useLayerContainer, useOpenState } from './layer-context';
@@ -245,6 +246,21 @@ export function MenuSeparator() {
   return useMenuKind() === 'dropdown'
     ? <DropdownMenuPrimitive.Separator className={className} />
     : <ContextMenuPrimitive.Separator className={className} />;
+}
+
+// An icon action participates in the menu's arrow navigation and selection lifecycle.
+export function MenuIconItem({ icon, label, onSelect, className }: {
+  icon: LucideIcon;
+  label: string;
+  onSelect: (event: Event) => void;
+  className?: string;
+}) {
+  const Item = useMenuKind() === 'dropdown' ? DropdownMenuPrimitive.Item : ContextMenuPrimitive.Item;
+  return (
+    <Item asChild onSelect={onSelect} textValue={label}>
+      <IconButton icon={icon} label={label} className={cn('shrink-0 data-[highlighted]:bg-fill-selected', className)} />
+    </Item>
+  );
 }
 
 export function MenuLabel({ children }: { children: ReactNode }) {

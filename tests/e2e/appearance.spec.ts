@@ -128,7 +128,7 @@ test('a new profile stores 跟随系统 and follows the system while it runs, a 
   expect(await pageIsDark(page)).toBe(false);
 });
 
-test('settings saved by an earlier version follow the system once, and a later choice survives a restart', async () => {
+test('settings saved before the system appearance migration follow the system once, and a later choice survives a restart', async () => {
   const launched = await launchAbuElectron();
   app = launched.app;
   dataRoot = launched;
@@ -137,7 +137,7 @@ test('settings saved by an earlier version follow the system once, and a later c
   await dismissFirstRunOverlays(page);
   const current = await storedAppearance(page);
 
-  // The profile as the version before this one left it: the light appearance, stamped one version back.
+  // A profile saved before the V54 system appearance migration.
   await recordFirstPaint(page);
   await systemBecomes(app, page, 'dark');
   await Promise.all([page.waitForEvent('load'), page.evaluate(async ({ earlier, name }) => {
@@ -148,7 +148,7 @@ test('settings saved by an earlier version follow the system once, and a later c
       window.localStorage.setItem('abu-settings', JSON.stringify(persisted));
       window.location.reload();
     });
-  }, { earlier: current.version - 1, name: KEPT_NAME })]);
+  }, { earlier: 53, name: KEPT_NAME })]);
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeVisible({ timeout: READY_TIMEOUT });
 
   // Dark from the first paint, before the stored value has been migrated.

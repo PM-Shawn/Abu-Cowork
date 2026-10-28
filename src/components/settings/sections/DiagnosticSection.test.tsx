@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
@@ -9,6 +9,7 @@ import { initLanguage } from '@/i18n';
 import { useCustomizeStore } from '@/stores/customizeStore';
 import { useDiagnosticStore } from '@/stores/diagnosticStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useChatStore } from '@/stores/chatStore';
 import DiagnosticSection from './DiagnosticSection';
 
 // Made-up check results. No check runs: the store's run functions are replaced for each test.
@@ -65,6 +66,9 @@ function row(name: string): HTMLElement {
 
 describe('DiagnosticSection', () => {
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOW);
+    useChatStore.setState({ activeConversationId: null, conversations: {}, conversationIndex: {} });
     initLanguage('zh-CN');
     for (const run of Object.values(runs)) run.mockClear();
     openSystemSettings.mockClear();
@@ -83,6 +87,8 @@ describe('DiagnosticSection', () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
+    useChatStore.setState({ activeConversationId: null, conversations: {}, conversationIndex: {} });
     useDiagnosticStore.setState({
       runAll: realDiagnostic.runAll,
       runCategory: realDiagnostic.runCategory,
@@ -97,11 +103,49 @@ describe('DiagnosticSection', () => {
       openSystemSettings: realSettings.openSystemSettings,
       setActiveSystemTab: realSettings.setActiveSystemTab,
       telemetryOptOut: realSettings.telemetryOptOut,
+      providers: realSettings.providers,
+      activeModel: realSettings.activeModel,
+      computerUseEnabled: realSettings.computerUseEnabled,
     });
     useCustomizeStore.setState({ openCustomize: realCustomize.openCustomize });
   });
 
   describe('opening the page', () => {
+    it('refreshes the cached model row for the open conversation without rerunning provider checks', () => {
+      useSettingsStore.setState({
+        computerUseEnabled: true,
+        activeModel: { providerId: 'models', modelId: 'gpt-4o' },
+        providers: [{
+          id: 'models', name: 'Models', source: 'builtin', enabled: true,
+          apiFormat: 'openai-compatible', baseUrl: 'https://models.example.test/v1',
+          apiKey: 'test-key', status: 'unchecked', sortOrder: 0,
+          models: [{ id: 'deepseek-chat', label: 'DeepSeek' }, { id: 'gpt-4o', label: 'GPT-4o' }],
+        }],
+      });
+      useChatStore.setState({
+        activeConversationId: 'saved',
+        conversationIndex: {
+          saved: { id: 'saved', title: 'Saved', createdAt: 1, updatedAt: 1, lastUserMessageAt: null, messageCount: 0, model: { providerId: 'models', modelId: 'deepseek-chat' } },
+        },
+      });
+      useDiagnosticStore.setState({
+        results: results(check('ai-services:computer-use-model', { name: 'Old model', metric: 'stale-model', status: 'failed' })),
+      });
+      renderPage();
+      expect(screen.getByText('deepseek-chat · 结构化受限模式')).toBeInTheDocument();
+      expect(screen.queryByText('stale-model')).not.toBeInTheDocument();
+
+      act(() => useChatStore.setState({ activeConversationId: null }));
+      expect(screen.getByText('gpt-4o · 完整模式')).toBeInTheDocument();
+      expect(useDiagnosticStore.getState().lastCheckedAt).toBe(NOW);
+      expect(runs.runCategory).not.toHaveBeenCalled();
+      expect(runs.runAll).not.toHaveBeenCalled();
+      expect(screen.getByText('一切正常')).toBeInTheDocument();
+
+      act(() => useSettingsStore.setState({ computerUseEnabled: false }));
+      expect(screen.queryByText('gpt-4o · 完整模式')).not.toBeInTheDocument();
+    });
+
     it('runs every check on the first visit', () => {
       useDiagnosticStore.setState({ results: {}, lastCheckedAt: null });
       renderPage();

@@ -63,6 +63,17 @@ export function hasVisionName(modelId: string): boolean {
   return VISION_NAME_PATTERN.test(bareModelId(modelId));
 }
 
+export function isLlama32TextModel(modelId: string): boolean {
+  return /llama[-_.]?3\.2(?:[-_:]|$)/i.test(bareModelId(modelId)) && !hasVisionName(modelId);
+}
+
+/** Image capabilities applied once when upgrading the saved model settings. */
+export function resolveModelVisionUpdate(modelId: string): boolean | undefined {
+  const id = bareModelId(modelId).toLowerCase();
+  if (['deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'].includes(id)) return true;
+  return isLlama32TextModel(id) ? false : undefined;
+}
+
 /**
  * Family-level capability fallback. Every recognized branch returns a fresh
  * object; only the pure fallback returns the `FALLBACK_DEFAULT` identity, which
@@ -113,6 +124,7 @@ export function resolveFamilyCapabilities(bareId: string): ModelCapabilities {
   if (/gemma3/.test(id)) return { vision: true, thinking: false, toolResultImages: 'none', documentBlock: false, maxOutputTokens: 8192, contextWindow: 128000 };
   if (/gemma/.test(id)) return { ...FALLBACK_DEFAULT, vision: false, toolResultImages: 'none' };
   if (/phi[34]/.test(id)) return { ...FALLBACK_DEFAULT, vision: false, toolResultImages: 'none' };
+  if (isLlama32TextModel(id)) return { ...FALLBACK_DEFAULT, vision: false, toolResultImages: 'none' };
   if (/llama|mistral/.test(id)) return { ...FALLBACK_DEFAULT, toolResultImages: 'none' };
   if (/glm.*v/.test(id)) return { vision: true, thinking: false, toolResultImages: 'workaround', documentBlock: false, maxOutputTokens: 4096, contextWindow: 128000 };
   if (/glm/.test(id)) return { vision: false, thinking: false, toolResultImages: 'none', documentBlock: false, maxOutputTokens: 8192, contextWindow: 128000 };

@@ -66,7 +66,10 @@ describe('ManagedProviderOfflineBar', () => {
     fallback = null;
     setConversationModel.mockClear();
   });
-  afterEach(cleanup);
+  afterEach(() => {
+    cleanup();
+    initLanguage('en-US');
+  });
 
   it('names the organization and offers the model used before it took over', async () => {
     fallback = { providerId: 'mine', modelId: 'mine-b' };
@@ -76,7 +79,7 @@ describe('ManagedProviderOfflineBar', () => {
     await userEvent.click(screen.getByRole('button', { name: '用我自己的模型' }));
 
     expect(setConversationModel).toHaveBeenCalledWith('conv-1', { providerId: 'mine', modelId: 'mine-b' }, { durable: true });
-    expect(useSettingsStore.getState().activeModel).toEqual({ providerId: 'org-models', modelId: 'org-model' });
+    expect(useSettingsStore.getState().activeModel).toEqual({ providerId: 'mine', modelId: 'mine-b' });
   });
 
   it('is a warning message that carries its one action inside it', () => {

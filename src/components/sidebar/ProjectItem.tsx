@@ -243,7 +243,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
             label={project.name}
             trailing={project.pinned ? <span className="flex"><Icon icon={AppIcons.pin} size="sm" /></span> : undefined}
             onClick={() => toggleExpanded(project.id)}
-            className="min-w-0 flex-1"
+            className="h-sidebar-row min-w-0 flex-1 text-nav"
             {...projectRowProps(project.id)}
           />
           <IconButton
@@ -302,7 +302,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                   aria-current={selected ? 'true' : undefined}
                   {...conversationRowProps(conv.id)}
                   className={cn(
-                    'group flex h-7 w-full cursor-pointer items-center gap-2 rounded-control pl-8 pr-2 text-left text-ui-sm transition-colors duration-fast',
+                    'group flex h-sidebar-row w-full cursor-pointer items-center gap-2 rounded-control pl-8 pr-2 text-left text-nav transition-colors duration-fast',
                     FOCUS_RING,
                     selected ? 'bg-fill-selected text-label' : 'text-label-secondary hover:bg-fill-hover hover:text-label'
                   )}
@@ -315,7 +315,7 @@ export default function ProjectItem({ project, conversations, expanded, onNewTas
                       autoFocus
                       aria-label={t.sidebar.renameConversation}
                       defaultValue={conv.title}
-                      className="min-w-0 flex-1"
+                      className="min-w-0 flex-1 text-nav"
                       onClick={(e) => e.stopPropagation()}
                       onBlur={(e) => {
                         const val = e.target.value.trim();

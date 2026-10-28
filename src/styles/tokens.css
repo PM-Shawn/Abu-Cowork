@@ -282,6 +282,7 @@
   --ease-enter: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-exit: cubic-bezier(0.4, 0, 1, 1);
   --font-code: var(--ds-font-mono);
+  --spacing-sidebar-row: 30px;
 }
 
 /* Font-size tokens: each size comes with its line height and weight. */
@@ -301,6 +302,9 @@
   --text-ui: 13px;
   --text-ui--line-height: 18px;
   --text-ui--font-weight: 400;
+  --text-nav: 14px;
+  --text-nav--line-height: 20px;
+  --text-nav--font-weight: 400;
   --text-ui-sm: 12px;
   --text-ui-sm--line-height: 16px;
   --text-ui-sm--font-weight: 400;

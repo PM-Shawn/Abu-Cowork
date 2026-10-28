@@ -4,6 +4,7 @@ import {
   computeReasoningParams,
   isReasoningStarvation,
   deriveDeclaredDefaults,
+  deriveUiCaps,
   isKnownModel,
   resolveAgentModelCapabilities,
   hasVisionName,
@@ -80,6 +81,35 @@ describe('modelCapabilities', () => {
   });
 
   describe('resolveCapabilities — vision classification', () => {
+    it.each([
+      'llama3.2', 'llama3.2:latest', 'llama3.2:1b', 'llama3.2:3b-instruct-q4_K_M',
+      'ollama/llama3.2:latest', 'meta-llama/Llama-3.2-3B-Instruct',
+    ])('%s uses text-only input across badges, declarations and Computer Use', (modelId) => {
+      expect(resolveCapabilities(modelId).vision).toBe(false);
+      expect(deriveUiCaps(modelId)).not.toContain('vision');
+      expect(deriveDeclaredDefaults(modelId).supportsImages).toBe(false);
+      expect(resolveAgentModelCapabilities({ modelId, providerSource: 'builtin' }))
+        .toMatchObject({ vision: false, computerUseTier: 'structured' });
+    });
+
+    it.each([
+      'llama3.2-vision', 'llama3.2-vision:latest', 'llama3.2-vision:11b',
+      'meta-llama/Llama-3.2-90B-Vision-Instruct',
+    ])('%s keeps image input', (modelId) => {
+      expect(resolveCapabilities(modelId).vision).toBe(true);
+      expect(deriveUiCaps(modelId)).toContain('vision');
+      expect(deriveDeclaredDefaults(modelId).supportsImages).toBe(true);
+      expect(resolveAgentModelCapabilities({ modelId, providerSource: 'builtin' }))
+        .toMatchObject({ vision: true, computerUseTier: 'full' });
+    });
+
+    it('honours explicit image capabilities on a custom Llama endpoint', () => {
+      expect(resolveAgentModelCapabilities({
+        modelId: 'llama3.2:latest', providerSource: 'custom',
+        declared: { supportsTools: true, supportsImages: true },
+      })).toMatchObject({ vision: true, computerUseTier: 'full' });
+    });
+
     // Regression: Xiaomi mimo-v2.5-pro is text-only. It was hitting FALLBACK_DEFAULT
     // (vision:true), so computer-use screenshots were sent and rejected by the provider
     // ("No endpoints found that support image input"), crashing the agent turn.
@@ -95,38 +125,32 @@ describe('modelCapabilities', () => {
       expect(resolveCapabilities('deepseek-chat').vision).toBe(false);
     });
 
-    // DeepSeek's vision route arrived after the pinned models.dev snapshot, so it is
-    // declared in overlay/deepseek.json. Without that entry the /deepseek/i pattern
-    // fallback resolves vision:false, normalizeMessages strips every image, and the
-    // model is told the route cannot see pictures — i.e. the feature is silently dead.
-    it('deepseek-v4-flash-vision-exp is the one vision-capable DeepSeek route', () => {
-      expect(resolveCapabilities('deepseek-v4-flash-vision-exp').vision).toBe(true);
+    it.each(['deepseek-flash', 'deepseek/deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])('%s supports images in the registry and custom-model defaults', (id) => {
+      expect(resolveCapabilities(id).vision).toBe(true);
+      expect(deriveDeclaredDefaults(id).supportsImages).toBe(true);
+      expect(deriveUiCaps(id)).toContain('vision');
     });
 
     // The overlay is scoped to one exact id on purpose. If someone "fixes" this in the
     // /deepseek/i pattern instead, the whole family flips to vision:true and every
     // text-only DeepSeek route starts sending images that the provider rejects.
     it('does not leak vision to its text-only DeepSeek siblings', () => {
-      expect(resolveCapabilities('deepseek-v4-flash').vision).toBe(false);
       expect(resolveCapabilities('deepseek-v4-pro').vision).toBe(false);
       expect(resolveCapabilities('deepseek-reasoner').vision).toBe(false);
       // Unlisted deepseek ids keep the conservative pattern fallback.
       expect(resolveCapabilities('deepseek-v9-imaginary').vision).toBe(false);
     });
 
-    // The vision route is v4-flash plus image input; official docs give both the same
-    // context/max-output. Only vision and toolResultImages may differ — a drift here
-    // means the overlay was edited without checking it against its sibling.
-    it('mirrors deepseek-v4-flash except for the image-related fields', () => {
-      const vision = resolveCapabilities('deepseek-v4-flash-vision-exp');
-      const flash = resolveCapabilities('deepseek-v4-flash');
-      expect(vision.contextWindow).toBe(flash.contextWindow);
-      expect(vision.maxOutputTokens).toBe(flash.maxOutputTokens);
-      expect(vision.outputCeiling).toBe(flash.outputCeiling);
-      expect(vision.thinking).toBe(flash.thinking);
-      // DeepSeek tool messages carry string content only, so tool-result images ride
-      // a following user message (openai-compatible.ts) rather than the tool role.
-      expect(vision.toolResultImages).toBe('workaround');
+    it('keeps Flash compatibility names on the same capacities and image transport', () => {
+      const flash = resolveCapabilities('deepseek-flash');
+      expect(flash).toMatchObject({
+        contextWindow: 1048576,
+        maxOutputTokens: 32768,
+        outputCeiling: 393216,
+        toolResultImages: 'workaround',
+      });
+      expect(resolveCapabilities('deepseek-v4-flash')).toEqual(flash);
+      expect(resolveCapabilities('deepseek-v4-flash-vision-exp')).toEqual(flash);
     });
   });
 

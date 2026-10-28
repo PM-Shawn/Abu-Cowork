@@ -41,6 +41,7 @@ import { useChatStore, useActiveConversation } from '@/stores/chatStore';
 import ContextIndicator from '@/components/chat/ContextIndicator';
 import { useDiscoveryStore } from '@/stores/discoveryStore';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useConversationModel } from '@/hooks/useConversationModel';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
 import { usePermissionStore } from '@/stores/permissionStore';
@@ -890,12 +891,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   const agents = useDiscoveryStore((s) => s.agents);
   const enterBehavior = useSettingsStore((s) => s.composerEnterBehavior);
   const disabledSkills = useSettingsStore((s) => s.disabledSkills);
-  const globalActiveModel = useSettingsStore((s) => s.activeModel);
+  const effModel = useConversationModel();
   const providers = useSettingsStore((s) => s.providers);
-  // The model shown/edited here is the active conversation's pinned model when it
-  // has one, else the global selection — keeps the picker label in sync with what
-  // this specific conversation actually runs on (see per-conversation model pin).
-  const effModel = activeConv?.model ?? globalActiveModel;
   const currentModel = effModel.modelId;
   const effProvider = providers.find((p) => p.id === effModel.providerId);
   const recentPaths = useWorkspaceStore((s) => s.recentPaths);

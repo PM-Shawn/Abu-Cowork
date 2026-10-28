@@ -141,6 +141,11 @@ test('the task the user last wrote in comes first, in 「任务」 and in a proj
   await expectAbove(page, TASK_SECOND, TASK_FIRST);
   // Project tasks are listed in their project only.
   await expect(row(page, PROJECT_FIRST)).toHaveCount(1);
+  for (const item of [projectRow, row(page, PROJECT_FIRST), row(page, TASK_FIRST)]) {
+    await expect(item).toHaveCSS('font-size', '14px');
+    await expect(item).toHaveCSS('line-height', '20px');
+    await expect(item).toHaveCSS('height', '30px');
+  }
   await shot(page, '1-created');
 
   // ---- Writing in the older task moves it up, in both lists -------------------
@@ -168,4 +173,14 @@ test('the task the user last wrote in comes first, in 「任务」 and in a proj
   await expectAbove(page, TASK_SECOND, TASK_FIRST);
   await expectAbove(page, PROJECT_SECOND, PROJECT_FIRST);
   await shot(page, '4-after-restart');
+
+  for (const title of [TASK_FIRST, PROJECT_FIRST]) {
+    await row(page, title).click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '重命名', exact: true }).click();
+    const nameField = page.getByRole('textbox', { name: '重命名', exact: true });
+    await expect(nameField).toHaveCSS('font-size', '14px');
+    await expect(nameField).toHaveCSS('line-height', '20px');
+    await nameField.press('Escape');
+    await expect(nameField).toHaveCount(0);
+  }
 });

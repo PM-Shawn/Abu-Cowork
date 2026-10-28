@@ -182,7 +182,7 @@ export default function ProjectsSection({ onCreateProject }: { onCreateProject: 
             {showArchived && (
               <div className="mt-1 space-y-1">
                 {archivedProjects.map((p) => (
-                  <div key={p.id} className="flex h-6 items-center gap-2 px-2 text-ui-sm text-label-tertiary" {...archivedRowProps(p.id)}>
+                  <div key={p.id} className="flex h-sidebar-row items-center gap-2 px-2 text-nav text-label-tertiary" {...archivedRowProps(p.id)}>
                     <span className="flex min-w-0 flex-1 items-center gap-2">
                       <Icon icon={AppIcons.folder} size="sm" />
                       <span className="truncate">{p.name}</span>

@@ -267,7 +267,7 @@ const enUS: TranslationDict = {
     stop: 'Stop',
     welcomeTitle: 'Leave it to Abu ✨',
     welcomeSubtitle: "Hey~ I'm Abu, your desktop buddy! From now on, leave everything to me~",
-    disclaimer: 'Abu may make mistakes. Please verify important information.',
+    disclaimer: 'Content is AI-generated. Please verify important information.',
     thinking: 'Thinking…',
     dropFilesHere: 'Drop files here',
     pasteOrDropImages: 'Paste or drop images',

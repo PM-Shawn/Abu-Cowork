@@ -362,6 +362,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
             return (
               <NavItem
                 key={item.id}
+                className="h-sidebar-row text-nav"
                 data-sidebar-action="new-task"
                 icon={AppIcons.add}
                 label={navTitle(item, t.sidebar.newTask)}
@@ -376,6 +377,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
             return (
               <NavItem
                 key={item.id}
+                className="h-sidebar-row text-nav"
                 icon={mode === 'todos' ? AppIcons.todos : AppIcons.inbox}
                 label={navTitle(item, mode === 'todos' ? t.sidebar.todos : t.sidebar.inbox)}
                 selected={viewMode === mode}
@@ -390,6 +392,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
             return (
               <NavItem
                 key={item.id}
+                className="h-sidebar-row text-nav"
                 data-testid="sidebar-team"
                 icon={AppIcons.team}
                 label={navTitle(item, t.sidebar.team)}
@@ -402,6 +405,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
             return (
               <NavItem
                 key={item.id}
+                className="h-sidebar-row text-nav"
                 icon={AppIcons.extensions}
                 label={navTitle(item, t.sidebar.extensions)}
                 selected={viewMode === 'extensions'}
@@ -416,6 +420,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
             return (
               <NavItem
                 key={item.id}
+                className="h-sidebar-row text-nav"
                 icon={AppIcons.automation}
                 label={navTitle(item, t.sidebar.automation)}
                 selected={viewMode === 'automation'}
@@ -427,6 +432,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
           return (
             <NavItem
               key={item.id}
+              className="h-sidebar-row text-nav"
               data-testid={`sidebar-app-page-${item.id}`}
               icon={AppIcons.webPage}
               label={navTitle(item, item.id)}
@@ -503,7 +509,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                 onPointerDown={(e) => menus.onRowPointerDown(e, conv.id)}
                 aria-current={selected ? 'true' : undefined}
                 className={cn(
-                  'group flex h-7 w-full cursor-pointer items-center gap-2 rounded-control px-2 text-left text-ui text-label transition-colors duration-fast',
+                  'group flex h-sidebar-row w-full cursor-pointer items-center gap-2 rounded-control px-2 text-left text-nav text-label transition-colors duration-fast',
                   FOCUS_RING,
                   selected ? 'bg-fill-selected' : 'hover:bg-fill-hover'
                 )}
@@ -524,7 +530,7 @@ export default function Sidebar({ windowsWorkspaceHeader = false }: SidebarProps
                     autoFocus
                     aria-label={t.sidebar.renameConversation}
                     defaultValue={conv.title}
-                    className="min-w-0 flex-1"
+                    className="min-w-0 flex-1 text-nav"
                     onClick={(e) => e.stopPropagation()}
                     onBlur={(e) => {
                       const val = e.target.value.trim();

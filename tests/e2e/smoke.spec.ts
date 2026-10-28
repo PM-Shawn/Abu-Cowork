@@ -105,6 +105,11 @@ test.describe.serial('Electron shell — real app smoke', () => {
     await expect(page.getByRole('button', { name: NEW_TASK_BUTTON }).first()).toBeVisible({
       timeout: READY_TIMEOUT,
     });
+    for (const item of await page.getByLabel('Main navigation').getByRole('button').all()) {
+      await expect(item).toHaveCSS('font-size', '14px');
+      await expect(item).toHaveCSS('line-height', '20px');
+      await expect(item).toHaveCSS('height', '30px');
+    }
   });
 
   test('new-task-keeps-draft-in-chat-input', async () => {
@@ -132,6 +137,9 @@ test.describe.serial('Electron shell — real app smoke', () => {
       await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
       await page.getByRole('menuitem', { name: /^(设置|Settings)$/ }).click();
       await page.getByRole('button', { name: '偏好', exact: true }).click();
+      const preferences = page.getByRole('button', { name: '偏好', exact: true });
+      await expect(preferences).toHaveCSS('font-size', '13px');
+      await expect(preferences).toHaveCSS('height', '28px');
     };
     const turns = () => page.getByRole('combobox', { name: '最大轮次', exact: true });
     await openGeneral();

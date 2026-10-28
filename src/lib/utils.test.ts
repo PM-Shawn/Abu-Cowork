@@ -36,7 +36,7 @@ describe('cn() — a size next to a color', () => {
 
 // Every name utils.ts registers, by the property it sets. A name missing there is read as
 // something else (a size as a color, `font-code` as a weight) and merges wrongly.
-const FONT_SIZES = ['caption', 'body', 'title-lg', 'title', 'ui', 'ui-sm', 'h1', 'h2', 'h3', 'mono', 'code-inline'];
+const FONT_SIZES = ['caption', 'body', 'title-lg', 'title', 'ui', 'ui-sm', 'nav', 'h1', 'h2', 'h3', 'mono', 'code-inline'];
 const TEXT_COLORS = ['label', 'label-secondary', 'label-tertiary', 'label-placeholder', 'on-emphasis', 'link', 'success', 'warning', 'danger', 'info', 'brand-ink'];
 const BG_COLORS = [
   'desk', 'desk-solid', 'surface', 'raised', 'code', 'diagram-canvas', 'page-canvas', 'field',
@@ -91,6 +91,11 @@ describe('cn() — design-system tokens', () => {
   it('lets a later font-size token win over an earlier one', () => {
     expect(cn('text-ui', 'text-body')).toBe('text-body');
     expect(cn('text-h1', 'text-mono')).toBe('text-mono');
+  });
+
+  it('lets sidebar dimensions replace a shared control size', () => {
+    expect(cn('h-7 text-ui text-label', 'h-sidebar-row text-nav')).toBe('text-label h-sidebar-row text-nav');
+    expect(cn('h-sidebar-row', 'h-7')).toBe('h-7');
   });
 
   it('lets a later text color token win over an earlier one', () => {

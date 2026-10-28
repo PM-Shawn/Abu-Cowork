@@ -7,7 +7,7 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
-## v0.61.0 · 2026-10-28
+## v0.60.1 · 2026-10-28
 
 ### ✨ Improvements
 
@@ -16,12 +16,14 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 
 ### 🐛 Fixes
 
+- **Multiple Mermaid diagrams render reliably in one reply**: Each diagram cleans up its own temporary elements, preserving other diagrams that are still rendering and their expand controls.
+- **Windows screenshots can include Abu**: On systems that support capture-session window exclusion, ordinary screenshot tools can capture the Abu window while Computer Use excludes it from its own captures. Systems without that capability retain window capture protection.
 - **New conversations remember your last model choice.** A model selected in a conversation becomes the choice for new conversations and survives a restart; existing conversations keep their own models. Model settings, computer-control capability checks, diagnostics and task settings use the corresponding conversation's model. The pet window shares settings with the main window, which owns saving them.
 - **Image capability declarations match the model.** `deepseek-flash` and its official aliases are recognized as image-capable, while Llama 3.2 text models and Vision models are distinguished correctly. Existing saved declarations for these models are updated once; changes you make afterwards are preserved.
 - **Enlarged diagrams open at a readable size.** Diagram previews have bounded windows below the native title area, explicit image dimensions and controls for zoom, actual size and fit to window. Large diagrams can be scrolled and dragged, and the toolbar remains visible.
 - **Settings headings and actions stay visible while scrolling.** The title, section actions and close button remain above the form. Profile editing is available beside your identity on hover or keyboard focus. The image-generation add action sits beside its title, and service status labels wrap onto their own row in narrow windows.
 
-**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.60.0...v0.61.0
+**Full Changelog**: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.60.0...v0.60.1
 
 ## v0.60.0 · 2026-10-24
 

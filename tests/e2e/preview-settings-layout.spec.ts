@@ -49,6 +49,35 @@ async function openSettings(page: Page) {
   return settings;
 }
 
+test('renders every diagram when one reply contains concurrent Mermaid renders', async () => {
+  const count = 8;
+  model = await startOpenAiMock([{ kind: 'complete', responseText: Array.from({ length: count }, (_, index) => [
+    '```mermaid',
+    'flowchart LR',
+    `A[Diagram ${index + 1}] --> B[Ready ${index + 1}]`,
+    '```',
+  ].join('\n')).join('\n\n') }]);
+  const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  const errors: string[] = [];
+  page.on('console', (message) => { if (message.type() === 'error') errors.push(message.text()); });
+  await waitForApp(page);
+  await configureLocalMockProvider(page, model.baseUrl);
+  const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
+  await input.fill('Show all eight diagrams');
+  await input.press('Enter');
+  const diagrams = page.locator('[data-renderable-code="mermaid"]');
+  try {
+    await expect(diagrams).toHaveCount(count, { timeout: READY_TIMEOUT });
+    for (let index = 0; index < count; index++) {
+      await expect(diagrams.nth(index).locator('svg[id^="mermaid-"]')).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(diagrams.nth(index).getByRole('button', { name: '展开查看', exact: true })).toBeAttached();
+    }
+  } finally {
+    await test.info().attach('diagram-errors', { body: errors.join('\n'), contentType: 'text/plain' });
+    await test.info().attach('diagram-text', { body: (await diagrams.allTextContents()).join('\n'), contentType: 'text/plain' });
+  }
+});
+
 test('renders readable diagrams in a bounded viewer, with fit, anchored zoom, scrolling and focus return', async () => {
   model = await startOpenAiMock([{ kind: 'complete', responseText: [
     '```mermaid',

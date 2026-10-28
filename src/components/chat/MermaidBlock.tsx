@@ -13,14 +13,11 @@ let mermaidInitPromise: Promise<typeof import('mermaid')['default']> | null = nu
 const svgCache = new Map<string, string>();
 const SVG_CACHE_MAX = 30;
 
-/** Remove temporary DOM elements that mermaid.render() leaves behind */
+/** Remove only this render's temporary DOM elements; other renders may be active. */
 function cleanupMermaidArtifacts(id: string) {
   for (const sel of [`#${id}`, `#d${id}`, `[data-id="${id}"]`]) {
     try { document.querySelector(sel)?.remove(); } catch { /* skip */ }
   }
-  document.querySelectorAll('#d-mermaid, .error-icon, [id^="dmermaid-"]').forEach((el) => {
-    if (el.parentElement === document.body) el.remove();
-  });
 }
 
 function getMermaid() {

@@ -301,7 +301,7 @@ async function openConversation(page: Page, title: string): Promise<void> {
   const row = page.getByRole('button', { name: new RegExp(`^${title}`) }).first();
   await expect(row).toBeVisible({ timeout: READY_TIMEOUT });
   await row.click();
-  await expect(page.getByText(title, { exact: true }).first()).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(page.getByRole('main').getByText(title, { exact: true }).first()).toBeVisible({ timeout: READY_TIMEOUT });
 }
 
 async function openNewTask(page: Page): Promise<void> {

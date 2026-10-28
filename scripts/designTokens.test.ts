@@ -177,6 +177,8 @@ describe('design tokens — the theme', () => {
   it.each([
     ['--text-caption', '11px', '16px', '400'],
     ['--text-body', '14px', '22px', '400'],
+    ['--text-ui', '13px', '18px', '400'],
+    ['--text-nav', '14px', '20px', '400'],
   ])('defines %s with its line height and weight', (name, size, lineHeight, weight) => {
     const sizes = new Map(themes(''));
     expect(sizes.get(name)).toBe(size);

@@ -146,6 +146,7 @@ export default function CapabilitySetupDialog() {
     >
       <CapabilitiesSection
         key={request.id}
+        conversationId={request.conversationId}
         setupTarget={request.target}
         requestedByTask
         computerUseRequirements={request.computerUseRequirements}

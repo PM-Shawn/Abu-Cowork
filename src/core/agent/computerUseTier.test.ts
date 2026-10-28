@@ -125,8 +125,8 @@ describe('computer tool and guidance follow whether the model can see images', (
     vi.unstubAllGlobals();
   });
 
-  it('a model that cannot see images gets the text-only tool and guidance', async () => {
-    useOllamaModel('qwen3:8b');
+  it.each(['qwen3:8b', 'llama3.2:latest'])('a model that cannot see images gets the text-only tool and guidance (%s)', async (modelId) => {
+    useOllamaModel(modelId);
     const conversationId = useChatStore.getState().createConversation();
 
     const result = await runAgentLoop(conversationId, 'open Notes');
@@ -143,7 +143,7 @@ describe('computer tool and guidance follow whether the model can see images', (
   });
 
   it('a model that can see images keeps the screenshot tool and guidance', async () => {
-    useOllamaModel('llama3.2');
+    useOllamaModel('llama3.2-vision');
     const conversationId = useChatStore.getState().createConversation();
 
     const result = await runAgentLoop(conversationId, 'open Notes');
@@ -156,8 +156,8 @@ describe('computer tool and guidance follow whether the model can see images', (
   });
 
   // 电脑操控开关关着时 computer 延后加载，只在系统说明里留一行摘要
-  it('a model that cannot see images gets the text-only summary for the deferred tool', async () => {
-    useOllamaModel('qwen3:8b', false);
+  it.each(['qwen3:8b', 'llama3.2:latest'])('a model that cannot see images gets the text-only summary for the deferred tool (%s)', async (modelId) => {
+    useOllamaModel(modelId, false);
     const conversationId = useChatStore.getState().createConversation();
 
     const result = await runAgentLoop(conversationId, 'hello');
@@ -168,8 +168,8 @@ describe('computer tool and guidance follow whether the model can see images', (
     expect(systemPrompt()).not.toContain('Control the computer screen');
   });
 
-  it('a delegated agent on a model that cannot see images gets the text-only tool and a matching tool context', async () => {
-    useOllamaModel('qwen3:8b');
+  it.each(['qwen3:8b', 'llama3.2:latest'])('a delegated agent on a model that cannot see images gets the text-only tool and a matching tool context (%s)', async (modelId) => {
+    useOllamaModel(modelId);
     answerWith('<tool_call>{"name": "computer", "arguments": {"action": "wait", "duration": 100, "consequence": "none"}}</tool_call>');
     const agent = { name: 'operator', description: 'operates apps', systemPrompt: 'operate', tools: ['computer'], filePath: '__preset__' };
 

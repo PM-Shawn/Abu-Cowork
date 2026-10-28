@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useState, type KeyboardEvent, type ReactNode } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useChatStore } from '@/stores/chatStore';
+import { useConversationModel } from '@/hooks/useConversationModel';
 import { format, useI18n } from '@/i18n';
 import { cn } from '@/lib/utils';
 import { Button, IconButton } from '@/components/ds/button';
@@ -88,21 +89,15 @@ export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, t
 }) {
   const { t } = useI18n();
   const providers = useSettingsStore((s) => s.providers);
-  const activeModel = useSettingsStore((s) => s.activeModel);
+  const effectiveActiveModel = useConversationModel();
   // Only the open conversation's id and model: the picker must not re-render while a reply streams.
   const activeConversationId = useChatStore((s) => (
     s.activeConversationId && s.conversations[s.activeConversationId] ? s.activeConversationId : null
   ));
-  const conversationModel = useChatStore((s) => (
-    s.activeConversationId ? s.conversations[s.activeConversationId]?.model : undefined
-  ));
   const setConversationModel = useChatStore((s) => s.setConversationModel);
-  // When a conversation is open, the picker reflects/edits ITS model (falling back to the new-conversation default for legacy unpinned conversations).
-  const effectiveActiveModel = conversationModel ?? activeModel;
   const recentModels = useSettingsStore((s) => s.recentModels);
   const favoriteModels = useSettingsStore((s) => s.favoriteModels);
   const selectModel = useSettingsStore((s) => s.selectModel);
-  const touchRecentModel = useSettingsStore((s) => s.touchRecentModel);
   const toggleFavorite = useSettingsStore((s) => s.toggleFavorite);
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
 
@@ -169,15 +164,13 @@ export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, t
 
   const handleSelect = useCallback(
     (providerId: string, modelId: string) => {
-      // Inside a conversation the pick is scoped to it; on the new-task page it
-      // sets the default for new conversations (issue #545, see modelPick.ts).
       applyModelPick(
         { activeConversationId, providerId, modelId },
-        { selectModel, touchRecentModel, setConversationModel },
+        { selectModel, setConversationModel },
       );
       onOpenChange(false);
     },
-    [selectModel, touchRecentModel, setConversationModel, activeConversationId, onOpenChange]
+    [selectModel, setConversationModel, activeConversationId, onOpenChange]
   );
 
   const handleToggleFavorite = useCallback(

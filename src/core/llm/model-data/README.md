@@ -59,25 +59,21 @@ Edit the overlay that owns that vendor (or add another overlay file in the same 
 `{ "models": [ ModelRecord, ... ] }` — then wire it into `loadAndMerge()` in
 `scripts/gen-model-data.ts`), then `npm run gen:models` → `npm test` → commit.
 
-**Worked example — `overlay/deepseek.json` (`deepseek-v4-flash-vision-exp`).** DeepSeek's
-vision route shipped after the pinned snapshot, and it is the only DeepSeek id that accepts
-image input. Three choices in that entry are worth copying when the next such model lands:
+**Example — `overlay/deepseek.json`.** `deepseek-flash` and its compatibility names
+`deepseek-v4-flash` and `deepseek-v4-flash-vision-exp` share image input and capacity
+metadata. Their exact entries keep the other DeepSeek models' capabilities independent.
 
-- **Overlay, not a `modelCapabilities.ts` pattern.** The runtime pattern fallback is
-  `/deepseek/i → vision:false`, so the vision id would otherwise resolve as text-only and
-  `normalizeMessages` would strip every image. Fixing that in the pattern would move the
-  default for the whole `deepseek-*` family; an overlay entry is scoped to one exact id, and
-  following an `-exp` id as it moves stays a one-line JSON edit.
-- **Mirror the sibling model, vary only what actually differs.** Every field is copied from
-  `deepseek-v4-flash` (the vision route is that model plus image input, and the official
-  pricing table lists identical price/context/max-output) except `vision` and
-  `toolResultImages`. `toolResultImages: "workaround"` because DeepSeek tool messages carry
-  string content only — `openai-compatible.ts` already re-emits tool-result images as a
-  following user message, which is what that label names.
-- **Omit `pricing` when a shorter id prefix already prices it.** `costTracker`'s
-  `findPricing` matches by longest id prefix, so `deepseek-v4-flash-vision-exp` inherits
-  `deepseek-v4-flash`'s numbers. Hand-copying them would go stale the first time a snapshot
-  refresh repriced flash, and nothing would flag the drift.
+- `toolResultImages: "workaround"` sends tool-result images in a following user message,
+  matching DeepSeek's string-only tool messages.
+- `contextWindow` and `outputCeiling` follow the official `/models` metadata.
+- Pricing uses the official peak rates for cost estimates. The experimental name
+  inherits `deepseek-v4-flash` pricing through `costTracker`'s longest-prefix match.
+
+**Local Llama 3.2 input.** Ollama's `llama3.2` (1B/3B) accepts text;
+`llama3.2-vision` (11B/90B) accepts text and images. The local overlay records the
+base text model, and `families.ts` handles tagged and provider-prefixed variants.
+Sources: https://ollama.com/library/llama3.2 and
+https://ollama.com/library/llama3.2-vision (2026-10-28).
 
 ## Correct a wrong upstream value
 

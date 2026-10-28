@@ -10,6 +10,7 @@ import { DesignSystemProvider } from '@/components/ds/provider';
 import CapabilitiesSection from './CapabilitiesSection';
 import { initLanguage } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { useChatStore } from '@/stores/chatStore';
 import { useScheduleStore } from '@/stores/scheduleStore';
 import { useTriggerStore } from '@/stores/triggerStore';
 import { useIMChannelStore } from '@/stores/imChannelStore';
@@ -140,6 +141,7 @@ function makeModelProvider(overrides: Partial<ProviderInstance>): ProviderInstan
 
 describe('CapabilitiesSection', () => {
   beforeEach(() => {
+    useChatStore.setState({ activeConversationId: null, conversations: {}, conversationIndex: {} });
     useSettingsStore.setState({ browserPermissionConfigV2: createBrowserPermissionConfig() });
     initLanguage('en-US');
     setElectronHost(true);
@@ -227,6 +229,7 @@ describe('CapabilitiesSection', () => {
 
   afterEach(() => {
     cleanup();
+    useChatStore.setState({ activeConversationId: null, conversations: {}, conversationIndex: {} });
     setElectronHost(false);
     // The automation stores are module-level state shared across this file, so
     // a task arranged for the S11 card would otherwise still be there for the
@@ -437,6 +440,43 @@ describe('CapabilitiesSection', () => {
     await user.click(screen.getByRole('button', { name: 'Current model' }));
     expect(screen.getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
     expect(screen.getByText(/No image input/)).toBeInTheDocument();
+  });
+
+  it('shows the open conversation model and returns to the latest model on the new-task page', async () => {
+    const provider = makeModelProvider({ models: [{ id: 'gpt-4o', label: 'GPT-4o' }, { id: 'deepseek-chat', label: 'DeepSeek' }] });
+    useSettingsStore.setState({ providers: [provider], activeModel: { providerId: provider.id, modelId: 'gpt-4o' } });
+    useChatStore.setState({
+      activeConversationId: 'saved',
+      conversationIndex: {
+        saved: { id: 'saved', title: 'Saved', createdAt: 1, updatedAt: 1, lastUserMessageAt: null, messageCount: 0, model: { providerId: provider.id, modelId: 'deepseek-chat' } },
+      },
+    });
+    const user = userEvent.setup();
+    render(<CapabilitiesSection setupTarget="computer" />);
+    await user.click(screen.getByRole('button', { name: 'Current model' }));
+    expect(screen.getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
+
+    act(() => useChatStore.setState({ activeConversationId: null }));
+    await user.click(screen.getByRole('button', { name: 'Current model' }));
+    expect(screen.getByText(/gpt-4o · Screenshots \+ UI structure/)).toBeInTheDocument();
+  });
+
+  it('keeps the requesting task model when setup belongs to a different conversation', async () => {
+    const provider = makeModelProvider({ models: [{ id: 'gpt-4o', label: 'GPT-4o' }, { id: 'deepseek-chat', label: 'DeepSeek' }] });
+    useSettingsStore.setState({ providers: [provider], activeModel: { providerId: provider.id, modelId: 'gpt-4o' } });
+    useChatStore.setState({
+      activeConversationId: 'visible',
+      conversationIndex: {
+        requested: { id: 'requested', title: 'Requested', createdAt: 1, updatedAt: 1, lastUserMessageAt: null, messageCount: 0, model: { providerId: provider.id, modelId: 'deepseek-chat' } },
+      },
+    });
+    const user = userEvent.setup();
+    render(<CapabilitiesSection conversationId="requested" setupTarget="computer" requestedByTask />);
+    await user.click(screen.getByRole('button', { name: 'Current model' }));
+    expect(screen.getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
+
+    act(() => useChatStore.setState({ activeConversationId: null }));
+    expect(screen.getByText(/deepseek-chat · Structured mode/)).toBeInTheDocument();
   });
 
   // A tier that stops Computer Use from working is shown without asking.

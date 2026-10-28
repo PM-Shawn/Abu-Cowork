@@ -224,6 +224,22 @@ mac:
   # overrides this and forceCodeSigning; do NOT commit a real identity here.
   identity: null
 
+dmg:
+  background: build/dmg-background.png
+  iconSize: 100
+  iconTextSize: 14
+  window:
+    width: 540
+    height: 380
+  contents:
+    - x: 150
+      y: 232
+      type: file
+    - x: 390
+      y: 232
+      type: link
+      path: /Applications
+
 win:
   icon: src-tauri/icons/icon.ico
   # Windows baseline ships a conventional x64 NSIS installer. It is

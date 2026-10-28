@@ -58,12 +58,14 @@ vi.mock('./sections/CapabilitiesSection', async () => {
   const { Button } = await import('@/components/ds/button');
   return {
     default: ({
+      conversationId,
       setupTarget,
       computerUseRequirements,
       onSetupComplete,
       onSetupCancel,
       onSetupRelaunch,
     }: {
+      conversationId: string;
       setupTarget: string;
       computerUseRequirements?: { screenRead: boolean; uiControl: boolean };
       onSetupComplete: () => void;
@@ -71,6 +73,7 @@ vi.mock('./sections/CapabilitiesSection', async () => {
       onSetupRelaunch?: () => void;
     }) => (
       <div>
+        <span>conversation:{conversationId}</span>
         <span>setup:{setupTarget}</span>
         <span>requirements:{JSON.stringify(computerUseRequirements)}</span>
         <Button onClick={onSetupCancel}>cancel setup</Button>
@@ -151,6 +154,7 @@ describe('CapabilitySetupDialog', () => {
     });
 
     renderWindow();
+    expect(screen.getByText('conversation:conversation-ax')).toBeInTheDocument();
     expect(screen.getByText(
       'requirements:{"screenRead":false,"uiControl":true}',
     )).toBeInTheDocument();

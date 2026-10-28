@@ -46,6 +46,15 @@ const messages: Message[] = [
 describe('OpenAICompatibleAdapter — non-vision model must not receive image_url', () => {
   beforeEach(() => mockFetch.mockReset());
 
+  it.each(['llama3.2', 'llama3.2:latest', 'ollama/llama3.2:3b'])('%s sends tool results as text', async (modelId) => {
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([{ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }]));
+    await new OpenAICompatibleAdapter().chat(messages, opts({ model: modelId, supportsVision: resolveCapabilities(modelId).vision }), () => {});
+    const wire = JSON.stringify(JSON.parse(mockFetch.mock.calls[0][1].body as string).messages);
+    expect(wire).not.toContain('image_url');
+    expect(wire).not.toContain('BASE64PNG');
+    expect(wire).toContain('read_file');
+  });
+
   it('sends NO image_url to a supportsVision:false model', async () => {
     mockFetch.mockResolvedValueOnce(makeSSEResponse([{ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }]));
     await new OpenAICompatibleAdapter().chat(messages, opts({ supportsVision: false }), () => {});
@@ -127,16 +136,31 @@ describe('OpenAICompatibleAdapter — DeepSeek vision route carries images end t
     };
   }
 
-  it('deepseek-v4-flash-vision-exp receives the image as an image_url data URL', async () => {
-    const { wire } = await sendAs('deepseek-v4-flash-vision-exp');
+  it.each(['deepseek-flash', 'deepseek/deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])('%s receives the image as an image_url data URL', async (modelId) => {
+    const { wire, userText } = await sendAs(modelId);
     expect(wire).toContain('image_url');
     expect(wire).toContain('data:image/png;base64,BASE64PNG');
     expect(wire).toContain('这张图里是什么');
+    expect(userText).toBe('这张图里是什么');
   });
 
-  it('deepseek-v4-flash gets the text plus an explicit no-vision note, never the image', async () => {
+  it('deepseek-flash receives tool-result images in a following user message', async () => {
+    mockFetch.mockResolvedValueOnce(makeSSEResponse([{ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }]));
+    await new OpenAICompatibleAdapter().chat(
+      messages,
+      opts({ model: 'deepseek-flash', supportsVision: resolveCapabilities('deepseek-flash').vision }),
+      () => {},
+    );
+    const sent = JSON.parse(mockFetch.mock.calls[0][1].body as string).messages as Array<{ role: string; content: unknown }>;
+    expect(sent.find((message) => message.role === 'tool')?.content).toEqual(expect.any(String));
+    expect(sent.filter((message) => message.role === 'user').at(-1)?.content).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'image_url', image_url: expect.objectContaining({ url: 'data:image/png;base64,BASE64PNG' }) }),
+    ]));
+  });
+
+  it('deepseek-v4-pro gets the text plus an explicit no-vision note, never the image', async () => {
     const prompt = '这张图里是什么';
-    const { wire, userText } = await sendAs('deepseek-v4-flash');
+    const { wire, userText } = await sendAs('deepseek-v4-pro');
     expect(wire).not.toContain('image_url');
     expect(wire).not.toContain('BASE64PNG');
     expect(userText).toContain(prompt);

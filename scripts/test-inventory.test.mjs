@@ -48,6 +48,28 @@ test('collectInventory counts each layer by filename convention', () => {
   });
 });
 
+test('local agent files leave the inventory and freshness check unchanged', () => {
+  const root = fixtureRepo();
+  const expected = collectInventory(root);
+  const doc = path.join(root, 'TESTING.md');
+  writeFileSync(doc, renderBlock(expected));
+  const agentDir = path.join(root, '.agent', 'investigation');
+  mkdirSync(agentDir, { recursive: true });
+  for (const filename of [
+    'example.test.ts',
+    'example.integration.test.ts',
+    'example.contract.test.ts',
+    'example.test.mjs',
+    'example.test.cjs',
+  ]) {
+    writeFileSync(path.join(agentDir, filename), '');
+  }
+
+  assert.deepEqual(collectInventory(root), expected);
+  const result = spawnSync(process.execPath, [path.resolve('scripts/test-inventory.mjs'), '--check', '--root', root], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
 test('renderBlock produces a markdown table wrapped in markers', () => {
   const block = renderBlock({ unit: 4, integration: 1, contract: 1, enterprise: 1, quarantine: 1, quarantinedSpec: 1, e2eWeb: 1, e2eElectron: 2, nodeTest: 2 });
   assert.ok(block.startsWith(START));

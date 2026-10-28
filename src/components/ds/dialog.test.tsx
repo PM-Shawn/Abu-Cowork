@@ -1391,10 +1391,10 @@ describe('Escape while the layer above fades out', () => {
 });
 
 describe('Dialog size viewer, long descriptions and presses outside', () => {
-  it('size viewer fills the window up to a 24px margin and hands its whole box to the content', () => {
+  it('size viewer bounds its content below the native title band', () => {
     render(<Dialog open title="Image" titleHidden size="viewer" closeButton><p>Picture</p></Dialog>, { wrapper: DesignSystemProvider });
     const dialog = screen.getByRole('dialog', { name: 'Image' });
-    expect(dialog).toHaveClass('inset-6');
+    expect(dialog).toHaveClass('inset-x-8', 'top-14', 'bottom-6', 'max-w-[1000px]');
     expect(dialog).toHaveClass('p-0');
     expect(dialog).not.toHaveClass('max-w-md');
     expect(dialog).not.toHaveClass('-translate-x-1/2');

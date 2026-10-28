@@ -35,8 +35,8 @@ export const DIALOG_SURFACE = 'fixed z-dialog flex flex-col rounded-window bg-ra
 export const DIALOG_BOX = `${DIALOG_SURFACE} left-1/2 top-1/2 max-h-[calc(100dvh-6rem)] w-full -translate-x-1/2 -translate-y-1/2 p-6`;
 // The settings window. Auto margins center it, so a fixed element inside it still covers the app window.
 export const DIALOG_PAGE = `${DIALOG_SURFACE} inset-x-0 bottom-6 m-auto max-h-[840px] w-[min(1180px,92vw)] overflow-hidden`;
-// A viewer: the whole window up to a 24px margin, with no padding of its own.
-export const DIALOG_VIEWER = `${DIALOG_SURFACE} inset-6 p-0`;
+// Center a bounded viewer below the native title band, with room around every edge.
+export const DIALOG_VIEWER = `${DIALOG_SURFACE} inset-x-8 top-14 bottom-6 m-auto h-[min(720px,calc(100dvh-112px))] max-w-[1000px] overflow-hidden p-0`;
 // The longest fade of a design-system layer: `duration-base` in src/styles/tokens.css.
 export const LAYER_FADE_MS = 200;
 // How long a notification that has just appeared or moved takes no pointer press: its entrance

@@ -95,7 +95,7 @@ export function Dialog({
   // a save). When an approval arrives it steps aside, untouched, and comes back afterwards.
   busy?: boolean;
   // `page` is the settings window: it fills a fixed box and its content does its own scrolling.
-  // `viewer` fills the window up to a 24px margin and gives its whole box to the content.
+  // `viewer` gives a bounded box below the native title band to its content.
   size?: keyof typeof WIDTH | 'page' | 'viewer';
   placement?: keyof typeof PLACEMENT;
   role?: 'dialog' | 'alertdialog';
@@ -465,7 +465,7 @@ export function Dialog({
                 {footer && <div className="mt-6 flex shrink-0 justify-end gap-2">{footer}</div>}
                 {/* Last in the content, so the dialog opens with focus on its first control. */}
                 {closeButton && (
-                  <span data-ds-dialog-close className="absolute right-3 top-3 flex">
+                  <span data-ds-dialog-close className={cn('absolute right-3 flex', page || viewer ? 'top-2.5' : 'top-3')}>
                     <DialogPrimitive.Close asChild>
                       <IconButton icon={AppIcons.close} label={t.common.close} {...(closeButton === true ? {} : closeButton)} />
                     </DialogPrimitive.Close>

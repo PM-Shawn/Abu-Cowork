@@ -96,7 +96,7 @@ describe('ImageLightbox', () => {
     });
 
     const dialog = viewer();
-    expect(dialog).toHaveClass('inset-6');
+    expect(dialog).toHaveClass('inset-x-8', 'top-14', 'bottom-6');
     expect(dialog).toHaveAttribute('data-ds-layer');
     expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
     expect(screen.queryByRole('button', { name: 'Previous image' })).not.toBeInTheDocument();

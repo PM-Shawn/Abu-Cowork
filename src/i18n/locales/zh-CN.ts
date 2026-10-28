@@ -379,7 +379,7 @@ const zhCN: TranslationDict = {
     htmlWidgetErrorRow: '组件运行出错',
     htmlWidgetExpand: '展开组件',
     htmlWidgetCollapse: '收起组件',
-    htmlWidgetFullscreen: '全屏查看',
+    htmlWidgetFullscreen: '展开查看',
     htmlWidgetCopyCode: '复制代码',
     htmlWidgetCopied: '已复制',
     htmlWidgetDownload: '下载文件',
@@ -2656,6 +2656,8 @@ const zhCN: TranslationDict = {
     pdfNextPage: '下一页',
     pdfFitWidth: '适合宽度',
     pdfFit: '适宽',
+    previewFitWindow: '适合窗口',
+    previewActualSize: '原始大小',
     pdfRotate: '顺时针旋转',
     // Preview: XLSX
     xlsxSheetLabel: '工作表',

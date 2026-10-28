@@ -15,8 +15,10 @@ import {
   drainWorkspaceRequest,
   getPendingWorkspaceRequest,
   requestWorkspace,
+  resolveWorkspaceRequest,
 } from '@/core/agent/permissionBridge';
 import type { Message } from '@/types';
+import { checkReadPath, revokeWorkspace } from '@/core/tools/pathSafety';
 
 vi.mock('@/core/agent/agentLoopRunner', () => ({
   runAgentLoopDispatched: vi.fn(),
@@ -41,8 +43,6 @@ vi.mock('./ChapterMenu', () => ({ default: () => null }));
 
 // The folder request is a design-system window, which needs the provider the app root gives it.
 const render = (ui: ReactElement) => renderBare(ui, { wrapper: DesignSystemProvider });
-
-const WORKSPACE_REQUEST_TIMEOUT_MS = 60_000;
 
 interface OpenPicker {
   close: (selected: string | null) => Promise<void>;
@@ -104,6 +104,8 @@ describe('ChatView workspace request folder pick', () => {
   afterEach(() => {
     cleanup();
     drainWorkspaceRequest();
+    revokeWorkspace('/Users/me/A');
+    revokeWorkspace('/Users/me/B');
     vi.useRealTimers();
   });
 
@@ -124,7 +126,10 @@ describe('ChatView workspace request folder pick', () => {
     expect(useToastStore.getState().toasts).toEqual([]);
   });
 
-  it('drops a folder picked after the request timed out', async () => {
+  it('drops a folder picked after the request was already answered', async () => {
+    // Workspace requests have no auto-timeout (they wait for the user's answer),
+    // so the stale-pick guard is exercised by ending the request explicitly —
+    // e.g. it was answered some other way while the system folder picker was open.
     render(<ChatView />);
     let answer = track(Promise.resolve(null));
     await act(async () => {
@@ -134,9 +139,9 @@ describe('ChatView workspace request folder pick', () => {
     clickChooseFolder();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(WORKSPACE_REQUEST_TIMEOUT_MS);
+      resolveWorkspaceRequest('/answered-elsewhere');
     });
-    expect(answer).toEqual({ settled: true, value: null });
+    expect(answer).toEqual({ settled: true, value: '/answered-elsewhere' });
 
     await picker.close('/Users/me/late-pick');
 
@@ -147,10 +152,11 @@ describe('ChatView workspace request folder pick', () => {
     ]);
   });
 
-  it('never answers a newer request with a folder picked for the one it replaced', async () => {
+  it('answers the picker owner while preserving the next queued request', async () => {
     render(<ChatView />);
+    let firstAnswer = track(Promise.resolve(null));
     await act(async () => {
-      void requestWorkspace('first question', conversationId);
+      firstAnswer = track(requestWorkspace('first question', conversationId));
     });
     const picker = holdPickerOpen();
     clickChooseFolder();
@@ -162,16 +168,15 @@ describe('ChatView workspace request folder pick', () => {
 
     await picker.close('/Users/me/picked-for-first');
 
+    expect(firstAnswer).toEqual({ settled: true, value: '/Users/me/picked-for-first' });
     expect(secondAnswer.settled).toBe(false);
     expect(getPendingWorkspaceRequest()?.reason).toBe('second question');
-    expect(useWorkspaceStore.getState().currentPath).toBeNull();
-    expect(useChatStore.getState().conversations[conversationId].workspacePath ?? null).toBeNull();
-    expect(useToastStore.getState().toasts.map((toast) => toast.title)).toEqual([
-      getI18n().permission.folderRequestEnded,
-    ]);
+    expect(useWorkspaceStore.getState().currentPath).toBe('/Users/me/picked-for-first');
+    expect(useChatStore.getState().conversations[conversationId].workspacePath).toBe('/Users/me/picked-for-first');
+    expect(useToastStore.getState().toasts).toEqual([]);
   });
 
-  it('keeps a newer request pending when the picker opened for the replaced one is cancelled', async () => {
+  it('keeps the next request pending when the current picker is cancelled', async () => {
     render(<ChatView />);
     await act(async () => {
       void requestWorkspace('first question', conversationId);
@@ -189,5 +194,30 @@ describe('ChatView workspace request folder pick', () => {
     expect(secondAnswer.settled).toBe(false);
     expect(getPendingWorkspaceRequest()?.reason).toBe('second question');
     expect(useToastStore.getState().toasts).toEqual([]);
+  });
+
+  it('preserves the current conversation workspace when another conversation picker returns', async () => {
+    render(<ChatView />);
+    let answer = track(Promise.resolve(null));
+    await act(async () => {
+      answer = track(requestWorkspace('choose A folder', conversationId));
+    });
+    const picker = holdPickerOpen();
+    clickChooseFolder();
+    let otherConversationId = '';
+    await act(async () => {
+      otherConversationId = setupConversation();
+      useChatStore.getState().setConversationWorkspace(otherConversationId, '/Users/me/B');
+      useWorkspaceStore.getState().setWorkspace('/Users/me/B');
+    });
+
+    await picker.close('/Users/me/A');
+
+    expect(answer).toEqual({ settled: true, value: '/Users/me/A' });
+    expect(useChatStore.getState().conversations[conversationId].workspacePath).toBe('/Users/me/A');
+    expect(useChatStore.getState().conversations[otherConversationId].workspacePath).toBe('/Users/me/B');
+    expect(useWorkspaceStore.getState().currentPath).toBe('/Users/me/B');
+    expect((await checkReadPath('/Users/me/A/report.txt')).allowed).toBe(true);
+    expect((await checkReadPath('/Users/me/B/report.txt')).allowed).toBe(true);
   });
 });

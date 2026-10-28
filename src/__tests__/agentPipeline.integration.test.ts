@@ -375,6 +375,7 @@ import { runAgentLoop, persistExecutionSnapshot } from '../core/agent/agentLoop'
 import { LLMError } from '../core/llm/adapter';
 import * as delegatedMediaStore from '../core/subagent/delegatedMediaStore';
 import { executeToolBatch } from '../core/agent/toolExecutor';
+import { hasSystemQueuedInputs, drainSystemQueuedInputs } from '../core/agent/userInputQueue';
 import { escalateMaxOutputTokens } from '../core/agent/loopGuards';
 import { getI18n, getLanguageSetting, setLanguage } from '../i18n';
 import * as notifications from '../utils/notifications';
@@ -443,6 +444,11 @@ describe('Agent Pipeline Integration', () => {
       activeModel: { providerId: 'anthropic', modelId: 'claude-sonnet-4' },
     });
     vi.clearAllMocks();
+    vi.mocked(executeToolBatch).mockReset().mockResolvedValue({
+      mcpChanged: false, requiresUserRecovery: false, observations: [],
+    });
+    vi.mocked(hasSystemQueuedInputs).mockReset().mockReturnValue(false);
+    vi.mocked(drainSystemQueuedInputs).mockReset().mockReturnValue([]);
   });
 
   afterEach(() => {
@@ -752,9 +758,13 @@ describe('Agent Pipeline Integration', () => {
   });
 
   it('explains a model whose window cannot hold the instructions in plain words', async () => {
-    vi.mocked(contextManagerModule.enforceContextBudget).mockImplementationOnce(() => {
+    // Preflight and request-time checks both reject before the provider is called.
+    const fixedTooLarge = () => {
       throw new contextManagerModule.ContextBudgetError('FIXED_CONTEXT_TOO_LARGE', 20_000, 10_000);
-    });
+    };
+    vi.mocked(contextManagerModule.enforceContextBudget)
+      .mockImplementationOnce(fixedTooLarge)
+      .mockImplementationOnce(fixedTooLarge);
 
     const convId = useChatStore.getState().createConversation();
     await runAgentLoop(convId, 'hello');
@@ -764,8 +774,9 @@ describe('Agent Pipeline Integration', () => {
       .filter((message) => message.role === 'assistant')
       .map((message) => typeof message.content === 'string' ? message.content : '')
       .join('\n');
-    expect(assistantText).toContain('This model can remember too little at once to hold the instructions Abu needs. Switch to a model that can remember more.');
-    // 一句普通说明，前面不带错误前缀
+    // Include the fixed content size and the total model window.
+    expect(assistantText).toContain('about 20K tokens');
+    expect(assistantText).toContain('only 30K');
     expect(assistantText).not.toContain('Error:');
     expect(assistantText).not.toContain('raise the context length');
   });
@@ -1045,7 +1056,7 @@ describe('Agent Pipeline Integration', () => {
       expect(conversationText).not.toContain('could not be parsed');
     });
 
-    it('stops a well-formed repeated tool loop after three unchanged observations', async () => {
+    it('stops after three identical tool observations and explains the missing progress', async () => {
       let calls = 0;
       mockClaudeChat.mockImplementation(
         async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
@@ -1070,8 +1081,7 @@ describe('Agent Pipeline Integration', () => {
           error: false,
         }],
       };
-      vi.mocked(executeToolBatch)
-        .mockResolvedValueOnce(repeatedBatch)
+      vi.mocked(executeToolBatch).mockResolvedValueOnce(repeatedBatch)
         .mockResolvedValueOnce(repeatedBatch)
         .mockResolvedValueOnce(repeatedBatch);
 
@@ -1080,6 +1090,67 @@ describe('Agent Pipeline Integration', () => {
 
       expect(result.reason).toBe('no_progress');
       expect(calls).toBe(3);
+      const visible = useChatStore.getState().conversations[convId].messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).toContain(getI18n().chat.semanticLoopStopped);
+      expect(useChatStore.getState().conversations[convId].status).toBe('idle');
+      expect(notifyTaskCompleted).not.toHaveBeenCalled();
+    });
+
+    it('continues while repeated observations change and preserves the final answer', async () => {
+      let calls = 0;
+      const sent: unknown[] = [];
+      mockClaudeChat.mockImplementation(
+        async (messages: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          sent.push(messages);
+          if (calls < 4) {
+            onEvent({
+              type: 'tool_use',
+              id: `search-${calls}`,
+              name: 'tool_search',
+              input: { query: 'computer' },
+            });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+          } else {
+            onEvent({ type: 'text', text: 'The available tools have been checked.' });
+            onEvent({ type: 'done', stopReason: 'end_turn' });
+          }
+        },
+      );
+      const repeatedBatch = {
+        mcpChanged: false,
+        requiresUserRecovery: false,
+        observations: [{
+          name: 'tool_search',
+          input: { query: 'computer' },
+          result: 'no deferred tools',
+          images: [],
+          error: false,
+        }],
+      };
+      for (const result of ['tool A available', 'tool B available', 'tool C available']) {
+        vi.mocked(executeToolBatch).mockResolvedValueOnce({
+          ...repeatedBatch,
+          observations: [{ ...repeatedBatch.observations[0], result }],
+        });
+      }
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'operate the computer');
+
+      expect(result.reason).toBe('completed');
+      expect(calls).toBe(4);
+      expect(sent).toHaveLength(4);
+      const messages = useChatStore.getState().conversations[convId].messages;
+      const visible = messages
+        .filter((m) => m.role === 'assistant')
+        .map((m) => String(m.content))
+        .join('');
+      expect(visible).toContain('The available tools have been checked.');
+      expect(notifyTaskCompleted).toHaveBeenCalledWith(expect.any(String), convId);
     });
 
     it('promotes only after a successful tool_search observation in the loop process', async () => {
@@ -1454,13 +1525,8 @@ describe('Agent Pipeline Integration', () => {
       expect(String(assistantMsgs.at(-2)?.content)).not.toContain('已达到');
     });
 
-    it('resets the no-progress counter when a system wake-up rescues the loop (review finding [5])', async () => {
-      // Without the reset, a mid-stream user rescue buys only ONE more turn before
-      // the (still-3) counter trips. With it, the full 3-turn tolerance is restored:
-      // turns 1-3 trip the guard, the rescue at turn 3 resets it, turns 4-6 trip it
-      // again → stop at turn 6 (calls===6). Without the reset it would stop at turn 4.
-      const { hasSystemQueuedInputs } = await import('../core/agent/userInputQueue');
-      vi.mocked(hasSystemQueuedInputs).mockReturnValueOnce(true); // rescue exactly once (turn 3)
+    it('preserves a queued system wake-up after the no-progress limit ends the run', async () => {
+      vi.mocked(hasSystemQueuedInputs).mockReturnValue(true);
 
       let calls = 0;
       mockClaudeChat.mockImplementation(
@@ -1472,10 +1538,13 @@ describe('Agent Pipeline Integration', () => {
       );
 
       const convId = useChatStore.getState().createConversation();
-      const result = await runAgentLoop(convId, 'spin, get rescued, spin again');
+      const result = await runAgentLoop(convId, 'read the file');
 
       expect(result.reason).toBe('no_progress');
-      expect(calls).toBe(6);
+      expect(calls).toBe(3);
+      expect(hasSystemQueuedInputs).not.toHaveBeenCalled();
+      expect(useChatStore.getState().conversations[convId].status).toBe('idle');
+      expect(notifyTaskCompleted).not.toHaveBeenCalled();
     });
 
     it('pauses staged user follow-ups instead of attaching them to the aborted run', async () => {
@@ -1505,10 +1574,13 @@ describe('Agent Pipeline Integration', () => {
       const convId = useChatStore.getState().createConversation();
       let release!: () => void;
       const gate = new Promise<void>((r) => { release = r; });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
       let streamCalls = 0;
       mockClaudeChat.mockImplementation(
         async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
           streamCalls++;
+          entered();
           if (streamCalls === 1) await gate; // keep the first loop in flight
           onEvent({ type: 'text', text: 'done' });
           onEvent({ type: 'done', stopReason: 'end_turn' });
@@ -1516,17 +1588,18 @@ describe('Agent Pipeline Integration', () => {
       );
 
       const first = runAgentLoop(convId, 'first message');
-      await new Promise((r) => setTimeout(r, 20)); // let the first loop reach the LLM call
-
-      const second = await runAgentLoop(convId, '', {
-        images: [{ id: 'img-1', data: 'aGk=', mediaType: 'image/png' }],
-      });
-
-      expect(second.reason).toBe('error');
-      expect(vi.mocked(enqueueUserInput)).not.toHaveBeenCalled();
-
-      release();
-      await first;
+      await started;
+      try {
+        const second = await runAgentLoop(convId, '', {
+          images: [{ id: 'img-1', data: 'aGk=', mediaType: 'image/png' }],
+        });
+        expect(second.reason).toBe('error');
+        expect(vi.mocked(enqueueUserInput)).not.toHaveBeenCalled();
+        expect(streamCalls).toBe(1);
+      } finally {
+        release();
+        await first;
+      }
       expect(streamCalls).toBe(1);
     });
 

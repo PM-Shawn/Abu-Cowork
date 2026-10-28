@@ -33,6 +33,7 @@ import { startOllamaMock, type OllamaMock } from './ollamaMock';
 let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
 let mock: OpenAiMock | undefined;
+let recoveryMock: OpenAiMock | undefined;
 let ollama: OllamaMock | undefined;
 let readingFixtureDirectory: string | undefined;
 
@@ -153,6 +154,10 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     if (mock) {
       await mock.close();
       mock = undefined;
+    }
+    if (recoveryMock) {
+      await recoveryMock.close();
+      recoveryMock = undefined;
     }
     if (ollama) {
       await ollama.close();
@@ -371,20 +376,20 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     await expect(contextIndicator(page)).toHaveAttribute('aria-label', /\/ 32\.8k tokens$/);
   });
 
-  test('P1-1 stops before sending when LM Studio loaded the model with too little room for Abu', async () => {
+  test('waits for model selection before sending when LM Studio has insufficient context', async () => {
     const page = await openLmStudioChat([{ kind: 'complete', responseText: 'abu-e2e-never-sent' }], 8192);
 
     await send(page, `abu-e2e-lmstudio-too-small-${randomUUID()}`);
-    await expectPlainNotice(
-      page,
-      '这个模型一次能记住的内容太少，放不下阿布需要的说明。可以换一个能记得更多的模型，或者在 LM Studio 里把上下文长度调大。',
-    );
-    await expectRunEnded(page);
+    await expect(page.getByText('当前模型无法容纳任务内容，任务进度已保留。', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByRole('button', { name: '选择模型并继续', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: '停止', exact: true })).toBeVisible();
 
     expect(mock!.getRequests).toContain('/api/v0/models');
-    // 请求发出前就停下：模拟服务一次对话请求都没收到
     expect(mock!.requests).toHaveLength(0);
     await expect(page.getByText('abu-e2e-never-sent')).toHaveCount(0);
+    await page.getByRole('button', { name: '停止', exact: true }).click();
+    await expectRunEnded(page);
+    await expect(page.getByRole('button', { name: '选择模型并继续', exact: true })).toHaveCount(0);
   });
 
   const OLLAMA_MODEL = 'qwen3:0.6b';
@@ -469,7 +474,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     expect(JSON.stringify(retryUser)).toContain('The tool call in your previous reply could not be parsed');
   });
 
-  test('P1-2 says in one Chinese sentence that a model remembering too little cannot hold the instructions', async () => {
+  test('continues the preserved task after the user selects a model with sufficient context', async () => {
     const tooSmall: MockReplyPlan = {
       kind: 'http-error',
       status: 400,
@@ -483,18 +488,32 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
         },
       },
     };
-    // 服务每次都说超长；多备几次回复，证明阿布不会一直重试
     const page = await openChat([tooSmall, tooSmall, tooSmall, tooSmall], { contextWindowSize: null });
-
-    await send(page, `abu-e2e-too-small-${randomUUID()}`);
-    await expectPlainNotice(
-      page,
-      '这个模型一次能记住的内容太少，放不下阿布需要的说明。可以换一个能记得更多的模型，或者在 LM Studio / Ollama 里把上下文长度调大。',
-    );
-    await expectRunEnded(page);
+    const answer = `abu-e2e-context-selection-${randomUUID()}`;
+    recoveryMock = await startOpenAiMock([{ kind: 'complete', responseText: answer }]);
+    await configureLocalMockProvider(page, recoveryMock.baseUrl, {
+      providerId: 'context-recovery-provider', providerName: 'Context recovery provider',
+      modelId: 'context-recovery-model', modelLabel: '上下文恢复模型', keepOtherProviders: true,
+    });
+    await configureLocalMockProvider(page, mock!.baseUrl, { contextWindowSize: null, keepOtherProviders: true });
+    const prompt = `abu-e2e-too-small-${randomUUID()}`;
+    await send(page, prompt);
+    await expect(page.getByText('当前模型无法容纳任务内容，任务进度已保留。', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    const choose = page.getByRole('button', { name: '选择模型并继续', exact: true });
+    await expect(choose).toBeVisible();
     await expect(page.getByText('exceeds the available context size')).toHaveCount(0);
-
     expect(taskRequests(mock!)).toHaveLength(1);
+    expect(taskRequests(recoveryMock)).toHaveLength(0);
+    await choose.click();
+    await page.getByRole('button', { name: '上下文恢复模型，能看图', exact: true }).last().click();
+    await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(choose).toHaveCount(0);
+    await expectRunEnded(page);
+    expect(taskRequests(mock!)).toHaveLength(1);
+    const resumed = taskRequests(recoveryMock);
+    expect(resumed).toHaveLength(1);
+    expect(resumed[0].body).toMatchObject({ model: 'context-recovery-model' });
+    expect((resumed[0].body as ChatRequestBody).messages).toContainEqual(expect.objectContaining({ role: 'user', content: prompt }));
   });
 
   test('P1-4 asks before running a command the model wrote as text, and skips it when refused', async () => {

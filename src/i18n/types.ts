@@ -694,13 +694,27 @@ export interface TranslationDict {
     ollamaForbidden: string;
     /** Provider account balance/resource-package exhausted. */
     insufficientBalance: string;
-    /** Streamed-inline notice while compacting an oversized context (includes markdown; ends with a paragraph break so the retried reply starts its own paragraph). */
+    /** Inline notice after the user selected a model to continue the run. */
+    modelFailoverSwitched: string;
+    modelRecoveryAction: string;
+    modelRecoveryIncompatible: string;
+    modelRecoveryQuota: string;
+    modelRecoveryContext: string;
+    modelRecoveryUnavailable: string;
+    modelRecoveryCredentials: string;
+    modelRecoveryEnded: string;
     /** Latest user message cannot fit within the model's safe context budget. */
     contextInputTooLarge: string;
     /** System prompt and tool definitions leave no safe room for user input; also used when the request is still too long after the conversation was condensed. */
     contextFixedTooLarge: string;
     /** Same as contextFixedTooLarge, plus where to raise the length on a local server. {service} */
     contextFixedTooLargeLocal: string;
+    /** Same as contextFixedTooLarge, stating the numbers: the instructions need {needed} tokens but the model's window is {window}. */
+    contextFixedTooLargeWithNumbers: string;
+    /** Same as contextFixedTooLargeWithNumbers, plus where to raise the length on a local server. {service} */
+    contextFixedTooLargeWithNumbersLocal: string;
+    /** Streamed-inline notice when Abu raised the Ollama context length by itself and is retrying (to is a formatted token count). */
+    ollamaContextRaised: string;
     /** The model failed to send an operation even after one quiet rewrite. */
     malformedToolCall: string;
     /** A local model server gave no first output within its 10-minute wait; nothing retries it. */
@@ -1518,6 +1532,9 @@ export interface TranslationDict {
     labsExpTodosInboxWhere: string;
     labsExpPetWhere: string;
     labsExpPetDesc: string;
+    labsExpStateCompressionTitle: string;
+    labsExpStateCompressionDesc: string;
+    labsExpStateCompressionWhere: string;
     labsExpAppsTitle: string;
     labsExpAppsDesc: string;
     labsExpAppsWhere: string;
@@ -4092,6 +4109,14 @@ export interface TranslationDict {
     /** Unattended run whose target site could not be determined (the browser
      *  host did not answer, or the action names no resolvable page). */
     browserUnattendedOriginUnverified: string;
+    /** Recovery guidance matching the cause of an unverified origin. */
+    browserOriginHintNavigationUnverifiable: string;
+    browserOriginHintNonWebPage: string;
+    browserOriginHintProbeFailed: string;
+    browserOriginHintTabNotListed: string;
+    browserOriginHintFrameUnverified: string;
+    /** Explain why repeating an action cannot resolve a configuration denial. */
+    browserStandingDenialNoRetry: string;
     /** Unattended run on a URL `highRiskSites.ts` classified as money
      *  movement / government. Denied outright — nobody can answer for a wire
      *  transfer. */
@@ -4633,6 +4658,8 @@ export interface TranslationDict {
     errBusy: string;
   };
   toolResult: {
+    browserScreenshotSaved: string;
+    browserScreenshotNoVision: string;
     /** background_command_output / stop_background_command results */
     backgroundCommand: {
       noCommands: string;

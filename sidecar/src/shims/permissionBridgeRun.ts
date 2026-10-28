@@ -24,11 +24,8 @@
  * — `drainConfirmationQueue` etc. are called from `agentLoop.ts` (main-loop
  * scope) but the same names are structurally callable from a subagent
  * context too if ever wired that way, so both are covered defensively; if
- * truly outside both scopes, that's a real bug and this throws (per
- * `agentLoopRunner.ts`'s own doc: the underlying permissionBridge queues are
- * GLOBAL, not per-run, so a wrong/missing runId is "informational only" on
- * the shell side, but resolving no runId at all still indicates a caller
- * invoked this from outside any run scope, which should never happen).
+ * outside both scopes, this throws. The shell validates the live run and
+ * cancels only approvals belonging to that run's loop.
  *
  * ── `setLoopContext`/`clearLoopContext` → real no-op ────────────────────
  * `agentLoopRunner.ts`'s `installShellLoopContext`/`removeShellLoopContext`
@@ -116,19 +113,19 @@ function drain(kind: 'command' | 'file-permission' | 'workspace' | 'user-questio
   sendNotification('approval.drain', { runId: resolveRunId(), kind });
 }
 
-export function drainConfirmationQueue(): void {
+export function drainConfirmationQueue(_loopId?: string): void {
   drain('command');
 }
 
-export function drainFilePermissionQueue(): void {
+export function drainFilePermissionQueue(_loopId?: string): void {
   drain('file-permission');
 }
 
-export function drainWorkspaceRequest(): void {
+export function drainWorkspaceRequest(_loopId?: string): void {
   drain('workspace');
 }
 
-export function drainUserQuestions(): void {
+export function drainUserQuestions(_loopId?: string): void {
   drain('user-question');
 }
 

@@ -64,18 +64,8 @@ export interface AgentRunContext {
    * across all 4 sources is preserved by the single coalescer's FIFO.
    */
   pushFrame: (frame: PortFrame) => void;
-  /**
-   * Pre-resolved shell-side at `agent.run` dispatch time (same
-   * "frozen for the whole run" simplification `subagentRunContext.ts`'s
-   * `resolvedCreds` documents — a long-running main loop's enterprise
-   * gateway key does not rotate mid-run in practice either). Consumed by
-   * `shims/enterpriseCredsRun.ts`, which now checks `subagentRunContext`
-   * FIRST (top-level `subagent.run` RPC, unchanged from P1-3a) and falls
-   * back to THIS context (main-loop run, and any nested subagent delegated
-   * from it via `shims/subagentRunnerRun.ts` — which runs inside the SAME
-   * `agentRunContext` scope, no separate `subagentRunContext.run()` wrapper,
-   * so it correctly inherits the parent run's creds).
-   */
+  /** Shell-resolved credentials for the current model. Direct delegates use
+   * their own context, and user selections update only the owning context. */
   resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
   /** Resolved once at `agent.run` dispatch time — consumed by `shims/i18nRun.ts`'s full-dict `getLocale()`. */
   locale: string;

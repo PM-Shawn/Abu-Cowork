@@ -219,7 +219,9 @@ const BASE_WIRE: ProfileWire = {
 };
 
 const guardsOff = { textOnlyEndTurnNudge: false, toolArgumentRepair: false } as const;
-const guardsRepair = { textOnlyEndTurnNudge: false, toolArgumentRepair: true } as const;
+// Enable bounded empty-response recovery for compatible model families.
+// Claude and GPT retain guardsOff.
+const guardsRepair = { textOnlyEndTurnNudge: true, toolArgumentRepair: true } as const;
 
 /**
  * Per-family defaults. The values are the request shapes the adapters sent

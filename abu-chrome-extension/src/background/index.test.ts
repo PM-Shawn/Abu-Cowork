@@ -21,7 +21,8 @@
  * came to be sent by the bridge and consumed by nobody (F5-②).
  */
 
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { pageHistoryNavigation, type ChromeNavigationPin } from './historyNavigation.js';
 import type { BridgeResponse } from '../shared/types.js';
 // The list the router itself reads, not a fourth hand-typed copy of it — the
 // previous copy here was missing `get_html` entirely, so the case it was
@@ -272,6 +273,9 @@ function fakeChrome(): Record<string, unknown> {
         browserState.injected.push({
           tabId: opts.target.tabId, files: opts.files, world: opts.world, args: opts.args,
         });
+        if (opts.func === pageHistoryNavigation) {
+          return [{ result: opts.func(...(opts.args ?? []) as never[]) }];
+        }
         // The frame probe: one result row per frame, exactly as Chrome returns
         // it, so the worker reads frame ids and document ids from the browser
         // rather than from anything the page could author.
@@ -365,6 +369,7 @@ beforeEach(() => {
   browserState.stitchRequests.length = 0;
   sentToContent.length = 0;
 });
+afterEach(() => vi.unstubAllGlobals());
 
 beforeAll(async () => {
   const globals = globalThis as unknown as Record<string, unknown>;
@@ -802,17 +807,71 @@ describe('actions the service worker answers itself', () => {
     expect(sentToContent).toHaveLength(0);
   });
 
-  it('navigates, reloads, and walks history', async () => {
+  it('navigates to an explicit web address', async () => {
     twoTabWindow();
 
     expect((await request('navigate', { tabId: 11, url: 'https://ok.example/' })).success).toBe(true);
     expect(browserState.updated).toEqual([{ tabId: 11, props: { url: 'https://ok.example/' } }]);
+  });
 
-    await request('navigate', { tabId: 11, action: 'reload' });
-    expect(browserState.reloaded).toEqual([11]);
+  const historyEntries = [
+    { key: 'previous', index: 0, url: 'https://a.example/previous' },
+    { key: 'current', index: 1, url: 'https://a.example/' },
+    { key: 'next', index: 2, url: 'https://a.example/next' },
+  ];
+  function nativeHistory() {
+    const navigation = {
+      currentEntry: historyEntries[1], entries: () => historyEntries,
+      canGoBack: true, canGoForward: true, traverseTo: vi.fn(),
+    };
+    const reload = vi.fn();
+    vi.stubGlobal('window', { navigation });
+    vi.stubGlobal('location', { href: historyEntries[1].url, reload });
+    return { navigation, reload };
+  }
 
-    await request('navigate', { tabId: 11, action: 'back' });
-    expect(browserState.injected.at(-1)).toMatchObject({ tabId: 11, world: 'MAIN', args: ['back'] });
+  it.each(['reload', 'back', 'forward'] as const)('probes and executes %s through the isolated native history function', async (action) => {
+    twoTabWindow();
+    const { navigation, reload } = nativeHistory();
+    const target = historyEntries[action === 'back' ? 0 : action === 'forward' ? 2 : 1];
+    const pin: ChromeNavigationPin = {
+      backend: 'chrome', action, sourceEntry: 'current', sourceUrl: historyEntries[1].url,
+      targetEntry: target.key, targetUrl: target.url,
+    };
+    const probe = await request('get_tabs', { navigationProbe: { tabId: 11, action } });
+    expect(probe.success).toBe(true);
+    expect(probe.data).toMatchObject({ windows: [{ tabs: expect.arrayContaining([expect.objectContaining({ tabId: 11, navigation: pin })]) }] });
+    expect(reload).not.toHaveBeenCalled();
+    expect(navigation.traverseTo).not.toHaveBeenCalled();
+
+    const response = await request('navigate', { tabId: 11, action, navigation: pin, expectedOrigin: 'https://a.example' });
+    expect(response.success).toBe(true);
+    expect(browserState.injected.at(-1)).toMatchObject({ tabId: 11, world: 'ISOLATED', args: [action, pin, 'https://a.example'] });
+    if (action === 'reload') expect(reload).toHaveBeenCalledOnce();
+    else expect(navigation.traverseTo).toHaveBeenCalledWith(target.key);
+  });
+
+  it.each(['reload', 'back', 'forward'])('refuses %s without an approved destination', async (action) => {
+    twoTabWindow();
+    const { navigation, reload } = nativeHistory();
+    const response = await request('navigate', { tabId: 11, action });
+    expect(response.success).toBe(false);
+    expect(response.error).toContain('requires a verified destination');
+    expect(navigation.traverseTo).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
+    expect(browserState.injected).toHaveLength(0);
+  });
+
+  it('refuses a changed history entry between probing and execution', async () => {
+    twoTabWindow();
+    const { navigation, reload } = nativeHistory();
+    const pin = pageHistoryNavigation('back', null, null);
+    navigation.entries = () => [{ ...historyEntries[0], key: 'replacement' }, ...historyEntries.slice(1)];
+    const response = await request('navigate', { tabId: 11, action: 'back', navigation: pin, expectedOrigin: 'https://a.example' });
+    expect(response.success).toBe(false);
+    expect(response.error).toContain('destination changed');
+    expect(navigation.traverseTo).not.toHaveBeenCalled();
+    expect(reload).not.toHaveBeenCalled();
   });
 
   it('refuses a javascript: or file: URL instead of handing it to the tab', async () => {

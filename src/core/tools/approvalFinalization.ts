@@ -1,6 +1,8 @@
 import type { ToolApprovalDecision } from './registry';
 import type { OperationAuthorizationDecision, ToolOperationAuthorization } from './operationAuthorization';
 import type { ToolFileAccess } from '@/core/tools/fileOperation';
+import type { BrowserScreenshotSave } from '@/core/tools/browserScreenshotSave';
+import type { ObservedFileTarget } from '@/core/tools/fileOperationHost';
 
 interface ApprovalOperation {
   authorization?: ToolOperationAuthorization;
@@ -9,6 +11,8 @@ interface ApprovalOperation {
   reportConsent: () => void;
   checkPermissions?: () => ToolApprovalDecision | null | Promise<ToolApprovalDecision | null>;
   files?: ToolFileAccess;
+  screenshot?: BrowserScreenshotSave;
+  authorizeScreenshot?: (target: ObservedFileTarget) => Promise<void>;
   release?: () => void;
   getScopeId?: () => string | undefined;
 }
@@ -23,6 +27,12 @@ export function filesForToolApproval(decision: ToolApprovalDecision): ToolFileAc
   return operations.get(decision)?.files;
 }
 
+export function screenshotForToolApproval(decision: ToolApprovalDecision) {
+  const operation = operations.get(decision);
+  return operation?.screenshot && operation.authorizeScreenshot
+    ? { save: operation.screenshot, authorize: operation.authorizeScreenshot } : undefined;
+}
+
 export function scopeForToolApproval(decision: ToolApprovalDecision): string | undefined {
   return operations.get(decision)?.getScopeId?.();
 }
@@ -34,7 +44,8 @@ export async function releaseToolApproval(decision: ToolApprovalDecision): Promi
   try {
     await operation.files?.dispose();
   } finally {
-    operation.release?.();
+    try { await operation.screenshot?.dispose(); }
+    finally { operation.release?.(); }
   }
 }
 

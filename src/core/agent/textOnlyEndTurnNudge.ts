@@ -1,11 +1,9 @@
 /**
  * Text-only end_turn nudge — the `harness.guards.textOnlyEndTurnNudge` guard.
  *
- * A model that has been working with tools and then ends a turn with prose
- * alone ("Next I will edit the file…") has stopped without finishing. When the
- * profile opens this guard, the loop sends one continuation message and lets
- * the model go on, at most {@link TEXT_ONLY_END_TURN_NUDGE_LIMIT} times per
- * run. A turn is nudged when every one of these holds:
+ * Recover empty responses or work still pending in this run's current plan,
+ * at most {@link TEXT_ONLY_END_TURN_NUDGE_LIMIT} times per run. A turn is
+ * nudged when every one of these holds:
  *
  *   1. the turn ended with `end_turn` (a cut-off turn has its own recovery);
  *   2. the turn carried no tool call;
@@ -14,6 +12,7 @@
  *   4. the run's most recent tool batch did not call `ask_user_question` (a
  *      reply to the user's answer may legitimately stop and ask again);
  *   5. the turn's text does not ask the user something ({@link textAsksUser}).
+ *   6. the response is empty or the current plan contains unfinished work.
  *
  * The counter belongs to one run and is not persisted.
  */
@@ -23,8 +22,9 @@ import { TOOL_NAMES } from '../tools/toolNames';
 export const TEXT_ONLY_END_TURN_NUDGE_LIMIT = 2;
 
 export const TEXT_ONLY_END_TURN_NUDGE_MESSAGE =
-  'Your reply described work without doing it. Continue executing the task with your tools now, '
-  + 'or state explicitly that the task is complete and nothing is left to do.';
+  'Check the current task plan and the tool results. Continue any unfinished work. '
+  + 'If the work is complete, update the plan using concrete results and provide the final answer. '
+  + 'Record the reason for any work that cannot be completed.';
 
 /**
  * Phrases that address the user with a question or a request for a decision.
@@ -87,6 +87,8 @@ export interface TextOnlyEndTurnObservation {
   toolCalls: readonly Pick<ToolCall, 'name'>[];
   /** The assistant text of the turn, as the user will see it. */
   text: string;
+  /** Only the current run's plan counts; earlier requests have separate plans. */
+  hasUnfinishedWork?: boolean;
 }
 
 export interface TextOnlyEndTurnNudge {
@@ -99,17 +101,28 @@ export interface TextOnlyEndTurnNudge {
   observeTurn(observation: TextOnlyEndTurnObservation): boolean;
   /** How many nudges this run has sent so far. */
   readonly count: number;
+  /** Whether an earlier turn of this run carried a tool call. */
+  readonly sawToolCall: boolean;
+  readonly exhausted: boolean;
 }
 
 export function createTextOnlyEndTurnNudge(): TextOnlyEndTurnNudge {
   let count = 0;
   let sawToolCall = false;
   let lastBatchAskedUser = false;
+  let exhausted = false;
   return {
     get count() {
       return count;
     },
-    observeTurn({ enabled, stopReason, toolCalls, text }) {
+    get sawToolCall() {
+      return sawToolCall;
+    },
+    get exhausted() {
+      return exhausted;
+    },
+    observeTurn({ enabled, stopReason, toolCalls, text, hasUnfinishedWork }) {
+      exhausted = false;
       if (toolCalls.length > 0) {
         sawToolCall = true;
         lastBatchAskedUser = toolCalls.some((toolCall) => toolCall.name === TOOL_NAMES.ASK_USER_QUESTION);
@@ -120,7 +133,11 @@ export function createTextOnlyEndTurnNudge(): TextOnlyEndTurnNudge {
       if (!sawToolCall) return false;
       if (lastBatchAskedUser) return false;
       if (textAsksUser(text)) return false;
-      if (count >= TEXT_ONLY_END_TURN_NUDGE_LIMIT) return false;
+      if (text.trim().length > 0 && !hasUnfinishedWork) return false;
+      if (count >= TEXT_ONLY_END_TURN_NUDGE_LIMIT) {
+        exhausted = true;
+        return false;
+      }
       count++;
       return true;
     },

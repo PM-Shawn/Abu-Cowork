@@ -107,6 +107,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { sendBrowserKey } = require('./browserKeyboard.cjs');
 const { createBrowserPopupPolicy, POPUP_BLOCKED } = require('./browserPopupPolicy.cjs');
+// Explain recovery options when the download requires an unapproved popup.
+const DOWNLOAD_POPUP_BLOCKED = 'The download opens in a new window that browser automation cannot '
+  + 'follow (a new window on a different origin, or the one-shot popup allowance was already spent). '
+  + 'Options: tell the user to download this file manually, or check whether the site offers a '
+  + 'same-page export. Do not retry the same click.';
 const nativePopupViews = new Set();
 const popupGuardReady = new Map();
 const popupGuardPending = new Set();
@@ -946,7 +951,11 @@ function backoffDelayForLevel(level) {
  */
 function normalizedOriginOf(urlString) {
   try {
-    const parsed = new URL(String(urlString || ''));
+    let raw = String(urlString || '');
+    // Blob download URLs inherit the creator's HTTP(S) origin.
+    // Navigation schemes are validated separately.
+    if (raw.startsWith('blob:')) raw = raw.slice('blob:'.length);
+    const parsed = new URL(raw);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
     const hostname = parsed.hostname.endsWith('.')
       ? parsed.hostname.slice(0, -1)
@@ -984,6 +993,10 @@ function normalizedOriginOf(urlString) {
  * approval gate over `_meta`, never the model-visible tool schema.
  */
 function assertOriginPin(action, payload, view) {
+  if (action === 'navigate' && ['back', 'forward', 'reload'].includes(payload.action)) {
+    assertNavigationPin(view, payload);
+    return;
+  }
   const pinnedRead = ORIGIN_PINNED_READ_ACTIONS.has(action);
   if (!pinnedRead && !ORIGIN_PINNED_ACTIONS.has(action)) return;
   const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
@@ -1408,7 +1421,7 @@ function configureBrowserView(id, view) {
   const automationTabId = contents.id;
   contents.setWindowOpenHandler(({ url: targetUrl, postBody }) => {
     let safeUrl;
-    try { safeUrl = allowedAutomationUrl(targetUrl); } catch {
+    try { safeUrl = allowedAutomationUrl(targetUrl, { allowBlob: true }); } catch {
       popupPolicy.deny(contents);
       return { action: 'deny' };
     }
@@ -1906,12 +1919,17 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
   return tabs;
 }
 
-function allowedAutomationUrl(value) {
+function allowedAutomationUrl(value, { allowBlob = false } = {}) {
   let parsed;
   try {
     parsed = new URL(String(value || ''));
   } catch {
     throw new Error('Invalid URL. Only http: and https: URLs are allowed.');
+  }
+  // Popup downloads may use a blob URL with a valid HTTP(S) creator origin.
+  if (parsed.protocol === 'blob:' && allowBlob) {
+    allowedAutomationUrl(String(value).slice('blob:'.length));
+    return String(value).trim();
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error('Invalid URL scheme. Only http: and https: URLs are allowed.');
@@ -2046,20 +2064,116 @@ async function navigateAutomationTab(view, payload, beforeNavigate, signal) {
     if (beforeNavigate) beforeNavigate();
     popupPolicy.approvedNavigation(view.webContents, url);
     await loadAutomationUrl(view.webContents, url, signal);
-  } else if (action === 'reload') {
-    view.webContents.reload();
-  } else if (action === 'back') {
-    view.webContents.navigationHistory.goBack();
-  } else if (action === 'forward') {
-    view.webContents.navigationHistory.goForward();
+  } else if (['reload', 'back', 'forward'].includes(action)) {
+    if (beforeNavigate) beforeNavigate();
+    const pin = assertNavigationPin(view, payload);
+    popupPolicy.approvedNavigation(view.webContents, allowedAutomationUrl(pin.targetUrl));
+    if (action === 'reload') view.webContents.reload();
+    else view.webContents.navigationHistory.goToIndex(Number(pin.targetEntry));
   } else {
     throw new Error(`Unknown navigation action: ${action}`);
   }
   return `Navigation: ${action}`;
 }
 
+function historyNavigation(view, action) {
+  if (!['back', 'forward', 'reload'].includes(action)) return null;
+  const history = view.webContents.navigationHistory;
+  if (typeof history?.getActiveIndex !== 'function' || typeof history?.getEntryAtIndex !== 'function') return null;
+  const sourceIndex = history.getActiveIndex();
+  const targetIndex = sourceIndex + (action === 'back' ? -1 : action === 'forward' ? 1 : 0);
+  const source = history.getEntryAtIndex(sourceIndex);
+  const target = history.getEntryAtIndex(targetIndex);
+  if (!source || !target || source.url !== view.webContents.getURL() || !normalizedOriginOf(target.url)) return null;
+  return { backend: 'built-in', action, sourceEntry: String(sourceIndex), sourceUrl: source.url,
+    targetEntry: String(targetIndex), targetUrl: target.url };
+}
 
-async function screenshotAutomation(view, fullPage) {
+function assertNavigationPin(view, payload) {
+  const current = historyNavigation(view, payload.action);
+  const approved = payload.navigation;
+  if (!current || !approved || Object.keys(current).some(key => current[key] !== approved[key])
+    || normalizedOriginOf(current.targetUrl) !== payload.expectedOrigin) {
+    throw new Error('origin-unverified: navigation destination changed or could not be verified; request a specific URL or read the tab again');
+  }
+  return current;
+}
+
+
+/** Timestamp used in generated screenshot names. */
+function screenshotTimestamp() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-` +
+    `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+/** `shot.png` becomes `shot-2.png` while the name is taken — never overwrite. */
+function uniqueScreenshotPath(candidate) {
+  if (!fs.existsSync(candidate)) return candidate;
+  const ext = path.extname(candidate);
+  const stem = ext ? candidate.slice(0, -ext.length) : candidate;
+  for (let n = 2; n < 1000; n += 1) {
+    const next = `${stem}-${n}${ext}`;
+    if (!fs.existsSync(next)) return next;
+  }
+  throw new Error('No available screenshot filename');
+}
+
+/** The per-task folder a screenshot lands in when the caller named no path. */
+function taskScreenshotDir(owner) {
+  const { conversationId, runKey } = parseOwnerKey(owner.key);
+  return path.join(
+    browserDownloadRoot(),
+    safePathSegment(conversationId, 'shared'),
+    safePathSegment(runKey, 'main'),
+    'screenshots',
+  );
+}
+
+/**
+ * Where a saveMode screenshot goes, before conflict resolution.
+ *
+ * No `savePath` ⇒ the task's own screenshot folder under a name derived here
+ * (tab id + timestamp), same ownership rule as a download: one task's captures
+ * never sit in another's folder. An explicit `savePath` is honored as given —
+ * a directory (trailing separator, or an existing directory, possibly relative
+ * to the task folder) gets the derived name inside it, a file path is used as
+ *-is with a missing `.png` appended. The model only ever expresses WHERE in
+ * the shapes above; the name it cannot dictate is the one nothing else can
+ * collide with.
+ */
+function resolveScreenshotSavePath(payload, owner, tabId) {
+  const requested = typeof payload?.savePath === 'string' ? payload.savePath.trim() : '';
+  const derivedName = `screenshot-${tabId}-${screenshotTimestamp()}.png`;
+  if (!requested) {
+    return path.join(taskScreenshotDir(owner), derivedName);
+  }
+  let target = requested;
+  if (!path.isAbsolute(target)) {
+    target = path.join(taskScreenshotDir(owner), target);
+  }
+  const isDirectory = /[\\/]$/.test(requested)
+    || (fs.existsSync(target) && fs.statSync(target).isDirectory());
+  if (isDirectory) {
+    return path.join(target, derivedName);
+  }
+  if (!path.extname(target)) target += '.png';
+  return target;
+}
+
+async function screenshotAutomation(view, fullPage, payload, owner) {
+  if (payload?.saveMode) throw new Error('Screenshot files require host file authorization');
+  if (payload?.prepareSave) {
+    const appDataRoot = path.dirname(browserDownloadRoot());
+    const taskDirectory = taskScreenshotDir(owner);
+    return {
+      path: uniqueScreenshotPath(resolveScreenshotSavePath(payload, owner, view.webContents.id)),
+      appDataRoot,
+      taskDirectory,
+      taskRelativeDirectory: path.relative(appDataRoot, taskDirectory),
+    };
+  }
   const debug = view.webContents.debugger;
   const alreadyAttached = debug.isAttached();
   try {
@@ -3430,6 +3544,8 @@ async function runBrowserAutomation(action, payload, signal, scope) {
           ...(tab.popupBlocked ? { popupBlocked: true } : {}),
           ...(browserControl.phase(tab.view.webContents) !== 'ai' ? { control: browserControl.phase(tab.view.webContents) } : {}),
           ...(framesByTab.has(tab.tabId) ? { frames: framesByTab.get(tab.tabId) } : {}),
+          ...(payload.navigationProbe?.tabId === tab.tabId
+            ? { navigation: historyNavigation(tab.view, payload.navigationProbe.action) } : {}),
         })),
       }],
     };
@@ -3607,22 +3723,12 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   if (TAKEOVER_GATED_ACTIONS.has(action)) {
     assertNotAborted(signal);
 
-    // A `navigate` to a NEW page (the default `goto`, or an explicit one) is
-    // rate-limit-checked against the URL it is ABOUT TO LOAD, not the tab's
-    // current origin — otherwise a tab sitting on a backed-off site could
-    // never navigate away (false block), and a tab sitting on a clean site
-    // could freely navigate INTO a backed-off one (missed block: the escape
-    // hatch away from a bad origin must stay open, but a fresh navigation
-    // INTO it must not). Every other gated action (click/fill/.../reload/
-    // back/forward) acts on the page already loaded, so it keeps checking the
-    // view's current origin. An unparseable target URL yields no origin
-    // (`originOf` returns null on a parse failure), so `backoffRemainingMs`
-    // sees nothing to check and this gate falls through — the malformed URL
-    // is still caught by `allowedAutomationUrl()` inside
-    // `navigateAutomationTab()`, which is the right place to report it.
+    // Navigation checks the destination's rate limit, including native history
+    // entries. Other actions use the current page. Navigation execution also
+    // verifies the approved entry and validates the destination URL.
     const isGotoNavigate = action === 'navigate' && (payload.action || 'goto') === 'goto';
-    const backoffOrigin = isGotoNavigate
-      ? normalizedOriginOf(payload.url)
+    const backoffOrigin = action === 'navigate'
+      ? normalizedOriginOf(isGotoNavigate ? payload.url : historyNavigation(view, payload.action)?.targetUrl)
       : normalizedOriginOf(view.webContents.getURL());
     const remainingMs = backoffRemainingMs(backoffOrigin);
     if (remainingMs > 0) {
@@ -3655,10 +3761,13 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   // Wrapped so an action that OPENS a dialog answers with the dialog instead of
   // hanging in the suspended renderer until its transport timeout.
   const sourceUrl = view.webContents.getURL();
-  const popupEligible = ['click', 'keyboard'].includes(action) && !payload.frameId
+  // Download clicks may open one popup bound to the approved origin.
+  const popupEligible = ['click', 'keyboard', 'download'].includes(action) && !payload.frameId
     && payload.popupOrigin && payload.popupOrigin === payload.expectedOrigin
     && (action !== 'keyboard' || (view.webContents.focusedFrame
       && view.webContents.focusedFrame === view.webContents.mainFrame));
+  // Keep the popup lease active through download capture;
+  // performBrowserAutomation releases it in finally.
   scope.popupLease = popupPolicy.beginAction(view.webContents, {
     owner, origin: popupEligible ? payload.popupOrigin : null, signal,
     isCurrent: () => views.get(match.id) === view && view.webContents.getURL() === sourceUrl
@@ -3683,8 +3792,8 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // runtime the Chrome extension drives.
     if (action === 'upload_file') return uploadAutomation(view, payload, assertPageCurrent);
     if (action === 'download') return downloadAutomation(view, payload, owner, signal, assertPageCurrent);
-    if (action === 'screenshot') return screenshotAutomation(view, false);
-    if (action === 'screenshot_full_page') return screenshotAutomation(view, true);
+    if (action === 'screenshot') return screenshotAutomation(view, false, payload, owner);
+    if (action === 'screenshot_full_page') return screenshotAutomation(view, true, payload, owner);
     if (action === 'keyboard') return sendBrowserKey(view.webContents, payload, {
       beforeDispatch: assertPageCurrent,
     });
@@ -3696,7 +3805,10 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     return scope.nativeWork;
   });
   scope.controlLease.assert({ allowExternalAbort: action === 'download' && result?.complete === false });
-  if (scope.popupLease.blocked) throw new Error(scope.popupLease.message);
+  if (scope.popupLease.blocked) {
+    // Use download-specific recovery guidance for a blocked popup.
+    throw new Error(action === 'download' ? DOWNLOAD_POPUP_BLOCKED : scope.popupLease.message);
+  }
   return result;
 }
 
@@ -4201,6 +4313,9 @@ module.exports = {
      */
     approvedFileId,
     sameFileId,
+    /** Origin extraction and popup URL validation for host tests. */
+    normalizedOriginOf,
+    allowedAutomationUrl,
     /** Swap the takeover backoff's clock; pass nothing to restore wall time. */
     setClock(next) { clock = next || REAL_CLOCK; },
     /**

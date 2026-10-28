@@ -46,17 +46,18 @@ import { resolveModelProfile } from '../llm/modelProfile';
 import { familyNotesFor } from './prompts/variants';
 import { selectToolsForProfile } from '../tools/toolSelection';
 import { repairToolCallsForProfile } from './toolArgumentRepair';
+import { failoverModelLabel, isFailoverWorthyError } from './modelFailover';
+import type { ModelRecoveryPort } from './ports/modelRecovery';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
-import { computeInputBudget, enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
+import { computeInputBudget, enforceContextBudget, trimOldScreenshots, ContextBudgetError } from '../context/contextManager';
 import { estimateMessageTokens, estimateTokens, estimateToolSchemaTokens } from '../context/tokenEstimator';
 import { buildContextFromBoundary } from '../context/compactBoundary';
 import {
-  COMPACTION_TRIGGER_RATIO,
-  RETAINED_TAIL_RATIO,
   compactHistory,
   readFileThroughTool,
 } from '../context/compaction';
+import { compactionTriggerRatio, retainedTailRatio, anchorPreservationEnabled } from '../context/compressionTuning';
 import { measureInputTokens, usageContext, type UsageAnchor } from '../context/contextMeasure';
 import { boundToolResult } from '../context/toolResultSpill';
 import { writeToolResultFile } from '../session/sessionMemory';
@@ -512,6 +513,9 @@ export function buildSubagentMcpPreflightFailure(
 }
 
 export interface SubagentLoopOptions {
+  modelRecovery?: ModelRecoveryPort;
+  onModelRecoveryWaiting?: (waiting: boolean) => void;
+  modelBindingRevision?: number;
   operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   teamApprovalDispatch?: { id: string; fingerprint: string };
   agent: SubagentDefinition;
@@ -704,21 +708,21 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     (options.liveSettingsReader ?? getSettingsReader()).getSnapshot(),
   );
   if (modelFailure) return modelFailure;
-  const effectiveModelId = resolveAgentModel(agent.model, settings);
+  // Rebuild request options from the model selected for this member.
+  const startupModelId = resolveAgentModel(agent.model, settings);
+  let effectiveModelId = startupModelId;
+  let subSettings = settings;
   const startupCreds = (() => {
     try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined); } catch { return null; }
   })();
   const startupProvider = getActiveProvider(settings);
-  const adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
+  let adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
   const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
-  const startupProfile = resolveModelProfile({
-    modelId: effectiveModelId,
-    provider: startupProvider,
-    declared: startupDeclared,
-  });
+  let failoverSwitchCount = 0;
   // 子代理自己的模型能不能看图、电脑操控走哪一档（与主循环同一算法）
-  const agentCapabilities = resolveDelegatedModelCapabilities(agent.model, settings);
+  let agentCapabilities = resolveDelegatedModelCapabilities(agent.model, settings);
+  let modelBindingRevision = options.modelBindingRevision ?? 0;
   const delegatedPreflight = preflightDelegatedMedia(
     options.delegatedUserTurn,
     startupCaps,
@@ -835,12 +839,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       }
     }
 
-    // The model family's working notes (prompts/variants), the one family
-    // fragment a subagent gets: its persona and workflow are the agent's own.
-    // Appended before the safety block so the rules stay last.
-    const familyNotes = familyNotesFor(startupProfile);
-    if (familyNotes) systemPrompt += '\n' + familyNotes;
-
+    const agentPrompt = systemPrompt;
     // Safety boundary for subagents. The prompt-injection bullet enumerates the
     // same delimiter the orchestrator's safety anchor does: this loop is the
     // PRIMARY consumer of `skills:` (subagentRunner and entryOrchestration both
@@ -866,41 +865,23 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     }
     // One editing style per model and the family's tool descriptions, from
     // the profile of the model this subagent runs on.
-    const tools = selectToolsForProfile(resolveSubagentToolRoster(
+    const authorizedTools = resolveSubagentToolRoster(
       allTools,
       agent,
       options.allowedTools,
       options.blockedTools,
       runStanding,
-    ).map((tool) => adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows())), startupProfile);
+    );
     // The resolver always strips orchestration tools from sub-agents to prevent recursive
     // fan-out (a sub-agent spawning its own batch → unbounded blow-up, since there
     // is no depth/total-agent cap). Multi-agent orchestration is a main-agent-only
     // concern. update_soul is likewise main-agent only. ask_user_question requires
     // a toolCallId injected by the main harness that sub-agents never receive —
     // leaving it visible causes a confusing "内部错误" response, so strip it here.
-    const offeredToolNames = new Set(tools.map((tool) => tool.name));
+    const boundaryPrompt = systemPrompt.slice(agentPrompt.length);
 
-    // C8 — narration discipline, conditional on the roster this run actually
-    // got. It has to live HERE rather than with the other prompt blocks above
-    // because the roster is only known now, and it is worth the placement: a
-    // subagent owns its browser tabs per RUN (N6), so it hits the same
-    // refusals the main loop does, while `buildSystemPromptSections` — where
-    // the main loop gets these rules — never runs for a delegation.
-    systemPrompt += browserNarrationSection(offeredToolNames);
-
-    // The run that owns the user turn hands its files to the user itself, by
-    // the rule the main loop gets, and only when this roster holds the tool.
-    if (offeredToolNames.has(TOOL_NAMES.PRESENT_FILES)) {
-      systemPrompt += `\n\n## Handing Files to the User\nYour result is shown to the user as the reply. ${PRESENT_FILES_RULE}`;
-    }
-
-    // 4. Create LLM adapter
-    // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
-    // selectChatAdapter routes through the sidecar transport when it's healthy
-    // ('running'), else falls back to the local in-process adapter — the
-    // kind-choosing condition itself is unchanged (P1-1).
-    const adapter: LLMAdapter = selectChatAdapter(adapterKind);
+    // The selected provider determines the adapter protocol.
+    let adapter: LLMAdapter = selectChatAdapter(adapterKind);
 
     // 5. Initialize local messages
     const userContent = await buildInitialSubagentUserContent({
@@ -989,10 +970,26 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // Resolve budget + reasoning controls for the subagent's model. Overlay any
       // runtime-discovered limits/reasoning status, then reserve a content floor so
       // reasoning can't starve the answer (the cause of "代理未返回任何结果").
-      const provider = getActiveProvider(settings);
+      // `subSettings` (not `settings`) so a quota failover's rebound activeModel
+      // is what these read; the two differ only after a switch.
+      const provider = getActiveProvider(subSettings);
       const declared = resolveDelegatedDeclaredCapabilities(provider, effectiveModelId);
       const discovered = provider ? capsPort.get(provider.id, effectiveModelId) : undefined;
       const baseCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), declared);
+      // The profile the CURRENT model is on this turn: repair and parallel-tool
+      // semantics follow a failover switch, exactly like the main loop.
+      const turnProfile = resolveModelProfile({
+        modelId: effectiveModelId,
+        provider,
+        declared,
+      });
+      const tools = declared?.supportsTools === false ? [] : selectToolsForProfile(authorizedTools.map((tool) =>
+        adaptComputerToolForTier(tool, agentCapabilities.computerUseTier, isWindows())), turnProfile);
+      const offeredToolNames = new Set(tools.map((tool) => tool.name));
+      systemPrompt = agentPrompt + '\n' + familyNotesFor(turnProfile) + boundaryPrompt + browserNarrationSection(offeredToolNames);
+      if (offeredToolNames.has(TOOL_NAMES.PRESENT_FILES)) {
+        systemPrompt += `\n\n## Handing Files to the User\nYour result is shown to the user as the reply. ${PRESENT_FILES_RULE}`;
+      }
       const subagentCaps: ModelCapabilities = {
         ...baseCaps,
         ...(discovered?.maxOutputTokens ? { maxOutputTokens: discovered.maxOutputTokens } : {}),
@@ -1009,7 +1006,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         discovered: discovered?.contextWindow,
         discoveredProbe: discovered?.contextWindowProbe,
         isLocal: localServerKind(provider) !== null,
-        ceiling: settings.contextWindowSize,
+        ceiling: subSettings.contextWindowSize,
       });
       const contextWindowSize = resolvedContextWindow.size;
       // 回答预留按模型自己的窗口算，全局上限只约束输入
@@ -1019,7 +1016,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       const requestedContextLength = positiveInteger(declared?.maxInputTokens);
       const reasoningParams = computeReasoningParams(
         subagentCaps,
-        settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
+        subSettings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
         reserveWindowSize,
       );
       // True output ceiling (distinct from the conservative per-turn budget below):
@@ -1039,8 +1036,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
       // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
       const subChatCreds = resolveEffectiveLlmCreds(
-        getActiveApiKey(settings),
-        getActiveProvider(settings)?.baseUrl || undefined,
+        getActiveApiKey(subSettings),
+        getActiveProvider(subSettings)?.baseUrl || undefined,
       )
       const chatOptions = {
         model: effectiveModelId,
@@ -1082,17 +1079,27 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         estimateTokens(systemPrompt) + toolSchemaTokens + estimateMessageTokens(trimOldScreenshots(view))
       );
       const measurementContext = () => usageContext(effectiveModelId, systemPrompt, tools, messages);
+      // Assigned inside the try (the budget gate runs there); read by the
+      // instruction-receipt block after the try/catch, which is reachable only
+      // when the turn completed. Empty is unreachable.
+      let preparedMessages: Message[] = [];
+      // The try spans compaction AND the chat request: a compaction summary
+      // call can throw its own LLM error, and a quota error must fail over
+      // wherever in the turn it surfaced. Replay-safe — a failed summary
+      // writes no boundary marker into `messages`, and a failed chat request
+      // leaves the dispatch instructions unconfirmed in the shell outbox.
+      try {
       // Compaction shrinks only the history: when the system prompt and tools
       // alone fill the budget, the budget gate below reports that instead.
       if (
         estimateTokens(systemPrompt) + toolSchemaTokens < inputBudget
         && measureInputTokens(estimateView(buildContextFromBoundary(messages)), measurementContext(), usageAnchor)
-          >= inputBudget * COMPACTION_TRIGGER_RATIO
+          >= inputBudget * compactionTriggerRatio()
       ) {
         const marker = await compactHistory({
           history: messages,
           inputBudget,
-          retainTokens: Math.floor(inputBudget * RETAINED_TAIL_RATIO),
+          retainTokens: Math.floor(inputBudget * retainedTailRatio()),
           source: 'auto',
           fitSummaryInput: (summaryMessages) => enforceContextBudget(
             summaryMessages, systemPrompt, contextWindowSize, maxOutputTokens, toolSchemaTokens,
@@ -1103,7 +1110,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             conversationId: options.parentConversationId ?? null,
             providerInstanceId: provider?.id ?? 'unknown',
             signal,
+            preserveAnchors: anchorPreservationEnabled(),
           },
+          keepAnchors: anchorPreservationEnabled(),
           readFile: readFileThroughTool(
             async (input, context) => toolInvoker.toolResultToString(
               await toolInvoker.executeAnyTool(TOOL_NAMES.READ_FILE, input, async () => false, async () => false, context),
@@ -1114,6 +1123,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
               conversationId: options.parentConversationId,
               agentRunId: options.agentRunId,
               abortSignal: signal,
+              modelBindingRevision,
             },
           ),
           now: () => Date.now(),
@@ -1138,7 +1148,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         maxOutputTokens,
         toolSchemaTokens,
       );
-      const preparedMessages = budgetResult.messages;
+      preparedMessages = budgetResult.messages;
       if (budgetResult.strategy !== 'unchanged') {
         logger.info('Context budget gate applied', {
           tokensBefore: budgetResult.tokensBefore,
@@ -1241,6 +1251,55 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         { maxRetries: 2, baseDelayMs: 1000, maxDelayMs: 15000 },
         signal,
       );
+      } catch (turnErr) {
+        const reason = isFailoverWorthyError(turnErr) ? 'quota'
+          : (turnErr instanceof ContextBudgetError && turnErr.code === 'FIXED_CONTEXT_TOO_LARGE')
+            || (turnErr instanceof LLMError && turnErr.code === 'context_too_long') ? 'context-window' : undefined;
+        if (reason) {
+          for (const call of collectedToolCalls) {
+            onProgress?.({ type: 'tool-end', id: call.id, toolName: call.name, error: true,
+              result: 'The model response was interrupted before this tool could run.' });
+          }
+        }
+        const binding = reason && !signal?.aborted ? await options.modelRecovery?.waitForSelection(reason) : null;
+        if (!binding) throw turnErr;
+        if (turnText) {
+          messages.push({ id: `sub-interrupted-${failoverSwitchCount}`, role: 'assistant', content: turnText, timestamp: Date.now() });
+          resultBuffer = resultBuffer ? `${resultBuffer}\n\n${turnText}` : turnText;
+        }
+        failoverSwitchCount += 1;
+        const noticeId = `model-failover-${failoverSwitchCount}`;
+        onProgress?.({ type: 'tool-start', id: noticeId, toolName: 'model_failover', toolInput: { model: failoverModelLabel(binding.model) } });
+        onProgress?.({
+          type: 'tool-end',
+          id: noticeId,
+          toolName: 'model_failover',
+          error: false,
+          result: format(getI18n().chat.modelFailoverSwitched, {
+            to: failoverModelLabel(binding.model),
+          }),
+        });
+        effectiveModelId = binding.model.modelId;
+        subSettings = binding.settingsSnapshot;
+        agentCapabilities = binding.capabilities;
+        modelBindingRevision = binding.revision;
+        adapterKind = adapterKindFor(getActiveProvider(subSettings), binding.resolvedCreds.forceOpenAiCompatible);
+        adapter = selectChatAdapter(adapterKind);
+        const media = preflightDelegatedMedia(options.delegatedUserTurn,
+          applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), resolveDelegatedDeclaredCapabilities(getActiveProvider(subSettings), effectiveModelId)),
+          effectiveModelId, adapterKind, options.delegatedMediaFallback);
+        if (media.kind === 'error') throw new Error('The selected model cannot process this task’s attachments', { cause: turnErr });
+        probedContextWindow = undefined;
+        const selectedProvider = getActiveProvider(subSettings);
+        if (selectedProvider && resolveDelegatedDeclaredCapabilities(selectedProvider, effectiveModelId)?.maxInputTokens === undefined && !signal?.aborted) {
+          probedContextWindow = await probeContextWindow(selectedProvider, effectiveModelId);
+        }
+        maxOutputTokensRecoveryCount = 0;
+        consecutiveNoProgress = 0;
+        usageAnchor = null;
+        turn -= 1;
+        continue;
+      }
 
       // A successful request carrying the full instruction is the receipt.
       // If budget trimming dropped it, or the request failed, the shell outbox
@@ -1452,6 +1511,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             modelCapabilitySource: agentCapabilities.capabilitySource,
             computerUseTier: agentCapabilities.computerUseTier,
             supportsVision: agentCapabilities.vision,
+            modelBindingRevision,
             // Forward the IM reply target so send_file works from a subagent
             // delegated inside an IM run (without it the tool would falsely
             // report "not in an IM channel").
@@ -1540,8 +1600,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         };
       // 按工具的 inputSchema 修复写错形状的参数（档案打开该护栏时）；修不好的
       // 原样交给工具，由工具把错误返回给模型
-      const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, startupProfile, logger);
-      const toolResults = startupProfile.capabilities.parallelToolCalls
+      const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, turnProfile, logger);
+      const toolResults = turnProfile.capabilities.parallelToolCalls
         ? await Promise.allSettled(dispatchToolCalls.map(runToolCall))
         : await settleSequentially(dispatchToolCalls, runToolCall);
 

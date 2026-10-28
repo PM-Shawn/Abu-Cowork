@@ -766,35 +766,34 @@ describe('ChatView approvals', () => {
       expect(heading(t().permission.folderSelect?.authorizeTitle ?? '')).toBeNull();
     });
 
-    it('answers itself with no folder 60 seconds after it was asked, and leaves the page', async () => {
+    it('waits for an explicit answer: the folder request never answers itself', async () => {
       const id = conversation();
       render(<ChatView />);
       const answers = askWorkspace(id);
       await settle();
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(59_000); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
       expect(answers).toEqual([]);
       expect(heading(t().permission.folderSelect?.authorizeTitle ?? '')).toBeInTheDocument();
-
-      await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
-      expect(answers).toEqual([null]);
-      expect(heading(t().permission.folderSelect?.authorizeTitle ?? '')).toBeNull();
-      expect(useWorkspaceStore.getState().currentPath).toBeNull();
     });
 
-    it('shows the newer request when a second one arrives; the first is never answered', async () => {
+    it('shows both workspace requests in arrival order and answers each once', async () => {
       const id = conversation();
       render(<ChatView />);
       const first = askWorkspace(id);
       await settle();
       const second = askWorkspace(id, OTHER_FOLDER);
       await settle();
-      expect(screen.getByText(OTHER_FOLDER)).toBeInTheDocument();
-      expect(screen.queryByText(FOLDER)).toBeNull();
+      expect(screen.getByText(FOLDER)).toBeInTheDocument();
+      expect(screen.queryByText(OTHER_FOLDER)).toBeNull();
 
       press(t().permission.folderSelect?.authorizeButton ?? '');
       await settle();
-      expect(first).toEqual([]);
+      expect(first).toEqual([FOLDER]);
+      expect(second).toEqual([]);
+      expect(screen.getByText(OTHER_FOLDER)).toBeInTheDocument();
+      press(t().permission.folderSelect?.authorizeButton ?? '');
+      await settle();
       expect(second).toEqual([OTHER_FOLDER]);
       expect(useWorkspaceStore.getState().currentPath).toBe(OTHER_FOLDER);
     });
@@ -1066,16 +1065,21 @@ describe('ChatView approvals', () => {
       expect(grants()).toEqual(NO_GRANTS);
     });
 
-    it('opens the newer workspace request with the focus on Deny when it takes the place of the one on screen', async () => {
+    it('focuses Deny when the next workspace request becomes visible', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       const id = conversation();
       render(<ChatView />);
-      askWorkspace(id);
+      const first = askWorkspace(id);
       await settle();
       screen.getByRole('button', { name: t().permission.folderSelect?.authorizeButton ?? '' }).focus();
 
       const second = askWorkspace(id, OTHER_FOLDER);
       await settle();
+      expect(screen.getByText(FOLDER)).toBeInTheDocument();
+      readable();
+      await user.click(deny());
+      await settle();
+      expect(first).toEqual([null]);
       expect(screen.getByText(OTHER_FOLDER)).toBeInTheDocument();
       expect(deny()).toHaveFocus();
 

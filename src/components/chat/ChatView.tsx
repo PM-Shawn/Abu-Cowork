@@ -7,7 +7,7 @@ import {
 } from '@/core/agent/agentLoopRunner';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
-import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, resolveWorkspaceRequestById, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
+import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequestById, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { providerHasCredentials } from '@/utils/settingsSelectors';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
@@ -41,6 +41,7 @@ import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
 import { focusComposerAfterPageChange, focusComposerFromWindow } from './composerFocus';
 import UserQuestionDock, { type ArrivedQuestion } from './UserQuestionDock';
+import { ModelRecoveryBar } from './ModelRecoveryBar';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
@@ -305,19 +306,19 @@ export default function ChatView({
   // Subscribe to command confirmation state using useSyncExternalStore
   const commandConfirmRequest = useSyncExternalStore(
     subscribeToCommandConfirmation,
-    getPendingCommandConfirmation
+    () => activeConvId ? getPendingCommandConfirmation(activeConvId) : null
   );
 
   // Subscribe to file permission requests using useSyncExternalStore
   const filePermissionRequest = useSyncExternalStore(
     subscribeToFilePermission,
-    getPendingFilePermission
+    () => activeConvId ? getPendingFilePermission(activeConvId) : null
   );
 
   // Subscribe to workspace request state
   const workspaceRequest = useSyncExternalStore(
     subscribeToWorkspaceRequest,
-    getPendingWorkspaceRequest
+    () => activeConvId ? getPendingWorkspaceRequest(activeConvId) : null
   );
 
   // Subscribe to pending ask_user_question entries — the docked card above
@@ -327,18 +328,18 @@ export default function ChatView({
     getPendingUserQuestions
   );
 
-  // The workspace request first: it answers itself 60 seconds after it was asked.
+  // Present one decision at a time for the active conversation.
   const visibleApproval = pickVisibleApproval(
     { command: commandConfirmRequest, file: filePermissionRequest, workspace: workspaceRequest },
     activeConvId,
   );
 
   const handleCommandConfirm = () => {
-    resolveCommandConfirmation(true);
+    if (commandConfirmRequest) resolveCommandConfirmation(true, commandConfirmRequest.requestId);
   };
 
   const handleCommandCancel = () => {
-    resolveCommandConfirmation(false);
+    if (commandConfirmRequest) resolveCommandConfirmation(false, commandConfirmRequest.requestId);
   };
 
   const handleFilePermissionAllow = (duration: PermissionDuration) => {
@@ -347,12 +348,12 @@ export default function ChatView({
         filePermissionRequest.capability === 'write'
           ? ['read', 'write', 'execute']
           : ['read'];
-      resolveFilePermission(true, filePermissionRequest.path, capabilities, duration);
+      resolveFilePermission(true, filePermissionRequest.path, capabilities, duration, filePermissionRequest);
     }
   };
 
   const handleFilePermissionDeny = () => {
-    resolveFilePermission(false);
+    if (filePermissionRequest) resolveFilePermission(false, undefined, undefined, undefined, filePermissionRequest);
   };
 
   const handleWorkspaceSelect = async () => {
@@ -365,14 +366,14 @@ export default function ChatView({
         defaultPath: request.suggestedPath || undefined,
       });
       if (selected && typeof selected === 'string') {
-        // The system picker can stay open past the request it was opened for
-        // (60s timeout, abort, or a newer request taking its place). A folder
-        // picked for a request that is gone answers nothing and grants nothing.
-        if (getPendingWorkspaceRequest()?.id !== request.id) {
+        // A folder picker answer remains bound to its original request.
+        if (getPendingWorkspaceRequest(request.conversationId)?.id !== request.id) {
           useToastStore.getState().addToast({ type: 'info', title: t.permission.folderRequestEnded });
           return;
         }
-        useWorkspaceStore.getState().setWorkspace(selected);
+        if (useChatStore.getState().activeConversationId === request.conversationId) {
+          useWorkspaceStore.getState().setWorkspace(selected);
+        }
         useChatStore.getState().setConversationWorkspace(request.conversationId, selected);
         resolveWorkspaceRequestById(request.id, selected);
       } else {
@@ -387,15 +388,13 @@ export default function ChatView({
   const handleWorkspaceAuthorize = () => {
     if (workspaceRequest?.suggestedPath) {
       useWorkspaceStore.getState().setWorkspace(workspaceRequest.suggestedPath);
-      if (activeConv?.id) {
-        useChatStore.getState().setConversationWorkspace(activeConv.id, workspaceRequest.suggestedPath);
-      }
-      resolveWorkspaceRequest(workspaceRequest.suggestedPath);
+      useChatStore.getState().setConversationWorkspace(workspaceRequest.conversationId, workspaceRequest.suggestedPath);
+      resolveWorkspaceRequestById(workspaceRequest.id, workspaceRequest.suggestedPath);
     }
   };
 
   const handleWorkspaceDeny = () => {
-    resolveWorkspaceRequest(null);
+    if (workspaceRequest) resolveWorkspaceRequestById(workspaceRequest.id, null);
   };
 
   // The message list virtualizes inside this scrollable node instead of
@@ -1797,6 +1796,7 @@ export default function ChatView({
       {/* Bottom Input */}
       <div className="shrink-0 px-6 md:px-10 pb-4 pt-2">
         <div className="max-w-4xl mx-auto flex flex-col gap-2">
+          <ModelRecoveryBar conversationId={activeConv.id} />
           {/* Docked ask_user_question card — sits flush above the composer,
               same width. Render the first pending question that belongs to the
               active conversation and whose owning message can be located. */}
@@ -1818,10 +1818,11 @@ export default function ChatView({
             if (!owningMsg) return null;
             return (
               <UserQuestionDock
-                key={pending.id}
+                key={pending.requestId}
                 conversationId={pending.conversationId}
                 messageId={owningMsg.id}
                 toolCallId={pending.id}
+                approvalId={pending.requestId}
                 payload={pending.payload}
                 onSubmitted={handleQuestionSubmitted}
                 onArrivedWithoutFocus={setArrivedQuestion}

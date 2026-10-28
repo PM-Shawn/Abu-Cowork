@@ -168,7 +168,9 @@ import { getSettingsReader } from './ports/settingsReader';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
-import type { ComputerUseModelTier, ModelCapabilitySource } from '../llm/modelCapabilities';
+import { buildRunModelBinding, registerModelRecovery, recoveryAcceptsMedia } from './modelRecovery';
+import type { RunModelBinding } from './ports/modelRecovery';
+import { getConversationReader } from './ports/conversationReader';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import { getI18n, getLocale } from '../../i18n';
 import { buildSubagentUiStrings } from './subagentUiStrings';
@@ -191,7 +193,7 @@ import {
 } from '../subagent/delegatedUserTurnMaterializer';
 
 /** Same defensive ceiling as SidecarLLMAdapter.chat() — see that file's module doc for the rationale (a wedged sidecar event loop must not hang the caller forever after we've asked it to abort). */
-const ABORT_GRACE_MS = 5_000;
+export const SUBAGENT_ABORT_GRACE_MS = 5_000;
 const PROGRESS_MEDIA_DISPLAY_ERROR = 'Error: Could not prepare sidecar progress media for display.';
 
 /** Wire-safe tool projection sent to the sidecar — `execute` (a function) is dropped; the sidecar never calls it directly (tool execution always reverses to `tool.invoke`). */
@@ -295,6 +297,9 @@ export const SUBAGENT_LOOP_OPTIONS_INTENTIONALLY_LOCAL_FIELDS = [
   'onProgress',
   'settingsReader',
   'liveSettingsReader',
+  'modelRecovery',
+  'onModelRecoveryWaiting',
+  'modelBindingRevision',
   'toolInvoker',
   'capsPort',
   'workspaceReader',
@@ -397,10 +402,7 @@ interface RunSession {
    * 子代理实际使用的模型、能力来源、电脑操控档位与能否看图。外壳用派发时的设置快照
    * 算出，工具执行时以这份为准，不用 sidecar 发来的副本。
    */
-  modelId: string;
-  modelCapabilitySource: ModelCapabilitySource;
-  computerUseTier: ComputerUseModelTier;
-  supportsVision: boolean;
+  modelBinding: RunModelBinding;
   /** Set true the instant handleToolInvoke sees ≥1 call for this runId — see module doc's "Fallback discipline". */
   firstToolInvokeArrived: boolean;
   /** Progress received before the sidecar run reaches a no-rerun commit point. */
@@ -418,6 +420,9 @@ function buildTrustedSubagentToolContext(
   session: RunSession,
   incoming?: ToolExecutionContext,
 ): ToolExecutionContext {
+  if (incoming && (incoming.modelBindingRevision ?? 0) !== session.modelBinding.revision) {
+    throw new Error('Subagent tool request uses a stale model binding');
+  }
   const trustedContext: ToolExecutionContext = {
     ...incoming,
     operationOwner: session.options.operationOwner,
@@ -447,10 +452,11 @@ function buildTrustedSubagentToolContext(
     // 本次运行给子代理的工具名单由 shell 自己保存，不用 sidecar 发来的副本
     offeredToolNames: [...session.offeredToolNames],
     // 模型、档位与能否看图决定电脑操控放不放行、提示里写哪个模型，同样用 shell 自己算的值
-    modelId: session.modelId,
-    modelCapabilitySource: session.modelCapabilitySource,
-    computerUseTier: session.computerUseTier,
-    supportsVision: session.supportsVision,
+    modelId: session.modelBinding.capabilities.modelId,
+    modelCapabilitySource: session.modelBinding.capabilities.capabilitySource,
+    computerUseTier: session.modelBinding.capabilities.computerUseTier,
+    supportsVision: session.modelBinding.capabilities.vision,
+    modelBindingRevision: session.modelBinding.revision,
   };
   return attachTrustedSkillCommandApproval(trustedContext, {
     commandConfirmCallback: session.options.commandConfirmCallback,
@@ -590,7 +596,7 @@ async function handleToolInvoke(rawParams: unknown): Promise<unknown> {
     session.options.commandConfirmCallback,
     session.options.filePermissionCallback,
     {
-      ...buildTrustedSubagentToolContext(session, params.context as ToolExecutionContext | undefined),
+      ...buildTrustedSubagentToolContext(session, (params.context as ToolExecutionContext | undefined) ?? {}),
       reportMetadata: (next) => {
         if (next.fileReadOutcome) metadata = { fileReadOutcome: next.fileReadOutcome };
       },
@@ -1083,10 +1089,10 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
         { ownsUserTurn: options.ownsUserTurn === true },
       ).map((tool) => tool.name),
     ),
-    modelId: delegatedCapabilities.modelId,
-    modelCapabilitySource: delegatedCapabilities.capabilitySource,
-    computerUseTier: delegatedCapabilities.computerUseTier,
-    supportsVision: delegatedCapabilities.vision,
+    modelBinding: buildRunModelBinding(params.settingsSnapshot, {
+      providerId: params.settingsSnapshot.activeModel.providerId,
+      modelId: delegatedCapabilities.modelId,
+    }, 0),
     firstToolInvokeArrived: false,
     bufferedProgress: [],
     progressApplyTail: Promise.resolve(),
@@ -1098,6 +1104,19 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
   };
   startBrowserRun(options.parentConversationId, runId);
   sessions.set(runId, session);
+  session.options.settingsReader = { getSnapshot: () => session.modelBinding.settingsSnapshot };
+  const releaseModelRecovery = registerModelRecovery(runId, {
+    conversationId: options.parentConversationId ?? '',
+    agentName: options.agent.name,
+    signal: options.signal ?? new AbortController().signal,
+    interactive: !!options.parentConversationId && resolveSubagentInteractionMode(options) !== 'background',
+    getBinding: () => session.modelBinding,
+    acceptsModel: (binding) => recoveryAcceptsMedia(binding, [], params.delegatedUserTurn, params.delegatedMediaFallback),
+    isCurrent: () => sessions.get(runId) === session && options.operationOwner?.isCurrent() !== false
+      && !!options.parentConversationId && !!getConversationReader().getConversation(options.parentConversationId),
+    onSelected: (binding) => { session.modelBinding = binding; },
+    onWaitingChange: options.onModelRecoveryWaiting,
+  });
   registerRunResourceSettlement(runId, session.resourceSettlement);
 
   const signal = options.signal;
@@ -1113,7 +1132,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     if (options.authorizationScopeId === undefined) {
       graceTimer = setTimeout(() => {
         rejectOnGrace?.(new Error('Subagent abort grace period exceeded'));
-      }, ABORT_GRACE_MS);
+      }, SUBAGENT_ABORT_GRACE_MS);
     }
   };
   signal?.addEventListener('abort', onAbort, { once: true });
@@ -1184,6 +1203,7 @@ async function runSubagentForSignal(options: SubagentLoopOptions): Promise<Subag
     ));
   } finally {
     // Withdraw browser authority synchronously, before asynchronous progress
+    releaseModelRecovery();
     // draining. The returned cleanup waits for any in-flight registration.
     const browserCleanup = disposeRunBrowserViews(options.parentConversationId, runId);
     void browserCleanup?.catch(() => {});

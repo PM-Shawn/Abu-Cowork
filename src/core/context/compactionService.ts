@@ -1,6 +1,8 @@
 import { createFailedCompactBoundaryMarker } from './compactBoundary';
 import type { SummaryRequest } from './contextCompressor';
 import { compactHistory, readFileThroughTool } from './compaction';
+import { isLabsFlagOn } from '../labs/resolve';
+import { LABS_STATE_PRESERVING_COMPRESSION } from '../labs/registry';
 import type { Message } from '@/types';
 import { useChatStore } from '@/stores/chatStore';
 import {
@@ -170,12 +172,14 @@ export async function compactConversationManually(
   try {
     const resolved = await resolveSummaryRequest(convId);
     if (!resolved) return { compacted: false, reason: 'model-unavailable' };
+    const keepAnchors = isLabsFlagOn(LABS_STATE_PRESERVING_COMPRESSION);
     marker = await compactHistory({
       history: conv.messages ?? [],
       inputBudget: resolved.inputBudget,
       retainTokens: 0,
       source: 'manual',
-      summary: resolved.request,
+      summary: { ...resolved.request, preserveAnchors: keepAnchors },
+      keepAnchors,
       fitSummaryInput: resolved.fitSummaryInput,
       readFile,
       now: () => Date.now(),

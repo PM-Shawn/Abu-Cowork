@@ -2,6 +2,11 @@
 
 const { isHighRiskUrl } = require('../abu-browser-shared/highRiskSites.mjs');
 
+// Classify blob downloads using their creator URL.
+function isHighRiskUrlDeep(url) {
+  return isHighRiskUrl(String(url).startsWith('blob:') ? String(url).slice('blob:'.length) : url);
+}
+
 const POPUP_BLOCKED = 'Popup blocked. The destination needs a separate browsing approval. Preserve the source page; do not replay a form submission as a GET or retry it automatically. Manual popup retries on this AI-controlled page are also blocked.';
 
 // Native window-open callbacks have no trustworthy initiating-frame/user-input
@@ -91,12 +96,14 @@ function createBrowserPopupPolicy({ originOf, onBlocked = () => {} }) {
     const entry = entries[0];
     if (entry.used || !valid(contents, entry)) return reject(contents);
     entry.used = true;
-    if (entry.origin !== origin || isHighRiskUrl(url)) return reject(contents);
+    if (entry.origin !== origin || isHighRiskUrlDeep(url)) return reject(contents);
     return { source: contents, owner: entry.owner, origin, signal: entry.signal, valid: () => valid(contents, entry) };
   }
 
   function attach(contents, ticket) {
     if (children.get(contents.id)?.cancelled || !ticket.valid()) throw new Error(POPUP_BLOCKED);
+    // A successfully adopted popup clears the source page's blocked indicator.
+    blocked.delete(ticket.source);
     const family = group(ticket.source);
     for (const member of group(contents)) { family.add(member); groups.set(member, family); }
     children.set(contents.id, { contents, origin: ticket.origin, signal: ticket.signal, guarded: !!ticket.origin });
@@ -120,7 +127,7 @@ function createBrowserPopupPolicy({ originOf, onBlocked = () => {} }) {
     if (resourceType !== 'mainFrame') return true;
     if (!entry || !entry.guarded) return true;
     const allowed = !entry.signal?.aborted && originOf(url) === entry.origin
-      && (!isHighRiskUrl(url) || url === entry.explicitUrl);
+      && (!isHighRiskUrlDeep(url) || url === entry.explicitUrl);
     if (!allowed) reject(entry.contents);
     return allowed;
   }

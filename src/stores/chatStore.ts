@@ -1344,9 +1344,9 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         }).catch(() => {});
-        // Drain pending ask_user_question for this conversation on delete.
-        import('../core/agent/permissionBridge').then(({ drainUserQuestionsForConversation }) => {
-          drainUserQuestionsForConversation(id);
+        // Cancel every pending approval owned by the deleted conversation.
+        import('../core/agent/permissionBridge').then(({ drainApprovalsForConversation }) => {
+          drainApprovalsForConversation(id);
         }).catch(() => {});
         // Clear plan mode state to prevent the module-level Map from leaking
         // an entry for a conversation that no longer exists.

@@ -10,6 +10,8 @@ import { AppIcons } from '@/components/ds/icons';
 import { Popover } from '@/components/ds/popover';
 import { Tag } from '@/components/ds/tag';
 import { TextField } from '@/components/ds/text-field';
+import { InlineMessage } from '@/components/ds/inline-message';
+import type { ActiveModel } from '@/types/provider';
 import type { ModelInfo, ProviderInstance } from '@/types';
 import { refreshManagedProvider } from '@/core/llm/managedProviderRefresh';
 import { resolveModelVision } from '@/core/llm/resolveModelDeclared';
@@ -82,14 +84,17 @@ function ModelRow({
   );
 }
 
-export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, trigger }: {
+export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, trigger, onSelect, selectedModel }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   trigger: ReactNode;
+  onSelect?: (model: ActiveModel) => string | null;
+  selectedModel?: ActiveModel;
 }) {
   const { t } = useI18n();
   const providers = useSettingsStore((s) => s.providers);
-  const effectiveActiveModel = useConversationModel();
+  const conversationModel = useConversationModel();
+  const effectiveActiveModel = selectedModel ?? conversationModel;
   // Only the open conversation's id and model: the picker must not re-render while a reply streams.
   const activeConversationId = useChatStore((s) => (
     s.activeConversationId && s.conversations[s.activeConversationId] ? s.activeConversationId : null
@@ -102,10 +107,14 @@ export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, t
   const openSystemSettings = useSettingsStore((s) => s.openSystemSettings);
 
   const [query, setQuery] = useState('');
+  const [selectionError, setSelectionError] = useState<string | null>(null);
 
   // Reset search when opening
   useEffect(() => {
-    if (open) setQuery('');
+    if (open) {
+      setQuery('');
+      setSelectionError(null);
+    }
   }, [open]);
 
   // A managed provider's list can change on the owning system's side at any
@@ -164,13 +173,21 @@ export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, t
 
   const handleSelect = useCallback(
     (providerId: string, modelId: string) => {
-      applyModelPick(
-        { activeConversationId, providerId, modelId },
-        { selectModel, setConversationModel },
-      );
+      if (onSelect) {
+        const error = onSelect({ providerId, modelId });
+        if (error) {
+          setSelectionError(error);
+          return;
+        }
+      } else {
+        applyModelPick(
+          { activeConversationId, providerId, modelId },
+          { selectModel, setConversationModel },
+        );
+      }
       onOpenChange(false);
     },
-    [selectModel, setConversationModel, activeConversationId, onOpenChange]
+    [selectModel, setConversationModel, activeConversationId, onOpenChange, onSelect]
   );
 
   const handleToggleFavorite = useCallback(
@@ -223,6 +240,7 @@ export const ModelSelector = memo(function ModelSelector({ open, onOpenChange, t
 
   return (
     <Popover open={open} onOpenChange={onOpenChange} side="top" align="end" trigger={trigger}>
+      {selectionError && <InlineMessage tone="danger">{selectionError}</InlineMessage>}
       <TextField
         value={query}
         onChange={(e) => setQuery(e.target.value)}

@@ -198,11 +198,19 @@ interface AuthorizedWorkspaceGrant {
   capabilities: Set<WorkspaceCapability>;
   /** Frozen when the grant is created; authority must not follow a retargeted link. */
   canonicalRoot: Promise<string | null>;
+  canonicalRootPath?: string | null;
 }
 
 const authorizedWorkspaces: Map<string, AuthorizedWorkspaceGrant> = new Map();
 const scopedAuthorizedWorkspaces: Map<string, Map<string, AuthorizedWorkspaceGrant>> = new Map();
 const authorizationScopePolicies: Map<string, AuthorizationScopePolicy> = new Map();
+interface FileAuthorizationRevocation { scopeId?: string; path?: string; canonicalPath?: string }
+const revocationListeners = new Set<(event: FileAuthorizationRevocation) => void>();
+
+export function onFileAuthorizationRevoked(listener: (event: FileAuthorizationRevocation) => void): () => void {
+  revocationListeners.add(listener);
+  return () => { revocationListeners.delete(listener); };
+}
 let authorizationScopeCounter = 0;
 
 export type AuthorizationScopeId = string;
@@ -227,6 +235,7 @@ export function disposeAuthorizationScope(scopeId: AuthorizationScopeId | undefi
   if (!scopeId) return;
   scopedAuthorizedWorkspaces.delete(scopeId);
   authorizationScopePolicies.delete(scopeId);
+  for (const listener of revocationListeners) listener({ scopeId });
 }
 
 export function hasFullShellAuthorizationScope(scopeId: AuthorizationScopeId | undefined): boolean {
@@ -291,10 +300,14 @@ function addAuthorizedWorkspace(
         });
         return normalized;
       });
-    target.set(normalized, {
+    const grant: AuthorizedWorkspaceGrant = {
       capabilities: new Set(caps),
-      canonicalRoot,
-    });
+      canonicalRoot: canonicalRoot.then(root => {
+        grant.canonicalRootPath = root;
+        return root;
+      }),
+    };
+    target.set(normalized, grant);
   }
 }
 
@@ -351,7 +364,9 @@ export function getAuthorizedDirs(scopeId?: AuthorizationScopeId): string[] {
  */
 export function revokeWorkspace(path: string): void {
   const normalized = normalizeWorkspacePath(path);
+  const canonicalPath = authorizedWorkspaces.get(normalized)?.canonicalRootPath ?? undefined;
   authorizedWorkspaces.delete(normalized);
+  for (const listener of revocationListeners) listener({ path: normalized, canonicalPath });
 }
 
 /**

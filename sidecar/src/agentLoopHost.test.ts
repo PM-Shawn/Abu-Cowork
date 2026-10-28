@@ -9,6 +9,8 @@ import { LedgerWatermarkError } from '@/core/session/ledgerReader';
 import { HISTORY_UNAVAILABLE_RPC_CODE, historyUnavailableData } from '@/core/ipc/historyUnavailable';
 import { expectedForText, loadLoadedMessageSanitizerFixtures } from '@/test/loadedMessageSanitizerFixtures';
 import enUS from '@/i18n/locales/en-US';
+import { buildRunModelBinding } from '@/core/agent/modelRecovery';
+import { useSettingsStore } from '@/stores/settingsStore';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -168,7 +170,10 @@ function mockSendRequest(
 ) {
   const { approvalDecision = 'allow', approvalReason = 'Error: denied by shell policy', toolInvokeResult = 'tool output' } = overrides;
   sendRequestMock.mockImplementation((method: unknown) => {
-    if (method === 'agent.assertDirectDelegateEnabled') return Promise.resolve({ allowed: true });
+    if (method === 'agent.assertDirectDelegateEnabled') {
+      const settings = useSettingsStore.getState();
+      return Promise.resolve({ allowed: true, binding: buildRunModelBinding(settings, settings.activeModel, 0) });
+    }
     if (method === 'approval.check') {
       return Promise.resolve(
         approvalDecision === 'deny' ? { decision: 'deny', reason: approvalReason } : { decision: 'allow' },

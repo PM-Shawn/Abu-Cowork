@@ -126,7 +126,7 @@ describe('rpcClient', () => {
     });
 
     it('keeps user/tool-duration methods unbounded', async () => {
-      for (const method of ['tool.invoke', 'native.invoke', 'approval.check']) {
+      for (const method of ['tool.invoke', 'native.invoke', 'approval.check', 'model.recovery.wait']) {
         expect(UNBOUNDED_REVERSE_RPC_METHODS.has(method)).toBe(true);
         let settled = false;
         const promise = sendRequest(method, {});

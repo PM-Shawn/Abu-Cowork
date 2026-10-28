@@ -32,6 +32,57 @@
     "upload_file"
   ]);
 
+  // src/background/historyNavigation.ts
+  function pageHistoryNavigation(action2, approved, expectedOrigin) {
+    const navigation = window.navigation;
+    if (!navigation || !["back", "forward", "reload"].includes(action2)) return null;
+    const source = navigation.currentEntry;
+    if (!source || source.url !== location.href) return null;
+    const offset = action2 === "back" ? -1 : action2 === "forward" ? 1 : 0;
+    if (offset < 0 && !navigation.canGoBack || offset > 0 && !navigation.canGoForward) return null;
+    const target = navigation.entries().find((entry) => entry.index === source.index + offset);
+    if (!target || !target.url || !target.key || !source.key) return null;
+    const url = new URL(target.url);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    url.hostname = url.hostname.replace(/\.+$/, "");
+    const pin = {
+      backend: "chrome",
+      action: action2,
+      sourceEntry: source.key,
+      sourceUrl: source.url,
+      targetEntry: target.key,
+      targetUrl: target.url
+    };
+    if (approved) {
+      if (Object.keys(pin).some((key) => pin[key] !== approved[key]) || url.origin !== expectedOrigin) return null;
+      if (action2 === "reload") location.reload();
+      else navigation.traverseTo(target.key);
+    }
+    return pin;
+  }
+  async function probeHistoryNavigation(tabId2, action2) {
+    const results2 = await chrome.scripting.executeScript({
+      target: { tabId: tabId2 },
+      world: "ISOLATED",
+      func: pageHistoryNavigation,
+      args: [action2, null, null]
+    });
+    return results2[0]?.result ?? null;
+  }
+  async function executeHistoryNavigation(tabId2, payload2) {
+    const approved = payload2.navigation;
+    if (!approved || typeof approved !== "object" || typeof payload2.expectedOrigin !== "string") {
+      throw new Error("origin-unverified: navigation requires a verified destination");
+    }
+    const results2 = await chrome.scripting.executeScript({
+      target: { tabId: tabId2 },
+      world: "ISOLATED",
+      func: pageHistoryNavigation,
+      args: [String(payload2.action), approved, payload2.expectedOrigin]
+    });
+    if (!results2[0]?.result) throw new Error("origin-unverified: navigation destination changed or could not be verified");
+  }
+
   // src/shared/captureArea.ts
   function noCaptureAreaRefusal(scrollHeight, viewportHeight) {
     const measured = (value) => Number.isFinite(value) && value > 0;
@@ -1175,6 +1226,16 @@
               if (tree) tab.frames = tree;
             }
           }
+          const navigationProbe = payload.navigationProbe;
+          if (navigationProbe && typeof navigationProbe.tabId === "number" && typeof navigationProbe.action === "string") {
+            for (const win of windows) {
+              for (const tab of win.tabs) {
+                if (tab.tabId === navigationProbe.tabId) {
+                  tab.navigation = await probeHistoryNavigation(tab.tabId, navigationProbe.action);
+                }
+              }
+            }
+          }
           windows.sort((a, b) => (b.isCurrentWindow ? 1 : 0) - (a.isCurrentWindow ? 1 : 0));
           const focusedTab = normalTabs.find((t) => t.id === focusedTabId);
           const data = {
@@ -1276,21 +1337,10 @@
               return { id, success: false, error: `Invalid URL scheme. Only http: and https: URLs are allowed.` };
             }
             await chrome.tabs.update(tabId, { url });
-          } else if (navAction === "reload") {
-            await chrome.tabs.reload(tabId);
-          } else if (navAction === "back" || navAction === "forward") {
-            await chrome.scripting.executeScript({
-              target: { tabId },
-              func: (dir) => {
-                if (dir === "back") {
-                  history.back();
-                } else {
-                  history.forward();
-                }
-              },
-              args: [navAction],
-              world: "MAIN"
-            });
+          } else if (["reload", "back", "forward"].includes(navAction)) {
+            await executeHistoryNavigation(tabId, payload);
+          } else {
+            throw new Error("Invalid navigation action");
           }
           return { id, success: true, data: `Navigation: ${navAction}` };
         }

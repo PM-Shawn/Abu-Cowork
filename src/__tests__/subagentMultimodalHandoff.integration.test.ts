@@ -377,9 +377,22 @@ describe('multimodal delegation route × runtime matrix', () => {
     state.modelDelegates = true;
     const conversationId = useChatStore.getState().createConversation();
 
+    // The delegation path is what this case tests, not the text-only end-turn
+    // nudge. `llama3.2` resolves to an OpenAI-compatible family whose profile
+    // turns the nudge on (the silent-empty-response guard), which would add
+    // two continuation turns after the parent's text-only resume; pin the
+    // guard off so the expected call count stays 3.
+    const profiles = await import('../core/llm/modelProfile');
+    const originalResolve = profiles.resolveModelProfile;
+    const profileSpy = vi.spyOn(profiles, 'resolveModelProfile').mockImplementation((input) => {
+      const original = originalResolve(input);
+      return { ...original, harness: { ...original.harness, guards: { ...original.harness.guards, textOnlyEndTurnNudge: false } } };
+    });
+
     await runAgentLoop(conversationId, 'Inspect this image.', {
       images: [{ id: 'image-1', data: PNG, mediaType: 'image/png' }],
     });
+    profileSpy.mockRestore();
 
     // Call 0 is the parent model turn, call 1 is the delegate, and call 2 is
     // the parent resuming after real toolExecutor handling.

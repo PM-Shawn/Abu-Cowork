@@ -39,6 +39,7 @@ import {
 } from '../agent/permissionBridge';
 import { getI18n } from '../../i18n';
 import { clearBrowserSignals, getRecentBrowserSignals } from '../observability/browserSignals';
+import type { BrowserHistoryAction, BrowserNavigationPin } from '../permissions/browserNavigation';
 
 const policyMocks = vi.hoisted(() => ({
   checkTool: vi.fn(() => ({ decision: 'allow' as const })),
@@ -1208,6 +1209,19 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('allow');
+      expect(decision.browserExecution).toEqual({ runMode: 'attended', expectedOrigin: ALLOWED_SITE, popupOrigin: ALLOWED_SITE });
+    });
+
+    it('stamps the popup lease pin for browser_download too (B1)', async () => {
+      withTabOrigin(ALLOWED_URL);
+
+      const decision = await checkToolApproval(
+        'abu-browser__download', { tabId: OWNED_TAB_ID, locator: '{}' },
+        attendedOwner, (async () => true) as never,
+      );
+
+      expect(decision.decision).toBe('allow');
+      // Downloads receive the same origin-bound popup allowance as clicks.
       expect(decision.browserExecution).toEqual({ runMode: 'attended', expectedOrigin: ALLOWED_SITE, popupOrigin: ALLOWED_SITE });
     });
 
@@ -2485,4 +2499,147 @@ describe('browser gate — operation-class policy', () => {
       expect(decision.browserExecution?.expectedOrigin).toBe(ALLOWED_SITE);
     });
   });
+
+  describe('browser gate — unattended navigation targets', () => {
+  function historyTarget(action: BrowserHistoryAction, sourceUrl: string, targetUrl = sourceUrl): BrowserNavigationPin {
+    const navigation: BrowserNavigationPin = {
+      backend: 'built-in', action, sourceEntry: '1', sourceUrl,
+      targetEntry: action === 'reload' ? '1' : action === 'back' ? '0' : '2', targetUrl,
+    };
+    withTabOrigin(sourceUrl, { navigation });
+    return navigation;
+  }
+
+  beforeEach(() => {
+    setMigratedBrowserSettings({ allowUnattendedBrowser: true });
+    clearBrowserSignals();
+  });
+
+  it('allows an unattended reload with a verified destination on an allowed site', async () => {
+    const navigation = historyTarget('reload', ALLOWED_URL);
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'reload', tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+    expect(decision.browserExecution?.navigation).toEqual(navigation);
+    expect(decision.browserExecution?.expectedOrigin).toBe(ALLOWED_SITE);
+  });
+
+  it('authorizes unattended back and forward using the verified destination', async () => {
+    for (const action of ['back', 'forward'] as const) {
+      const navigation = historyTarget(action, UNKNOWN_URL, ALLOWED_URL);
+      const decision = await checkToolApproval(
+        'abu-browser__navigate', { action, tabId: OWNED_TAB_ID },
+        unattendedOwner, (async () => true) as never,
+      );
+      expect(decision.decision).toBe('allow');
+      expect(decision.browserExecution?.navigation).toEqual(navigation);
+      expect(decision.browserExecution?.expectedOrigin).toBe(ALLOWED_SITE);
+    }
+  });
+
+  it('denies an unattended reload on a blocked site', async () => {
+    currentPermissions('allow');
+    historyTarget('reload', `${BLOCKED_SITE}/page`);
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'reload', tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('will not change on retry');
+    expect(getRecentBrowserSignals()).toContainEqual(expect.objectContaining({ kind: 'gate_denied', reason: 'site-denied' }));
+  });
+
+  it('denies an unattended reload on a high-risk site', async () => {
+    historyTarget('reload', 'https://paypal.com/withdraw');
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'reload', tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('will not change on retry');
+    expect(getRecentBrowserSignals()).toContainEqual(expect.objectContaining({ kind: 'gate_denied', reason: 'high-risk-site' }));
+  });
+
+  it('a reload on a non-web tab denies with the non-web-page hint', async () => {
+    withTabOrigin('about:blank');
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'reload', tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('not on a web page');
+    expect(decision.reason).toContain('could not be determined');
+  });
+
+  it('a create_tab to a file:// URL denies with the local-file hint', async () => {
+    const decision = await checkToolApproval(
+      'abu-browser__create_tab', { url: 'file:///D:/reports/结果.md' },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('local file');
+  });
+
+  it('a tab-less query_js resolves the task current tab in the gate', async () => {
+    // The gate resolves the same current tab used by the host for an omitted tabId.
+    mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
+      Promise.resolve(
+        params._meta?.['abu/conversationId'] === OWNER
+          ? {
+              content: [{
+                type: 'text',
+                text: JSON.stringify({
+                  summary: { currentTabId: OWNED_TAB_ID },
+                  windows: [{ windowId: 1, tabs: [{ tabId: OWNED_TAB_ID, url: ALLOWED_URL }] }],
+                }),
+              }],
+            }
+          : { content: [{ type: 'text', text: JSON.stringify({ windows: [] }, ) }] },
+      ),
+    );
+
+    const decision = await checkToolApproval(
+      'abu-browser__query_js', { code: 'document.title' },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('allow');
+  });
+
+  it('a tab-less query_js with no current tab denies with the tab hint', async () => {
+    withTabOrigin(ALLOWED_URL); // listing has no summary.currentTabId
+
+    const decision = await checkToolApproval(
+      'abu-browser__query_js', { code: 'document.title' },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('get_tabs');
+  });
+
+  it('a blocked-site denial carries the no-retry hint for goto too', async () => {
+    currentPermissions('allow');
+    withTabOrigin(ALLOWED_URL);
+
+    const decision = await checkToolApproval(
+      'abu-browser__navigate', { action: 'goto', url: `${BLOCKED_SITE}/page`, tabId: OWNED_TAB_ID },
+      unattendedOwner, (async () => true) as never,
+    );
+
+    expect(decision.decision).toBe('deny');
+    expect(decision.reason).toContain('will not change on retry');
+  });
+});
 });

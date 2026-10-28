@@ -14,6 +14,11 @@ vi.mock('@/core/agent/subagentLoop', () => ({
 }));
 
 import { runSubagent } from './subagentRunnerRun';
+import { useSettingsStore } from '@/stores/settingsStore';
+import { buildRunModelBinding } from '@/core/agent/modelRecovery';
+
+const settings = useSettingsStore.getState();
+const admittedBinding = buildRunModelBinding(settings, settings.activeModel, 0);
 
 const agent = {
   name: 'nested-test',
@@ -42,7 +47,7 @@ function makeContext(): AgentRunContext {
 
 describe('subagentRunnerRun shim', () => {
   beforeEach(() => {
-    sendRequestMock.mockReset().mockResolvedValue({ allowed: true });
+    sendRequestMock.mockReset().mockResolvedValue({ allowed: true, binding: admittedBinding });
     runSubagentLoopMock.mockReset();
     runSubagentLoopMock.mockImplementation(async (options: SubagentLoopOptions) => {
       options.onProgress?.({
@@ -68,7 +73,7 @@ describe('subagentRunnerRun shim', () => {
     const running = agentRunContext.run(makeContext(), () => runSubagent({ agent, task: 'test', authorizationScopeId }));
     expect(sendRequestMock).toHaveBeenCalledWith('agent.assertDirectDelegateEnabled', { runId: 'parent-run' });
     expect(runSubagentLoopMock).not.toHaveBeenCalled();
-    allow({ allowed: true });
+    allow({ allowed: true, binding: admittedBinding });
     await running;
     expect(runSubagentLoopMock).toHaveBeenCalledTimes(1);
   });

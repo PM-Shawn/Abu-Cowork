@@ -26,9 +26,9 @@ import { mcpManager } from '../mcp/client';
 import { substituteVariables, executeInlineCommands } from '../skill/preprocessor';
 import { getSkillsGuidance } from './prompts/skillsGuidance';
 import { buildResponseLanguageSection } from './prompts/responseLanguage';
-import { commandsFirstGuidance, openingAppsGuidance, structuredComputerUseGuidance } from './prompts/computerUseGuidance';
+import { fullComputerUseGuidance, structuredComputerUseGuidance } from './prompts/computerUseGuidance';
 import { BROWSER_NARRATION_RULES } from './browserNarrationRules';
-import { SYSTEM_SETTINGS_TOOL_LINE } from './prompts/variants/default';
+import { DEFAULT_PERSONA, modelPlanningPrompt } from './prompts/modelPromptSections';
 import { resolvePromptVariant, type PromptVariantSource } from './prompts/variants';
 import type { PromptSection } from '../llm/promptSections';
 import type { TeamRouteContext } from '../team/leaderRoute';
@@ -36,8 +36,6 @@ import { buildTeamRoleBlock, buildTeamAvailableAgentsText } from '../team/leader
 import { sectionsToString, orderSectionsForCaching } from '../llm/promptSections';
 import { LABS_APPS } from '../labs/registry';
 import { isLabsFlagOn } from '../labs/resolve';
-
-const DEFAULT_PERSONA = 'You are Abu (阿布), a professional and reliable desktop assistant. Reply in a friendly and concise manner.';
 
 function normalizeToolMetadata(value: unknown): { values: string[]; valid: boolean } {
   if (value === undefined) return { values: [], valid: true };
@@ -77,27 +75,6 @@ export function formatAvailableAgentTools(
     : '';
   return `(Tools: ${formatDeclaredToolNames(allowed.values)}${exclusions})`;
 }
-
-/** Examples appended to the planning text on first turn only — saves ~400 tokens per subsequent turn */
-const PLANNING_EXAMPLES = `
-### Execution Examples
-
-Example 1 (skill match):
-User says "help me convert this report to a Word document"
-→ Check the available skills list, find that the docx skill's TRIGGER matches
-→ use_skill({"skill_name": "docx", "context": "convert the report to a Word document"})
-
-Example 2 (deterministic task):
-User says "help me organize the invoices on my desktop"
-→ report_plan({"steps": ["scan desktop files", "identify invoices", "create invoice folder", "move invoices"]})
-→ Then execute
-
-Example 3 (task requiring search):
-User says "help me learn about use cases for OpenClaw"
-→ First web_search("OpenClaw") to understand what it is
-→ Then report_plan({"steps": ["search for more use cases", "categorize findings", "generate report"]})
-→ Then continue executing
-`;
 
 export interface RouteResult {
   type: 'skill' | 'agent' | 'general' | 'delegate';
@@ -467,13 +444,7 @@ export async function buildSystemPromptSections(
     // personality would contradict it, so it is not injected.
     if (!route.team) sections.push({ name: 'soul', text: '\n## Your Personality\nThe following describes your personality traits and communication style. Express them naturally in all interactions.\n\n' + soulText, cacheable: true });
     // Append examples only on first turn to save ~400 tokens per subsequent turn
-    const planningText = (turnCount === 0 ? variant.planning + PLANNING_EXAMPLES : variant.planning)
-      .replace(
-        SYSTEM_SETTINGS_TOOL_LINE,
-        isWindows()
-          ? '- System settings → run_command (PowerShell), not screenshotting system settings'
-          : SYSTEM_SETTINGS_TOOL_LINE,
-      );
+    const planningText = modelPlanningPrompt(profile, turnCount === 0, isWindows());
     sections.push({ name: 'planning', text: planningText, cacheable: true });
     if (familyNotesSection) sections.push(familyNotesSection);
   }
@@ -746,45 +717,7 @@ knows their screen is about to be used. When it is not, just do the work.`, cach
     if (toolContext?.computerUseTier === 'structured') {
       sections.push({ name: 'computer-use', text: structuredComputerUseGuidance(isWindows()), cacheable: true });
     } else {
-    sections.push({ name: 'computer-use', text: `\n## Computer Control Capability
-You have the computer tool, which lets you take screenshots and perform mouse and keyboard operations to control any application on the user's screen.
-
-${commandsFirstGuidance(isWindows())}
-
-### Coordinate system
-- Coordinates use the screenshot pixel coordinate system (origin at top-left) and are automatically mapped to the real screen
-- Ensure you have a fresh screenshot before any operation; coordinates must be accurate to the center of the UI element
-
-### Screenshot control
-- To view the screen you must use computer(action="screenshot") — do not use the screencapture command
-- Use show_user=true when the user asks to see the screen; omit it for automated execution (not shown to the user by default, but you can still see it)
-- After each action, a screenshot is automatically returned — no need to call screenshot again to confirm
-
-### One action, as much ground as it can cover
-Every write consumes the observation it was authorized against, so the next
-write needs a fresh one — two writes in the same reply cannot both be valid.
-Observing is cheap and does not spend the step budget; what spends it is
-acting. So cover more ground per action rather than per reply: type a whole
-string instead of a key at a time, and give drag a path instead of one
-segment.
-
-${openingAppsGuidance(isWindows())}
-- When you need to interact with the GUI, wait 2 seconds after opening before taking a screenshot
-
-### Operation guidelines
-- When the user says "open XX" or "play XX for me", actually do it — do not just reply with instructions
-- **Before keyboard input (type/key), you must click the target window or input field first** to ensure focus is correct. After the Abu window is hidden, system focus may not be on the target app
-- Clicking buttons is more reliable than keyboard input — e.g. for a calculator's number buttons, clicking the button coordinates directly is more reliable than typing
-- Do not say "done" without screenshot verification
-- If an action does not take effect, analyze the reason and retry — do not pretend success
-- Before sending any external message, take a screenshot for the user to confirm
-- After a dropdown menu or pop-up appears, take a screenshot before interacting with it
-
-### Failure recovery
-- Click has no effect → check coordinates; try a keyboard shortcut instead
-- Input field issue → click first to confirm focus, then type
-- App is unresponsive → wait longer, or check whether a pop-up is blocking it
-- Cannot complete the task → honestly tell the user where you got stuck`, cacheable: true });
+    sections.push({ name: 'computer-use', text: fullComputerUseGuidance(isWindows()), cacheable: true });
     }
     } // end of computer-use gate (settingsState.computerUseEnabled)
 

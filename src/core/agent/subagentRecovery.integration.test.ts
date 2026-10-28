@@ -12,6 +12,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { StreamEvent } from '../../types';
 import type { ProviderInstance } from '../../types/provider';
+import type { SettingsState } from '@/stores/settingsStore';
 import { LLMError } from '../llm/adapter';
 
 const mockEnforceContextBudget = vi.hoisted(() => vi.fn((msgs: unknown[]) => ({
@@ -1881,5 +1882,160 @@ describe('subagent max_tokens recovery (integration)', () => {
       expect(systemPrompt).not.toContain('## Working notes for this model');
       expect(systemPrompt.indexOf('sys')).toBeLessThan(systemPrompt.indexOf('## Safety Rules'));
     });
+  });
+});
+
+const failoverSettingsSnapshot = {
+  providers: [{
+    id: 'p1', enabled: true, apiFormat: 'anthropic', baseUrl: undefined,
+    models: [{ id: 'claude-opus-4-8' }, { id: 'candidate-model' }],
+  }],
+  favoriteModels: [{ providerId: 'p1', modelId: 'candidate-model' }],
+  recentModels: [],
+  activeModel: { providerId: 'p1', modelId: 'claude-opus-4-8' },
+} as SettingsState;
+
+function readerWithFavorites() {
+  return { getSnapshot: () => failoverSettingsSnapshot };
+}
+
+function selectedRecoveryPort() {
+  return { waitForSelection: vi.fn().mockResolvedValueOnce({
+    revision: 1,
+    model: { providerId: 'p1', modelId: 'candidate-model' },
+    settingsSnapshot: { ...failoverSettingsSnapshot, activeModel: { providerId: 'p1', modelId: 'candidate-model' } },
+    resolvedCreds: { apiKey: 'selected-key', baseUrl: undefined, forceOpenAiCompatible: false },
+    capabilities: { modelId: 'candidate-model', vision: true, computerUseTier: 'full', capabilitySource: 'builtin', toolCalling: 'native', structuredArguments: 'reliable' },
+  }).mockResolvedValue(null) };
+}
+
+function throwQuota() {
+  throw new LLMError('quota spent for this period', 'quota_exceeded', { retryable: false });
+}
+
+function failoverProgressEvents(progress: ReturnType<typeof vi.fn>) {
+  const events = progress.mock.calls.map((c) => c[0] as { type: string; id: string; toolName: string; result?: string; error?: boolean });
+  return {
+    starts: events.filter((e) => e.type === 'tool-start' && e.toolName === 'model_failover'),
+    ends: events.filter((e) => e.type === 'tool-end' && e.toolName === 'model_failover'),
+  };
+}
+
+describe('subagent quota failover (integration)', () => {
+  beforeEach(() => {
+    // Sibling describe: the max_tokens suite's resets don't reach here. Copy
+    // them so call counts and defaults start clean in every failover case.
+    mockClaudeChat.mockReset();
+    mockOpenAIChat.mockReset();
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValue('tool output');
+    mockGetAllTools.mockReturnValue(
+      ['noop', 'do_work', 'computer', 'read_file'].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: 'object', properties: {} },
+        execute: vi.fn(),
+      })),
+    );
+    mockGetActiveProvider.mockReset();
+    mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined, models: [] });
+    mockReadDelegatedMedia.mockReset();
+    mockEnforceContextBudget.mockClear();
+    mockEnforceContextBudget.mockImplementation((msgs: unknown[]) => ({
+      messages: msgs,
+      tokensBefore: 1,
+      tokensAfter: 1,
+      inputBudget: 100000,
+      safetyMarginTokens: 1000,
+      strategy: 'unchanged',
+    }));
+    mockResolveAgentModel.mockReturnValue('claude-opus-4-8');
+  });
+
+  it('resumes the failed request with the user-selected model', async () => {
+    const progress = vi.fn();
+    mockClaudeChat
+      .mockImplementationOnce(throwQuota)
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'recovered answer' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const result = await runSubagentLoop({
+      agent, task: 'task', onProgress: progress, settingsReader: readerWithFavorites(),
+      modelRecovery: selectedRecoveryPort(),
+    });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect((mockClaudeChat.mock.calls[1][1] as { model: string }).model).toBe('candidate-model');
+    expect(result.stopReason).toBe('completed');
+    expect(result.text).toContain('recovered answer');
+  });
+
+  it('notifies the parent with a PAIRED model_failover step', async () => {
+    const progress = vi.fn();
+    mockClaudeChat
+      .mockImplementationOnce(throwQuota)
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'ok' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    await runSubagentLoop({ agent, task: 'task', onProgress: progress, settingsReader: readerWithFavorites(), modelRecovery: selectedRecoveryPort() });
+
+    const { starts, ends } = failoverProgressEvents(progress);
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect(starts[0].id).toBe(ends[0].id);
+    expect(ends[0].error).toBe(false);
+    expect(ends[0].result).toContain('candidate-model');
+  });
+
+  it('reports the error when interactive selection is unavailable', async () => {
+    mockClaudeChat.mockImplementationOnce(throwQuota);
+
+    const result = await runSubagentLoop({
+      agent, task: 'task', onProgress: vi.fn(), settingsReader: readerWithFavorites(),
+    });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+    expect(result.stopReason).toBe('error');
+  });
+
+  it('requests model selection for a provider context limit and closes interrupted tool progress', async () => {
+    const progress = vi.fn();
+    const recovery = selectedRecoveryPort();
+    mockClaudeChat.mockImplementationOnce(async (_messages, _options, onEvent) => {
+      onEvent({ type: 'text', text: 'Partial analysis.' });
+      onEvent({ type: 'tool_use', id: 'unfinished', name: 'read_file', input: { path: '/workspace/report.txt' } });
+      throw new LLMError('context rejected', 'context_too_long', { retryable: false });
+    }).mockImplementationOnce(emits([
+      { type: 'text', text: 'Completed analysis.' },
+      { type: 'done', stopReason: 'end_turn' },
+    ]));
+    const result = await runSubagentLoop({ agent, task: 'task', onProgress: progress,
+      settingsReader: readerWithFavorites(), modelRecovery: recovery });
+    expect(recovery.waitForSelection).toHaveBeenCalledExactlyOnceWith('context-window');
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ type: 'tool-end', id: 'unfinished', error: true }));
+    expect(mockExecuteAnyTool).not.toHaveBeenCalled();
+    expect(result.text).toContain('Partial analysis.');
+    expect(result.text).toContain('Completed analysis.');
+    expect(result.stopReason).toBe('completed');
+    expect(mockClaudeChat.mock.calls[1][0]).toContainEqual(expect.objectContaining({ content: 'Partial analysis.' }));
+  });
+
+  it('ends when the next model selection is cancelled', async () => {
+    mockClaudeChat
+      .mockImplementationOnce(throwQuota)
+      .mockImplementationOnce(throwQuota);
+
+    const result = await runSubagentLoop({
+      agent, task: 'task', onProgress: vi.fn(), settingsReader: readerWithFavorites(),
+      modelRecovery: selectedRecoveryPort(),
+    });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect((mockClaudeChat.mock.calls[1][1] as { model: string }).model).toBe('candidate-model');
+    expect(result.stopReason).toBe('error');
   });
 });

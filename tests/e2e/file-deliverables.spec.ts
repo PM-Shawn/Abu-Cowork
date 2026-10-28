@@ -452,6 +452,16 @@ interface OpenFrame {
   cardHeights: number[];
   /** A changed-files card is on the page. */
   changedCard: boolean;
+  layout?: {
+    viewportHeight: number;
+    viewportWidth: number;
+    scrollHeight: number;
+    scrollTop: number;
+    listHeight: number;
+    composerHeight: number | null;
+    changedCardHeight: number | null;
+    rowHeights: number[];
+  };
 }
 
 /**
@@ -476,6 +486,16 @@ async function recordOpen(page: Page, target: Locator, frames: number): Promise<
         firstCardTop: cards.length ? Math.round(cards[0].getBoundingClientRect().top - scroller.getBoundingClientRect().top) : null,
         cardHeights: cards.map((card) => Math.round(card.getBoundingClientRect().height)),
         changedCard: scroller.querySelector('[data-testid="changed-files-card"]') !== null,
+        layout: {
+          viewportHeight: scroller.clientHeight,
+          viewportWidth: scroller.clientWidth,
+          scrollHeight: scroller.scrollHeight,
+          scrollTop: scroller.scrollTop,
+          listHeight: list.getBoundingClientRect().height,
+          composerHeight: document.querySelector('[data-chat-composer]')?.getBoundingClientRect().height ?? null,
+          changedCardHeight: scroller.querySelector('[data-testid="changed-files-card"]')?.getBoundingClientRect().height ?? null,
+          rowHeights: [...list.children].map((row) => row.getBoundingClientRect().height),
+        },
       };
     };
     (window as Window & { __openFrames?: OpenFrame[] }).__openFrames = samples;
@@ -545,6 +565,7 @@ test('a conversation with image cards and a changed-files card opens after a res
   for (let opening = 0; opening < 4; opening += 1) {
     const frames = await recordOpen(page, page.locator(`[data-conversation-row="${imagesId}"]`), 30);
     const trace = JSON.stringify(frames);
+    await test.info().attach(`opening-${opening}`, { body: trace, contentType: 'application/json' });
     expect(frames.length, trace).toBeGreaterThan(0);
     const landed = frames[0].firstCardTop;
     expect(landed, trace).not.toBeNull();

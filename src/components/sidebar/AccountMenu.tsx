@@ -10,7 +10,7 @@ import { Avatar } from '@/components/ds/avatar';
 import { Button } from '@/components/ds/button';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
-import { Menu, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
+import { Menu, MenuIconItem, MenuItem, MenuRadioGroup, MenuRadioItem, MenuSeparator, MenuSub } from '@/components/ds/menu';
 import { Spinner } from '@/components/ds/spinner';
 import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
@@ -249,16 +249,19 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     >
       <div className="w-60">
         {/* Authenticated identity, or the local-mode account entry. */}
-        <div className="flex items-center gap-2 px-2 py-2">
+        <div data-account-identity className="group/identity flex items-center gap-2 px-2 py-2">
           {avatar('lg')}
           <div className="min-w-0 flex-1">
             <div className="truncate text-ui font-semibold text-label">{accountLabel}</div>
             <div className="truncate text-caption text-label-tertiary">{accountDetail}</div>
           </div>
+          <MenuIconItem
+            icon={AppIcons.rename}
+            label={t.sidebar.editProfile}
+            onSelect={() => openAfterClose(onEditProfile, true)}
+            className="opacity-0 transition-opacity duration-fast group-hover/identity:opacity-100 focus:opacity-100 [@media(hover:none)]:opacity-100"
+          />
         </div>
-        <MenuItem icon={AppIcons.rename} onSelect={() => openAfterClose(onEditProfile, true)}>
-          {t.sidebar.editProfile}
-        </MenuItem>
 
         <MenuSeparator />
 

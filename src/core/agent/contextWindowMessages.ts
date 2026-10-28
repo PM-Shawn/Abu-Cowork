@@ -8,14 +8,14 @@ const SERVICE_NAMES: Record<LocalServerKind, string> = {
   'custom-local': 'LM Studio / Ollama',
 };
 
-/** 窗口放不下系统说明加工具定义、或超长恢复后仍放不下时，回答里的那句话。 */
+/** Explain when fixed instructions and tools exceed the model's context window. */
 export function contextTooSmallMessage(chat: TranslationDict['chat'], kind: LocalServerKind | null): string {
   return kind === null
     ? chat.contextFixedTooLarge
     : format(chat.contextFixedTooLargeLocal, { service: SERVICE_NAMES[kind] });
 }
 
-/** 同上，但带数字：说明需要多少 tokens、模型窗口只有多少。 */
+/** Include the required token count and the model's available context window. */
 export function contextTooSmallMessageWithNumbers(
   chat: TranslationDict['chat'],
   kind: LocalServerKind | null,
@@ -31,7 +31,7 @@ export function contextTooSmallMessageWithNumbers(
     : format(chat.contextFixedTooLargeWithNumbersLocal, { ...args, service: SERVICE_NAMES[kind] });
 }
 
-/** 界面上的长度写法：8192 → 8K、131072 → 128K、1048576 → 1M。 */
+/** Format context lengths compactly: 8192 → 8K, 131072 → 128K, 1048576 → 1M. */
 export function formatTokenCount(tokens: number): string {
   if (tokens % 1_000_000 === 0) return `${tokens / 1_000_000}M`;
   if (tokens % 1_048_576 === 0) return `${tokens / 1_048_576}M`;

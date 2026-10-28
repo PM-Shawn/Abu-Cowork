@@ -3293,6 +3293,8 @@ export interface TranslationDict {
     pdfNextPage: string;
     pdfFitWidth: string;
     pdfFit: string;
+    previewFitWindow: string;
+    previewActualSize: string;
     pdfRotate: string;
     // Preview: XLSX
     xlsxSheetLabel: string;
@@ -4107,13 +4109,13 @@ export interface TranslationDict {
     /** Unattended run whose target site could not be determined (the browser
      *  host did not answer, or the action names no resolvable page). */
     browserUnattendedOriginUnverified: string;
-    /** 2026-10-27 无人值守可自救：origin-unverified 按解析失败原因追加的出路句。 */
+    /** Recovery guidance matching the cause of an unverified origin. */
     browserOriginHintNavigationUnverifiable: string;
     browserOriginHintNonWebPage: string;
     browserOriginHintProbeFailed: string;
     browserOriginHintTabNotListed: string;
     browserOriginHintFrameUnverified: string;
-    /** 固定配置类拒绝统一追加的「勿重试」提示。 */
+    /** Explain why repeating an action cannot resolve a configuration denial. */
     browserStandingDenialNoRetry: string;
     /** Unattended run on a URL `highRiskSites.ts` classified as money
      *  movement / government. Denied outright — nobody can answer for a wire

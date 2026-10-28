@@ -505,7 +505,7 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     expect(taskRequests(mock!)).toHaveLength(1);
     expect(taskRequests(recoveryMock)).toHaveLength(0);
     await choose.click();
-    await page.getByRole('button', { name: '上下文恢复模型', exact: true }).last().click();
+    await page.getByRole('button', { name: '上下文恢复模型，能看图', exact: true }).last().click();
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(choose).toHaveCount(0);
     await expectRunEnded(page);

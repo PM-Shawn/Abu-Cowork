@@ -1221,8 +1221,7 @@ describe('browser gate — operation-class policy', () => {
       );
 
       expect(decision.decision).toBe('allow');
-      // 2026-10-27 B1：download 与 click 同权 —— 站点用新窗口承载下载时，
-      // 专用下载动作必须拿到弹窗租约章，否则 host 侧必拦。
+      // Downloads receive the same origin-bound popup allowance as clicks.
       expect(decision.browserExecution).toEqual({ runMode: 'attended', expectedOrigin: ALLOWED_SITE, popupOrigin: ALLOWED_SITE });
     });
 
@@ -2569,7 +2568,7 @@ describe('browser gate — operation-class policy', () => {
     expect(getRecentBrowserSignals()).toContainEqual(expect.objectContaining({ kind: 'gate_denied', reason: 'high-risk-site' }));
   });
 
-  it('a reload on a non-web tab denies with the non-web-page hint (修 2)', async () => {
+  it('a reload on a non-web tab denies with the non-web-page hint', async () => {
     withTabOrigin('about:blank');
 
     const decision = await checkToolApproval(
@@ -2579,11 +2578,10 @@ describe('browser gate — operation-class policy', () => {
 
     expect(decision.decision).toBe('deny');
     expect(decision.reason).toContain('not on a web page');
-    // 原句保留 —— e2e 锚点（browser-unattended.spec.ts）匹配它。
     expect(decision.reason).toContain('could not be determined');
   });
 
-  it('a create_tab to a file:// URL denies with the local-file hint (修 2)', async () => {
+  it('a create_tab to a file:// URL denies with the local-file hint', async () => {
     const decision = await checkToolApproval(
       'abu-browser__create_tab', { url: 'file:///D:/reports/结果.md' },
       unattendedOwner, (async () => true) as never,
@@ -2593,9 +2591,8 @@ describe('browser gate — operation-class policy', () => {
     expect(decision.reason).toContain('local file');
   });
 
-  it('a tab-less query_js resolves the task current tab in the gate (修 3)', async () => {
-    // query_js 的 tabId 是可选的（省略 = 本任务最近操作的 tab，host 执行侧
-    // 支持）；gate 必须解析同一个 tab，否则无人值守必拒。
+  it('a tab-less query_js resolves the task current tab in the gate', async () => {
+    // The gate resolves the same current tab used by the host for an omitted tabId.
     mockCallTool.mockImplementation((params: { _meta?: Record<string, unknown> }) =>
       Promise.resolve(
         params._meta?.['abu/conversationId'] === OWNER
@@ -2620,7 +2617,7 @@ describe('browser gate — operation-class policy', () => {
     expect(decision.decision).toBe('allow');
   });
 
-  it('a tab-less query_js with no current tab denies with the tab hint (修 3)', async () => {
+  it('a tab-less query_js with no current tab denies with the tab hint', async () => {
     withTabOrigin(ALLOWED_URL); // listing has no summary.currentTabId
 
     const decision = await checkToolApproval(
@@ -2632,7 +2629,7 @@ describe('browser gate — operation-class policy', () => {
     expect(decision.reason).toContain('get_tabs');
   });
 
-  it('a blocked-site denial carries the no-retry hint for goto too (修 2)', async () => {
+  it('a blocked-site denial carries the no-retry hint for goto too', async () => {
     currentPermissions('allow');
     withTabOrigin(ALLOWED_URL);
 

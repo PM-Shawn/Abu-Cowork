@@ -210,8 +210,7 @@ describe('resolveModelProfile', () => {
     });
 
     it('the text-only end-turn nudge is on for the OpenAI-compatible families, off for claude/gpt', () => {
-      // guardsRepair 家族（含 other：未知/网关模型都在这里）开着——空响应静默收尾
-      // 的续推护栏；claude/gpt 走 guardsOff 保持关闭。
+      // Unknown and gateway models use guardsRepair; Claude and GPT use guardsOff.
       for (const id of ['deepseek-v4-flash', 'kimi-k2.6', 'qwen3-max', 'glm-5', 'x']) {
         expect(resolveModelProfile({ modelId: id }).harness.guards.textOnlyEndTurnNudge).toBe(true);
       }

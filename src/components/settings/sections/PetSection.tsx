@@ -3,6 +3,7 @@ import { useI18n } from '@/i18n';
 import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
 import { Switch } from '@/components/ds/switch';
 import { setPetVisible } from '@/core/pet/petVisibility';
+import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 
 export default function PetSection() {
   const petOpen = useSettingsStore((s) => s.petOpen);
@@ -19,10 +20,13 @@ export default function PetSection() {
   };
 
   return (
-    <SettingGroup>
-      <SettingRow title={t.settings.petEnable} description={t.settings.petEnableDesc} htmlFor="setting-pet-enable">
-        <Switch id="setting-pet-enable" checked={petOpen} onCheckedChange={handleTogglePet} />
-      </SettingRow>
-    </SettingGroup>
+    <>
+      <SettingsSectionHeader title={t.settings.petEnable} />
+      <SettingGroup>
+        <SettingRow title={t.settings.petEnable} description={t.settings.petEnableDesc} htmlFor="setting-pet-enable">
+          <Switch id="setting-pet-enable" checked={petOpen} onCheckedChange={handleTogglePet} />
+        </SettingRow>
+      </SettingGroup>
+    </>
   );
 }

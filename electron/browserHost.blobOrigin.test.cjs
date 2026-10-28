@@ -3,8 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 
-// B3（2026-10-27）：blob: 内层 origin 提取与弹窗 URL 白名单，纯函数直测
-// （__testing 导出）。宿主加载只需要最小的 electron 假体。
+// Exercise origin extraction and popup URL validation through the host exports.
 function loadHost(t) {
   const electronId = require.resolve('electron');
   const tauriId = require.resolve('./tauriHost.cjs');

@@ -2720,7 +2720,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             throw budgetErr;
           }
         } else if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
-          // 服务说内容太长：读出真实上限并记住，按新上限整理后重试一次；仍失败就把错误交给外层显示
+          // Record the server-reported limit, compact once, and let the outer recovery handler handle another failure.
           const learnedWindow = await learnContextWindowAfterOverflow({
             error: retryErr,
             provider: activeProvider,

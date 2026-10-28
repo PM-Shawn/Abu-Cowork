@@ -624,10 +624,8 @@ interface BrowserActionTarget {
    */
   frameUnverified?: true;
   /**
-   * Why `origin` came back null (2026-10-27 无人值守可自救方案). The gate's
-   * `origin-unverified` refusal appends the matching guidance sentence, so a
-   * model can act on the refusal instead of replaying it — the same refusal
-   * was replayed 8 times in conversation mvo1nv4cdjj5y7 before this existed.
+   * Why `origin` came back null. The `origin-unverified` refusal includes
+   * guidance matching the unresolved target.
    */
   unresolvedReason?: 'reload-unknowable' | 'unparseable-url' | 'probe-failed' | 'tab-not-listed' | 'frame-unverified';
 }
@@ -670,10 +668,8 @@ async function resolveBrowserActionTarget(
   }
 
   const inputTabId = Number(input.tabId);
-  // query_js 是唯一执行侧支持 tab-less 的工具（host 对 get_html 用本任务最近
-  // 操作的 tab 兜底，browserHost.cjs 的 activeTabIdByOwner）。gate 必须解析
-  // 同一个 tab，否则工具文档承诺的省略写法在 gate 上不可能成立、无人值守必拒
-  // （2026-10-27 修 3）。listing 没有当前 tab 时仍拒，走 tab-not-listed 指引。
+  // Resolve tab-less query_js against the task's current tab.
+  // Missing entries remain unverified.
   const tabLessQueryJs = toolName === 'query_js' && !Number.isFinite(inputTabId);
   if (!Number.isFinite(inputTabId) && !tabLessQueryJs) {
     return { origin: null, url: null, authState: null, unresolvedReason: 'tab-not-listed' };
@@ -1926,11 +1922,8 @@ export async function checkToolApproval(
       const browserDenialReasonText = (reason: BrowserDenialReasonCode): string =>
         sharedBrowserDenialReasonText(t, reason);
 
-      // 2026-10-27 无人值守可自救：origin-unverified 按解析失败的原因追加一条
-      // 出路；固定配置类拒绝（重试不会改变结果）统一追加「勿重试」提示 ——
-      // 没有出路的拒绝只会被原样重试（会话 mvo1nv4cdjj5y7 里同一个 reload 被
-      // 原样重试了 8 次，护栏不计数这类拒绝）。交互式拒绝（approval-refused、
-      // user-cancelled）不追加：用户改主意后重试是有意义的。
+      // Explain unresolved targets and configuration denials.
+      // Human approval refusals can be retried after a new decision.
       const STANDING_CONFIG_DENIALS: ReadonlySet<BrowserDenialReasonCode> = new Set([
         'server-disabled', 'master-switch-off', 'site-denied', 'high-risk-site',
         'policy-denied', 'enterprise-policy-denied', 'capability-denied', 'origin-unverified',
@@ -2368,8 +2361,7 @@ export async function checkToolApproval(
       // pin that is only attached sometimes is a pin whose absence means
       // nothing.
       const popupTool = parseNamespacedToolName(name);
-      // download 在白名单里（2026-10-27 B1）：站点用新窗口承载下载时，专用
-      // 下载动作与 click 同样需要弹窗租约（host 侧 popupEligible 对应放行）。
+      // Downloads receive the same origin-bound popup allowance as clicks.
       const permitsPopup = popupTool?.serverName === 'abu-browser'
         && ['click', 'keyboard', 'download'].includes(popupTool.toolName)
         && permissionResource === 'browse' && target.topOrigin === undefined

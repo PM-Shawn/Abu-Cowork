@@ -379,7 +379,7 @@ const enUS: TranslationDict = {
     htmlWidgetErrorRow: 'Widget encountered an error',
     htmlWidgetExpand: 'Expand widget',
     htmlWidgetCollapse: 'Collapse widget',
-    htmlWidgetFullscreen: 'Fullscreen',
+    htmlWidgetFullscreen: 'Expand preview',
     htmlWidgetCopyCode: 'Copy code',
     htmlWidgetCopied: 'Copied',
     htmlWidgetDownload: 'Download file',
@@ -2668,6 +2668,8 @@ const enUS: TranslationDict = {
     pdfNextPage: 'Next page',
     pdfFitWidth: 'Fit to width',
     pdfFit: 'Fit',
+    previewFitWindow: 'Fit to window',
+    previewActualSize: 'Actual size',
     pdfRotate: 'Rotate clockwise',
     // Preview: XLSX
     xlsxSheetLabel: 'Sheet',

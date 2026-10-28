@@ -4,7 +4,7 @@
  * When the flag is on, long-run context management compresses EARLIER (while
  * task state is still intact) and KEEPS MORE (a larger verbatim tail), trading
  * a few extra summarization calls for far less mid-task state loss. Default
- * off — behavior-sensitive parameters, see docs/2026-10-28-s4-s6-recovery-projects-plan.md §三.
+ * off: these behavior-sensitive settings remain behind the experimental flag.
  */
 import { isLabsFlagOn } from '../labs/resolve';
 import { LABS_STATE_PRESERVING_COMPRESSION } from '../labs/registry';
@@ -21,7 +21,7 @@ export function retainedTailRatio(): number {
 }
 
 /**
- * Anchor preservation (phase 2): compacted summaries keep plan-step lines,
+ * Anchor preservation: compacted summaries keep plan-step lines,
  * file paths and URLs — the summary instruction names them and compactHistory
  * appends the pattern-extracted `[kept anchors]` block deterministically.
  */

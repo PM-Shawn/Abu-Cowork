@@ -107,8 +107,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { sendBrowserKey } = require('./browserKeyboard.cjs');
 const { createBrowserPopupPolicy, POPUP_BLOCKED } = require('./browserPopupPolicy.cjs');
-// B4（2026-10-27）：browser_download 遇到弹窗型下载被拦时的可操作指引。
-// LLM-facing，英文；跨域新窗口下载是真实攻击面，拦截保持，模型需要的是出路。
+// Explain recovery options when the download requires an unapproved popup.
 const DOWNLOAD_POPUP_BLOCKED = 'The download opens in a new window that browser automation cannot '
   + 'follow (a new window on a different origin, or the one-shot popup allowance was already spent). '
   + 'Options: tell the user to download this file manually, or check whether the site offers a '
@@ -953,9 +952,8 @@ function backoffDelayForLevel(level) {
 function normalizedOriginOf(urlString) {
   try {
     let raw = String(urlString || '');
-    // blob: 下载链接取内层 origin 做 origin 比对（2026-10-27 B3）：前端生成
-    // 文件后 window.open(blobUrl) 的下载形态，内层就是创建它的页面 origin。
-    // 只影响 origin 比对；导航白名单（allowedAutomationUrl）另有自己的检查。
+    // Blob download URLs inherit the creator's HTTP(S) origin.
+    // Navigation schemes are validated separately.
     if (raw.startsWith('blob:')) raw = raw.slice('blob:'.length);
     const parsed = new URL(raw);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
@@ -1928,10 +1926,9 @@ function allowedAutomationUrl(value, { allowBlob = false } = {}) {
   } catch {
     throw new Error('Invalid URL. Only http: and https: URLs are allowed.');
   }
-  // 弹窗路径放行 blob:（下载型弹窗的一种，2026-10-27 B3）：内层必须是
-  // http/https。navigate 动作不放开 —— blob: URL 离开创建它的文档语义不可靠。
+  // Popup downloads may use a blob URL with a valid HTTP(S) creator origin.
   if (parsed.protocol === 'blob:' && allowBlob) {
-    allowedAutomationUrl(String(value).slice('blob:'.length)); // 内层不合法则抛
+    allowedAutomationUrl(String(value).slice('blob:'.length));
     return String(value).trim();
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -3764,16 +3761,13 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   // Wrapped so an action that OPENS a dialog answers with the dialog instead of
   // hanging in the suspended renderer until its transport timeout.
   const sourceUrl = view.webContents.getURL();
-  // download 也在白名单里（2026-10-27 B1）：站点用新窗口承载下载（target="_blank"
-  // 表单、导出按钮 window.open）时，专用下载动作此前必被弹窗策略拦死。租约
-  // origin 仍是 shell 盖章的页面 origin，跨域弹窗照样拒绝。
+  // Download clicks may open one popup bound to the approved origin.
   const popupEligible = ['click', 'keyboard', 'download'].includes(action) && !payload.frameId
     && payload.popupOrigin && payload.popupOrigin === payload.expectedOrigin
     && (action !== 'keyboard' || (view.webContents.focusedFrame
       && view.webContents.focusedFrame === view.webContents.mainFrame));
-  // B2 不变量：租约在这里创建，在 performBrowserAutomation 的 finally 里销毁，
-  // 而 download 动作的整个「点击 → 等待认领」窗口都在这次 await 内 —— 租约
-  // 天然覆盖下载等待期。若把 end() 提前或改为每动作自管，这里会破。
+  // Keep the popup lease active through download capture;
+  // performBrowserAutomation releases it in finally.
   scope.popupLease = popupPolicy.beginAction(view.webContents, {
     owner, origin: popupEligible ? payload.popupOrigin : null, signal,
     isCurrent: () => views.get(match.id) === view && view.webContents.getURL() === sourceUrl
@@ -3812,8 +3806,7 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   });
   scope.controlLease.assert({ allowExternalAbort: action === 'download' && result?.complete === false });
   if (scope.popupLease.blocked) {
-    // B4：download 动作被弹窗策略拦下时，给模型可操作的指引（站点用跨域新窗口
-    // 承载下载是真实攻击面，拦截本身保持），而不是泛化的 POPUP_BLOCKED。
+    // Use download-specific recovery guidance for a blocked popup.
     throw new Error(action === 'download' ? DOWNLOAD_POPUP_BLOCKED : scope.popupLease.message);
   }
   return result;
@@ -4320,7 +4313,7 @@ module.exports = {
      */
     approvedFileId,
     sameFileId,
-    /** B3（2026-10-27）：blob: 内层 origin 提取与弹窗 URL 白名单，供单测直测。 */
+    /** Origin extraction and popup URL validation for host tests. */
     normalizedOriginOf,
     allowedAutomationUrl,
     /** Swap the takeover backoff's clock; pass nothing to restore wall time. */

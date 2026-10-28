@@ -107,8 +107,7 @@ test('AI cannot borrow a previously manual child to open or navigate another ori
   assert.equal(policy.permitsRequest(3, `${origin}/article`), true);
 });
 
-// B3/B5（2026-10-27）：blob: 下载弹窗与 blocked 标记清除。
-// 这个 fixture 的 originOf 镜像宿主 normalizedOriginOf 的 blob 剥离行为。
+// Mirror the host's origin extraction for blob download fixtures.
 function blobFixture() {
   const origin = 'https://example.com';
   const source = Object.assign(new EventEmitter(), { id: 1, getURL: () => `${origin}/source`, isDestroyed: () => false });
@@ -134,8 +133,7 @@ test('a blob: download popup compares against its inner origin (B3)', () => {
 
 test('a blob: popup whose inner URL is high risk is refused even when origins match (B3)', () => {
   const { source, policy, begin } = blobFixture();
-  // 高风险内层（paypal.com）与租约 origin 相同 —— 不剥内层的话
-  // isHighRiskUrl(blob:...) 恒为 false，这条弹窗会被放行。
+  // The high-risk creator matches the lease origin.
   const lease = begin({ origin: 'https://paypal.com' });
   assert.equal(policy.request(source, 'blob:https://paypal.com/withdraw/xlsx'), null);
   assert.equal(lease.blocked, true);

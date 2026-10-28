@@ -112,8 +112,7 @@ describe('createTextOnlyEndTurnNudge', () => {
   });
 
   it('nudges an empty response (no text, no tool calls) after a tool turn', () => {
-    // 网关吞内容场景：token 计了但正文没到。空正文不算提问（textAsksUser('')=false），
-    // 应照常续推。
+    // An empty provider response can report token usage and still require continuation.
     const nudge = createTextOnlyEndTurnNudge();
     nudge.observeTurn(toolTurn);
     expect(nudge.sawToolCall).toBe(true);

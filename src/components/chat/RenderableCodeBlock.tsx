@@ -8,7 +8,7 @@
  * - render(code, container): produce output into a DOM container
  * - cleanup(container): optional cleanup on unmount
  */
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/i18n';
 import { useEffectiveThemeIsDark } from '@/hooks/useEffectiveThemeIsDark';
@@ -63,6 +63,8 @@ export interface CodeBlockRendererConfig {
    *  Should return an HTML string to render in the fullscreen iframe. `isDark` is the appearance
    *  of the app at that moment; the frame is built again when it changes. */
   buildFullscreenHtml?: (code: string, isDark: boolean) => string;
+  /** A viewer of the current rendered content, with controls in the host document. */
+  renderFullscreen?: (container: HTMLDivElement) => ReactNode;
   /** Optional streaming preview. Called synchronously on every code change so the
    *  user sees content build up instead of a loading overlay. The function should
    *  be lightweight (e.g. postMessage, no heavy DOM work).
@@ -156,6 +158,7 @@ export default function RenderableCodeBlock({
   const [overflows, setOverflows] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [fullscreenAsked, setFullscreenAsked] = useState(false);
+  const [fullscreenContent, setFullscreenContent] = useState<ReactNode>(null);
   const [scale, setScale] = useState(1);
 
 
@@ -386,6 +389,10 @@ export default function RenderableCodeBlock({
   const handleZoomOut = useCallback(() => setScale(s => zoomOutFn(s)), []);
   const handleZoomReset = useCallback(() => setScale(1), []);
   const openFullscreen = useCallback(() => {
+    if (configRef.current.renderFullscreen) {
+      if (!containerRef.current) throw new Error('Rendered content is unavailable');
+      setFullscreenContent(configRef.current.renderFullscreen(containerRef.current));
+    }
     setFullscreenAsked(true);
     setFullscreen(true);
   }, []);
@@ -487,7 +494,7 @@ export default function RenderableCodeBlock({
           className={cn(copied && 'text-success hover:text-success')}
         />
         <IconButton size="sm" icon={AppIcons.download} label="Download" onClick={handleDownload} />
-        {config.buildFullscreenHtml && (
+        {(config.buildFullscreenHtml || config.renderFullscreen) && (
           <IconButton size="sm" icon={AppIcons.enlarge} label={t.chat.htmlWidgetFullscreen} onClick={openFullscreen} />
         )}
         <IconButton size="sm" icon={AppIcons.viewSource} label="View source" onClick={() => setShowSource(true)} />
@@ -508,7 +515,7 @@ export default function RenderableCodeBlock({
   // button: a sandboxed frame that has the focus keeps every key, Escape included.
   // A conversation can hold many widgets: a block has no window until its first enlargement,
   // and from then on the window is closed, not removed, so it fades out.
-  const fullscreenOverlay = config.buildFullscreenHtml && fullscreenAsked && (
+  const fullscreenOverlay = (config.buildFullscreenHtml || config.renderFullscreen) && fullscreenAsked && (
     <Dialog
       open={fullscreen}
       onOpenChange={(next) => { if (!next) setFullscreen(false); }}
@@ -518,10 +525,11 @@ export default function RenderableCodeBlock({
       closeButton={WIDGET_CLOSE_BUTTON}
       initialFocus={widgetCloseButtonOf}
     >
-      {/* The frame starts below the close button, so the button covers none of the widget. */}
-      <div className="flex min-h-0 flex-1 flex-col pt-13">
-        <EnlargedFrame code={code} build={config.buildFullscreenHtml} />
-      </div>
+      {config.renderFullscreen ? fullscreenContent : config.buildFullscreenHtml && (
+        <div className="flex min-h-0 flex-1 flex-col pt-12">
+          <EnlargedFrame code={code} build={config.buildFullscreenHtml} />
+        </div>
+      )}
     </Dialog>
   );
 
@@ -537,7 +545,7 @@ export default function RenderableCodeBlock({
     );
 
     return (
-      <div ref={rootRef} className="my-3 group/widget">
+      <div ref={rootRef} data-renderable-code={config.label} className="my-3 group/widget">
         {seamlessErrorFallback}
         <div className={cn('overflow-hidden rounded-panel', isError && !showSource && 'hidden')}>
           <div ref={zoomHostRef} className="relative">
@@ -579,7 +587,7 @@ export default function RenderableCodeBlock({
   );
 
   return (
-    <div ref={rootRef} className="my-3 group/widget">
+    <div ref={rootRef} data-renderable-code={config.label} className="my-3 group/widget">
       {errorFallback}
       <div className={cn('overflow-hidden rounded-panel border border-separator bg-surface', isError && !showSource && 'hidden')}>
         <div ref={zoomHostRef} className="relative">

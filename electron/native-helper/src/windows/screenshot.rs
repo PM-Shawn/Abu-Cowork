@@ -97,6 +97,7 @@ fn occluding_rects(
     target_catalog_index: usize,
     monitor_x: i32,
     monitor_y: i32,
+    excluded_window_id: Option<&str>,
 ) -> Vec<[i32; 4]> {
     z_order
         .iter()
@@ -104,6 +105,7 @@ fn occluding_rects(
         .filter(|window| {
             window.process_id != target.process_id
                 && !window.minimized
+                && excluded_window_id != Some(window.window_id.as_str())
                 // A window that is on no frame cannot be hiding anything in
                 // one. Abu's own Computer Use chrome is the case that forced
                 // this: full-display, always-on-top, content-protected, and
@@ -329,11 +331,15 @@ pub fn capture_screen_state_impl(
     expected_app_id: Option<String>,
     expected_process_id: Option<u32>,
     expected_window_id: Option<String>,
+    excluded_window_id: Option<String>,
 ) -> Result<ScreenshotResult, HelperError> {
     if !super::interaction::input_monitoring_ready() {
         return Err(HelperError::not_executed("input-lease", "physical input monitoring is unavailable; capture is blocked"));
     }
     super::session::assert_session_usable()?;
+    let excluded_hwnd = excluded_window_id.as_deref().map(super::window::parse_hwnd).transpose()?;
+    let excluded_window_id = excluded_hwnd.map(super::window::hwnd_id);
+    let capture_display_signature = excluded_hwnd.map(|_| super::dpi::display_signature()).transpose()?;
     let input_epoch = super::interaction::input_epoch();
     let target = target_window(
         expected_app_id.as_deref(),
@@ -392,7 +398,11 @@ pub fn capture_screen_state_impl(
             bottom.saturating_sub(top),
         ]
     });
-    let mut image = capture_next_monitor_frame(&monitor, &monitor_id, input_epoch)?;
+    let mut image = if let Some(hwnd) = excluded_hwnd {
+        super::capture_session::capture_excluding(&monitor, hwnd.0 as usize as u64, input_epoch)?
+    } else {
+        capture_next_monitor_frame(&monitor, &monitor_id, input_epoch)?
+    };
     if input_epoch != super::interaction::input_epoch() {
         return Err(HelperError::observe_again("physical-input", "physical user input occurred during capture; observe again"));
     }
@@ -401,7 +411,7 @@ pub fn capture_screen_state_impl(
     // to see the whole screen; masking it would defeat what they asked for.
     let masked_window_count = match (target.as_ref(), target_catalog_index) {
         (Some(target), Some(index)) => {
-            let rects = occluding_rects(&z_order, target, index, monitor_x, monitor_y);
+            let rects = occluding_rects(&z_order, target, index, monitor_x, monitor_y, excluded_window_id.as_deref());
             apply_mask(&mut image, &rects)
         }
         _ => 0,
@@ -469,6 +479,9 @@ pub fn capture_screen_state_impl(
     let origin_x = monitor_x.saturating_add(crop_x as i32);
     let origin_y = monitor_y.saturating_add(crop_y as i32);
     let display_signature = super::dpi::display_signature()?;
+    if capture_display_signature.as_ref().is_some_and(|before| before != &display_signature) {
+        return Err(HelperError::observe_again("display-changed", "display configuration changed during capture; observe again"));
+    }
     let cached = CachedScreenshot {
         screenshot_id: screenshot_id.clone(),
         created_at: Instant::now(),
@@ -540,7 +553,7 @@ mod tests {
         let mut chrome = window(4242, [0, 0, 2560, 1440], false);
         chrome.absent_from_capture = true;
         let z_order = vec![chrome, target.clone()];
-        let rects = occluding_rects(&z_order, &target, 1, 0, 0);
+        let rects = occluding_rects(&z_order, &target, 1, 0, 0, None);
         assert!(rects.is_empty(), "content-protected chrome must not mask: {rects:?}");
 
         let mut image = RgbaImage::from_pixel(2560, 1440, image::Rgba([9, 9, 9, 255]));
@@ -558,7 +571,7 @@ mod tests {
             target.clone(),
             window(777, [0, 0, 80, 80], false), // another app, but behind
         ];
-        let rects = occluding_rects(&z_order, &target, 3, 0, 0);
+        let rects = occluding_rects(&z_order, &target, 3, 0, 0, None);
         // The target's own popup stays: it is part of what the session was
         // granted. The minimized window is not on screen. The window behind
         // cannot be covering anything.
@@ -566,11 +579,22 @@ mod tests {
     }
 
     #[test]
+    fn session_excluded_window_does_not_mask_other_windows() {
+        let target = window(100, [200, 200, 400, 300], false);
+        let main = window(4242, [0, 0, 2560, 1440], false);
+        let other = window(999, [10, 10, 100, 100], false);
+        let main_id = main.window_id.clone();
+        let z_order = vec![main, other, target.clone()];
+        let rects = occluding_rects(&z_order, &target, 2, 0, 0, Some(&main_id));
+        assert_eq!(rects, vec![[10, 10, 100, 100]]);
+    }
+
+    #[test]
     fn rects_are_translated_into_monitor_local_pixels() {
         let target = window(100, [2000, 100, 400, 300], false);
         let z_order = vec![window(999, [1920, 0, 200, 200], false), target.clone()];
         // The target lives on a second monitor whose origin is (1920, 0).
-        let rects = occluding_rects(&z_order, &target, 1, 1920, 0);
+        let rects = occluding_rects(&z_order, &target, 1, 1920, 0, None);
         assert_eq!(rects, vec![[0, 0, 200, 200]]);
     }
 
@@ -580,7 +604,7 @@ mod tests {
         // the target at index 0 there is nothing stacked above it.
         let target = window(100, [0, 0, 400, 300], false);
         let z_order = vec![target.clone(), window(999, [0, 0, 100, 100], false)];
-        assert!(occluding_rects(&z_order, &target, 0, 0, 0).is_empty());
+        assert!(occluding_rects(&z_order, &target, 0, 0, 0, None).is_empty());
     }
 
     #[test]

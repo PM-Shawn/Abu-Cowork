@@ -15,6 +15,8 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vite
 // run-initiator staging tests below.
 import { deriveRunInteractionMode } from './runInteractionMode';
 import type { ToolExecutionContext } from '../../types';
+import type { SettingsState } from '@/stores/settingsStore';
+import { resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
 
 // ── Mocked dependencies ─────────────────────────────────────────────────
 
@@ -557,6 +559,13 @@ function makeSession(
 ) {
   return {
     conversationId: overrides.conversationId ?? 'conv-1',
+    modelBinding: {
+      revision: 0,
+      model: dispatchSettingsSnapshot().activeModel,
+      settingsSnapshot: dispatchSettingsSnapshot() as SettingsState,
+      resolvedCreds: { apiKey: 'sk-1', baseUrl: undefined, forceOpenAiCompatible: false },
+      capabilities: resolveDelegatedModelCapabilities(undefined, dispatchSettingsSnapshot() as SettingsState),
+    },
     loopId: overrides.loopId ?? 'loop-1',
     interactionMode: overrides.interactionMode ?? (
       Object.prototype.hasOwnProperty.call(overrides, 'authorizationScopeId')
@@ -854,12 +863,13 @@ describe('agentLoopRunner', () => {
       chatState.conversations['conv-1'] = {};
       const session = makeSession();
       session.options.directDelegateAgentName = 'reviewer';
+      session.options.directDelegateAgent = { filePath: '__preset__' };
       session.options.directDelegatePluginKey = 'demo@market';
       registerRunSession('delegate-run', session);
       const handler = handlerFor(onSidecarRequest, 'agent.assertDirectDelegateEnabled');
       const activation = { enabled: true, root: '/pkg', skillDirs: [], legacySkills: false, agentFiles: [], mcpServers: [] };
       publishPluginActivation({ 'demo@market': activation }, [], true);
-      expect(await handler({ runId: 'delegate-run' })).toEqual({ allowed: true });
+      expect(await handler({ runId: 'delegate-run' })).toEqual({ allowed: true, binding: session.modelBinding });
       publishPluginActivation({ 'demo@market': { ...activation, enabled: false } }, [], true);
       await expect(Promise.resolve().then(() => handler({ runId: 'delegate-run', pluginKey: 'independent', agentName: 'other' }))).rejects.toThrow();
       publishPluginActivation({}, [], true);
@@ -1370,15 +1380,18 @@ describe('agentLoopRunner', () => {
       ['workspace', () => drainWorkspaceRequestMock],
       ['user-question', () => drainUserQuestionsMock],
     ] as const)('calls the correct drain function for kind=%s', async (kind, getMock) => {
-      const { ensureHandlersRegistered } = await importFresh();
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ loopId: 'loop-1' }));
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarNotification, 'approval.drain');
       handler({ runId: 'run-1', kind });
       expect(getMock()).toHaveBeenCalledTimes(1);
+      expect(getMock()).toHaveBeenCalledWith('loop-1');
     });
 
     it('kind="all" drains every queue', async () => {
-      const { ensureHandlersRegistered } = await importFresh();
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ loopId: 'loop-1' }));
       ensureHandlersRegistered();
       const handler = handlerFor(onSidecarNotification, 'approval.drain');
       handler({ runId: 'run-1', kind: 'all' });
@@ -1386,6 +1399,19 @@ describe('agentLoopRunner', () => {
       expect(drainFilePermissionQueueMock).toHaveBeenCalledTimes(1);
       expect(drainWorkspaceRequestMock).toHaveBeenCalledTimes(1);
       expect(drainUserQuestionsMock).toHaveBeenCalledTimes(1);
+      expect(drainWorkspaceRequestMock).toHaveBeenCalledWith('loop-1');
+    });
+
+    it('ignores a late cancellation from a terminal run while a new run is active', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      registerRunSession('old', { ...makeSession({ conversationId: 'conv-1', loopId: 'old-loop' }), terminalPublished: true });
+      registerRunSession('new', makeSession({ conversationId: 'conv-1', loopId: 'new-loop' }));
+      ensureHandlersRegistered();
+      handlerFor(onSidecarNotification, 'approval.drain')({ runId: 'old', kind: 'all' });
+      expect(drainConfirmationQueueMock).not.toHaveBeenCalled();
+      expect(drainFilePermissionQueueMock).not.toHaveBeenCalled();
+      expect(drainWorkspaceRequestMock).not.toHaveBeenCalled();
+      expect(drainUserQuestionsMock).not.toHaveBeenCalled();
     });
 
     it('unknown kind is dropped without calling any drain', async () => {
@@ -2097,11 +2123,11 @@ describe('agentLoopRunner', () => {
       expect(checkToolApprovalMock).not.toHaveBeenCalled();
     });
 
-    // 模型能不能看图、电脑操控档位由 sidecar 里的运行时写入，工具说明与电脑操控都按它们取舍
-    it('tool.invoke carries the model tier and vision from the sidecar run', async () => {
+    it('tool.invoke uses the shell-owned model capabilities', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
       ensureHandlersRegistered();
-      registerRunSession('run-1', makeSession());
+      const session = makeSession();
+      registerRunSession('run-1', session);
       const handler = handlerFor(onSidecarRequest, 'tool.invoke') as (p: unknown) => Promise<unknown>;
 
       await handler({
@@ -2112,8 +2138,9 @@ describe('agentLoopRunner', () => {
       });
 
       expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({
-        computerUseTier: 'structured',
-        supportsVision: false,
+        modelId: session.modelBinding.capabilities.modelId,
+        computerUseTier: session.modelBinding.capabilities.computerUseTier,
+        supportsVision: session.modelBinding.capabilities.vision,
       }));
     });
 
@@ -2131,6 +2158,22 @@ describe('agentLoopRunner', () => {
       await expect(handlerFor(onSidecarRequest, 'approval.check')(params)).rejects.toThrow(message);
       expect(executeAnyToolMock).not.toHaveBeenCalled();
       expect(checkToolApprovalMock).not.toHaveBeenCalled();
+    });
+
+    it('accepts the selected revision for tools and trusted hooks and refuses old requests', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      const session = makeSession();
+      session.modelBinding = { ...session.modelBinding, revision: 1 };
+      registerRunSession('selected-run', session);
+      const invoke = handlerFor(onSidecarRequest, 'tool.invoke');
+      const params = { runId: 'selected-run', toolName: 'read_file', input: { path: 'report.md' } };
+      await expect(invoke(params)).rejects.toThrow('stale model binding');
+      await invoke({ ...params, context: { modelBindingRevision: 1 } });
+      expect(executeAnyToolMock.mock.calls.at(-1)?.[4]).toEqual(expect.objectContaining({ modelBindingRevision: 1 }));
+      await expect(handlerFor(onSidecarRequest, 'hook.emit')({
+        runId: 'selected-run', event: { type: 'preToolCall', timestamp: 0, toolName: 'read_file', toolInput: {} },
+      })).resolves.not.toThrow();
     });
 
     it('tool.invoke overwrites a forged IM reply target with the shell session target', async () => {

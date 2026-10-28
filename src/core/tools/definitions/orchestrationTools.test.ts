@@ -533,7 +533,7 @@ describe('runAgentBatchTool progress wiring', () => {
     expect(tasks[1].startedAt).toBeUndefined();
   });
 
-  it('checkpoints parent-aborted queued tasks immediately while a non-cooperative running child is still pending', async () => {
+  it('stops queued and non-cooperative running children when the parent is cancelled', async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
     setLoopContext('loop-parent-abort-immediate', {
@@ -598,8 +598,11 @@ describe('runAgentBatchTool progress wiring', () => {
       }),
     });
 
-    await vi.advanceTimersByTimeAsync(SUBAGENT_WALLCLOCK_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(subagentRunner.SUBAGENT_ABORT_GRACE_MS);
     await run;
+    const settledTasks = batch(batchIdentity('conv-parent-abort-immediate', 'batch-parent-abort-immediate')).tasks;
+    expect(settledTasks.map(task => task.status)).toEqual(['stopped', 'succeeded', 'stopped']);
+    expect(settledTasks[0].terminalReason).toBe('aborted');
   });
 
   it('marks a wall-clock timeout as a failed task with timeout reason', async () => {
@@ -996,6 +999,51 @@ describe('runWithTimeout', () => {
     expect(result).toBe('done');
   });
 
+  it('excludes repeated model-selection waits and preserves the remaining execution time', async () => {
+    let setWaiting!: (waiting: boolean) => void;
+    let signal!: AbortSignal;
+    const promise = runWithTimeout((sig, wait) => {
+      signal = sig;
+      setWaiting = wait;
+      return new Promise<never>(() => {});
+    }, 600000);
+    const rejected = expect(promise).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(590000);
+    setWaiting(true);
+    setWaiting(true);
+    await vi.advanceTimersByTimeAsync(3600000);
+    expect(signal.aborted).toBe(false);
+    setWaiting(false);
+    await vi.advanceTimersByTimeAsync(5000);
+    setWaiting(true);
+    await vi.advanceTimersByTimeAsync(3600000);
+    expect(signal.aborted).toBe(false);
+    setWaiting(false);
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(signal.aborted).toBe(true);
+  });
+
+  it('propagates user cancellation while waiting for model selection', async () => {
+    const parent = new AbortController();
+    let signal!: AbortSignal;
+    const promise = runWithTimeout((sig, wait) => {
+      signal = sig;
+      wait(true);
+      return new Promise<string>(resolve => { sig.addEventListener('abort', () => {
+        wait(false);
+        resolve('cancelled');
+      }, { once: true }); });
+    }, 600000, parent.signal);
+    await vi.advanceTimersByTimeAsync(3600000);
+    parent.abort();
+    expect(await promise).toBe('cancelled');
+    expect(signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('(b) rejects with timeout error after timeoutMs, and aborts the factory signal', async () => {
     let capturedSignal: AbortSignal | undefined;
 
@@ -1054,7 +1102,7 @@ describe('runWithTimeout', () => {
     const promise = runWithTimeout(
       (sig) => {
         capturedSignal = sig;
-        return new Promise<never>(() => {});
+        return new Promise<string>(resolve => { sig.addEventListener('abort', () => resolve('cancelled'), { once: true }); });
       },
       60000,
       parent.signal,
@@ -1063,14 +1111,9 @@ describe('runWithTimeout', () => {
     // Factory is still pending — trigger parent abort now
     parent.abort();
 
-    // The timeout (60s) hasn't fired; the race should still be pending here,
-    // but the captured signal must already be aborted.
     expect(capturedSignal?.aborted).toBe(true);
-
-    // Pre-attach the rejection handler BEFORE advancing the timer to avoid
-    // Vitest / Node unhandledRejection events when the 60s timeout fires.
-    const catchPromise = promise.catch(() => {});
+    expect(await promise).toBe('cancelled');
     await vi.advanceTimersByTimeAsync(60000);
-    await catchPromise;
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

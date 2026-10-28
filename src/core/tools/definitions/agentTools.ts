@@ -960,10 +960,11 @@ export const requestWorkspaceTool: ToolDefinition = {
     },
     required: ['reason'],
   },
-  execute: async (input) => {
+  execute: async (input, context) => {
     const reason = input.reason as string;
-    const ctx = getCurrentLoopContext();
-    const convId = ctx?.conversationId ?? '';
+    const convId = context?.conversationId;
+    if (!convId) throw new Error('Workspace selection requires a conversation');
+    if (context.interactionMode === 'background') throw new Error('Workspace selection requires an interactive run');
 
     // Resolve folder_hint to a full system path
     const hint = (input.folder_hint as string || '').toLowerCase();
@@ -978,7 +979,9 @@ export const requestWorkspaceTool: ToolDefinition = {
       }
     }
 
-    const result = await requestWorkspace(reason, convId, suggestedPath);
+    const result = await requestWorkspace(reason, convId, suggestedPath, {
+      loopId: context.loopId, signal: context.abortSignal, authorizationScopeId: context.authorizationScopeId,
+    });
     const t = getI18n().toolResult.agent;
     if (result) {
       return format(t.workspaceSelected, { result });

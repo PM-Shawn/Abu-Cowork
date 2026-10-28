@@ -28,7 +28,7 @@ import { findMissingExpectedFiles, parseExpectedFiles } from '../../team/expecte
 import { createParentStepResolver } from '../../agent/delegateParentStep';
 import { createDelegateProgressRecorder } from '../../agent/delegateProgressRecorder';
 import { agentRegistry } from '../../agent/registry';
-import { getSubagentRunInheritance, runSubagent } from '../../agent/subagentRunner';
+import { getSubagentRunInheritance, runSubagent, SUBAGENT_ABORT_GRACE_MS } from '../../agent/subagentRunner';
 import { getCurrentLoopContext, getLoopContext } from '../../agent/permissionBridge';
 import { isSubagentResultError, type SubagentResult } from '../../agent/subagentLoop';
 import { resolveParentConversationSummary } from '../../agent/parentConversationSummary';
@@ -84,48 +84,79 @@ export function clampConcurrency(n: unknown): number {
   return Math.floor(n);
 }
 
-/** Per-sub-agent wall-clock timeout; tunable, candidate for a future user setting. */
+/** Per-subagent execution limit; time awaiting model selection is excluded. */
 export const SUBAGENT_WALLCLOCK_TIMEOUT_MS = 10 * 60 * 1000; // 10 min per sub-agent
 
 /**
- * Run `factory` with its own AbortSignal, racing against a hard wall-clock timeout.
+ * Run `factory` with its own AbortSignal and an execution timer.
  *
  * - Creates a per-task AbortController.
  * - If `parentSignal` is already aborted, aborts the controller immediately;
  *   otherwise forwards parent abort via a `{ once: true }` listener.
- * - After `timeoutMs`, aborts the controller and rejects with a timeout error.
+ * - The factory can pause the timer while awaiting a user decision.
+ * - After `timeoutMs` of execution, aborts and rejects with a timeout error.
  * - Cleans up the timeout and the parent-abort listener in `finally`.
  */
 export function runWithTimeout<T>(
-  factory: (signal: AbortSignal) => Promise<T>,
+  factory: (signal: AbortSignal, setWaiting: (waiting: boolean) => void) => Promise<T>,
   timeoutMs: number,
   parentSignal?: AbortSignal,
 ): Promise<T> {
   const controller = new AbortController();
+  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let cancellationTimer: ReturnType<typeof setTimeout> | undefined;
+  let waitForCancellation: (() => void) | undefined;
 
   // Forward parent abort to the task controller.
-  const onParentAbort = () => controller.abort();
+  const onParentAbort = () => {
+    clearTimeout(timeoutHandle);
+    controller.abort();
+    waitForCancellation?.();
+  };
   if (parentSignal?.aborted) {
     controller.abort();
   } else if (parentSignal) {
     parentSignal.addEventListener('abort', onParentAbort, { once: true });
   }
 
-  let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+  let remaining = timeoutMs;
+  let started = performance.now();
+  let waiting = false;
+  let finished = false;
 
   // Single outer promise avoids a floating rejected timeoutPromise that would
   // trigger Vitest / Node unhandledRejection events between the timer callback
   // running synchronously and the microtask handlers being called.
   return new Promise<T>((resolve, reject) => {
-    timeoutHandle = setTimeout(() => {
-      controller.abort();
-      reject(new Error(getI18n().toolResult.orchestration.errTimeout));
-    }, timeoutMs);
+    waitForCancellation = () => {
+      if (cancellationTimer !== undefined) return;
+      cancellationTimer = setTimeout(() => reject(new Error(getI18n().toolResult.orchestration.errCancelled)), SUBAGENT_ABORT_GRACE_MS);
+    };
+    const startTimer = () => {
+      if (controller.signal.aborted) return;
+      started = performance.now();
+      timeoutHandle = setTimeout(() => {
+        controller.abort();
+        reject(new Error(getI18n().toolResult.orchestration.errTimeout));
+      }, remaining);
+    };
+    const setWaiting = (nextWaiting: boolean) => {
+      if (finished || controller.signal.aborted || waiting === nextWaiting) return;
+      waiting = nextWaiting;
+      if (waiting) {
+        clearTimeout(timeoutHandle);
+        remaining = Math.max(0, remaining - (performance.now() - started));
+      } else startTimer();
+    };
+    startTimer();
     // Attach to factory; once the outer promise settles, subsequent
     // resolve/reject calls are no-ops (Promise semantics).
-    factory(controller.signal).then(resolve, reject);
+    factory(controller.signal, setWaiting).then(resolve, reject);
+    if (controller.signal.aborted) waitForCancellation();
   }).finally(() => {
+    finished = true;
     clearTimeout(timeoutHandle);
+    clearTimeout(cancellationTimer);
     if (parentSignal) {
       parentSignal.removeEventListener('abort', onParentAbort);
     }
@@ -608,7 +639,7 @@ export const runAgentBatchTool: ToolDefinition = {
           : undefined;
         try {
           const result = await runWithTimeout(
-            (sig) => withDispatchController(resolved.agent.name, sig, `${batchIdentity.batchToolCallId}:${idx}`, (dispatchSignal) => runSubagent({
+            (sig, setWaiting) => withDispatchController(resolved.agent.name, sig, `${batchIdentity.batchToolCallId}:${idx}`, (dispatchSignal) => runSubagent({
               agent: resolved.agent,
               task: effectiveTask,
               context: resolved.context,
@@ -618,6 +649,7 @@ export const runAgentBatchTool: ToolDefinition = {
               parentConversationId: delegatedUserTurn.origin.conversationId,
               parentUserMessageId: delegatedUserTurn.origin.messageId,
               signal: dispatchSignal,
+              onModelRecoveryWaiting: setWaiting,
               commandConfirmCallback: loopCtx?.commandConfirmCallback,
               filePermissionCallback: loopCtx?.filePermissionCallback,
               allowedTools: loopCtx?.allowedTools,

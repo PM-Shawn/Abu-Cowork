@@ -35,6 +35,7 @@ interface Props {
   conversationId: string;
   messageId: string;
   toolCallId: string;
+  approvalId?: string;
   payload: UserQuestionPayload;
   /** Fired the moment an answer is submitted — the dock unmounts synchronously
    *  on resolve, so the parent uses this for optimistic "正在继续…" feedback. */
@@ -67,7 +68,7 @@ function initQuestionStates(count: number): QuestionState[] {
   }));
 }
 
-function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSubmitted, onArrivedWithoutFocus }: Props) {
+function UserQuestionDock({ conversationId, messageId, toolCallId, approvalId, payload, onSubmitted, onArrivedWithoutFocus }: Props) {
   const { t, format } = useI18n();
   const questionId = useId();
   const setAnswers = useChatStore((s) => s.setToolCallUserQuestionAnswers);
@@ -211,17 +212,17 @@ function UserQuestionDock({ conversationId, messageId, toolCallId, payload, onSu
   const submitWith = useCallback((states: QuestionState[]) => {
     const result: UserQuestionResult = { answers: buildAnswers(states) };
     setAnswers(conversationId, messageId, toolCallId, result);
-    resolveUserQuestion(toolCallId, result);
+    resolveUserQuestion(approvalId ?? toolCallId, result);
     onSubmitted?.();
-  }, [buildAnswers, conversationId, messageId, toolCallId, setAnswers, onSubmitted]);
+  }, [buildAnswers, conversationId, messageId, toolCallId, approvalId, setAnswers, onSubmitted]);
 
   const handleSubmit = useCallback(() => {
     submitWith(questionStates);
   }, [submitWith, questionStates]);
 
   const handleCancel = useCallback(() => {
-    resolveUserQuestion(toolCallId, null);
-  }, [toolCallId]);
+    resolveUserQuestion(approvalId ?? toolCallId, null);
+  }, [approvalId, toolCallId]);
 
   // Single-select: apply the choice, then advance — or submit if it's the
   // last page. On the last page we submit with a freshly-derived snapshot so

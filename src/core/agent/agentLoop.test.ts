@@ -2273,18 +2273,17 @@ describe('runAgentLoop 模型档案的两条护栏', () => {
     }
   }
 
-  it('档案打开续推时，做过操作后只说不做的一轮最多被续推两次，之后照常结束', async () => {
+  it('retries an empty response twice and reports no progress when it stays empty', async () => {
     const { TEXT_ONLY_END_TURN_NUDGE_MESSAGE } = await import('./textOnlyEndTurnNudge');
     const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
-    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
+    chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('')));
     try {
       const result = await withNudgeOpened(() => runAgentLoop(conversationId, 'edit the file'));
-      expect(result.reason).toBe('completed');
-      // 一轮操作 + 三轮纯文字：第一、二轮纯文字各被续推一次，第三轮结束
+      expect(result.reason).toBe('no_progress');
       expect(chat).toHaveBeenCalledTimes(4);
       const nudges = messagesOf().filter((m) => m.role === 'user' && m.isSystem && m.content === TEXT_ONLY_END_TURN_NUDGE_MESSAGE);
       expect(nudges).toHaveLength(2);
-      // 续写消息在第三次请求里交给了模型
+      // The next provider request carries the recovery instruction.
       const thirdRequest = chat.mock.calls[2][0] as Array<{ role: string; content: unknown }>;
       expect(thirdRequest.filter((m) => m.role === 'user' && m.content === TEXT_ONLY_END_TURN_NUDGE_MESSAGE)).toHaveLength(1);
     } finally {
@@ -2292,8 +2291,8 @@ describe('runAgentLoop 模型档案的两条护栏', () => {
     }
   });
 
-  it('档案关闭续推时（首批所有型号），只说不做的一轮照常结束', async () => {
-    const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
+  it('档案关闭续推时（claude/gpt 走 guardsOff），只说不做的一轮照常结束', async () => {
+    const { conversationId, chat, emit, messagesOf, restore } = await setup('claude-sonnet-4-5');
     chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
     try {
       const result = await runAgentLoop(conversationId, 'edit the file');

@@ -293,6 +293,58 @@ function contentsFor(tabId) {
   return found;
 }
 
+for (const action of ['back', 'forward', 'reload']) {
+  test(`history ${action} executes only the approved source and destination`, async () => {
+    const { host, restore } = loadHost();
+    try {
+      const tabId = tabIds(await getTabs(host, OWNER_A))[0];
+      const contents = contentsFor(tabId);
+      const entries = [{ url: 'https://previous.example/page' }, { url: 'https://current.example/page' }, { url: 'https://next.example/page' }];
+      let current = 1;
+      let reloads = 0;
+      contents.url = entries[current].url;
+      contents.reload = () => { reloads += 1; };
+      contents.navigationHistory = {
+        getActiveIndex: () => current,
+        getEntryAtIndex: index => entries[index] ?? null,
+        goToIndex: index => { current = index; contents.url = entries[index].url; },
+      };
+      const listing = await host.performBrowserAutomation('get_tabs', {
+        ownerId: OWNER_A, createIfEmpty: false, navigationProbe: { tabId, action },
+      });
+      const navigation = listing.windows[0].tabs[0].navigation;
+      const targetIndex = action === 'back' ? 0 : action === 'forward' ? 2 : 1;
+      assert.equal(navigation.targetUrl, entries[targetIndex].url);
+      await host.performBrowserAutomation('navigate', { ownerId: OWNER_A, tabId, action,
+        expectedOrigin: new URL(navigation.targetUrl).origin, navigation });
+      assert.equal(contents.url, entries[targetIndex].url);
+      assert.equal(reloads, action === 'reload' ? 1 : 0);
+    } finally { restore(); }
+  });
+}
+
+test('a history destination changed after approval leaves the current page intact', async () => {
+  const { host, restore } = loadHost();
+  try {
+    const tabId = tabIds(await getTabs(host, OWNER_A))[0];
+    const contents = contentsFor(tabId);
+    const entries = [{ url: 'https://allowed.example/page' }, { url: 'https://current.example/page' }];
+    contents.url = entries[1].url;
+    let navigated = false;
+    contents.navigationHistory = { getActiveIndex: () => 1, getEntryAtIndex: index => entries[index],
+      goToIndex: () => { navigated = true; } };
+    const listing = await host.performBrowserAutomation('get_tabs', {
+      ownerId: OWNER_A, createIfEmpty: false, navigationProbe: { tabId, action: 'back' },
+    });
+    const navigation = listing.windows[0].tabs[0].navigation;
+    entries[0].url = 'https://denied.example/page';
+    await assert.rejects(host.performBrowserAutomation('navigate', { ownerId: OWNER_A, tabId,
+      action: 'back', expectedOrigin: 'https://allowed.example', navigation }), /origin-unverified/);
+    assert.equal(navigated, false);
+    assert.equal(contents.url, entries[1].url);
+  } finally { restore(); }
+});
+
 /**
  * The takeover backoff is a real-time wait (up to 10s), so the tests drive it
  * through the module's injectable clock instead: `sleep()` advances virtual

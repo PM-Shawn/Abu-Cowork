@@ -448,10 +448,14 @@ describe('reportPlanTool — plan-mode approval (B1)', () => {
 
     it('approves: sets mode to approved and reports approval', async () => {
       const t = getI18n().toolResult.memory;
+      const controller = new AbortController();
       mockGetPlanMode.mockReturnValue('planning');
       mockRequestUserQuestion.mockResolvedValue({ answers: [{ header: t.planApprovalHeader, question: 'q', selected: [t.planApproveLabel] }] });
-      const result = await reportPlanTool.execute(input, ctx);
-      expect(mockRequestUserQuestion).toHaveBeenCalledWith('t1', 'c1', expect.objectContaining({ questions: expect.any(Array) }));
+      const result = await reportPlanTool.execute(input, { ...ctx, abortSignal: controller.signal });
+      expect(mockRequestUserQuestion).toHaveBeenCalledWith(
+        't1', 'c1', expect.objectContaining({ questions: expect.any(Array) }),
+        { loopId: 'loop-1', signal: controller.signal },
+      );
       expect(mockSetPlanMode).toHaveBeenCalledWith('c1', 'approved');
       expect(result).toContain('approved');
     });

@@ -14,6 +14,7 @@ import {
   cancelById,
   drainAll,
   drainByConversationId,
+  drainByLoopId,
   subscribe,
   getSnapshot,
   setDequeueShortCircuit,
@@ -53,6 +54,25 @@ const FILE_PAYLOAD = (path: string): ApprovalPayloadMap['file-permission'] => ({
 });
 
 describe('approvalBridge — request/resolve round trip', () => {
+  it('keeps an already cancelled request out of the queue', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    expect(await request('workspace', { conversationId: 'c1', signal: controller.signal, payload: { reason: 'folder' } })).toBeNull();
+    expect(getSnapshot('workspace')).toBeNull();
+  });
+
+  it('cancels a waiting request and preserves other requests', async () => {
+    const controller = new AbortController();
+    const first = request('workspace', { id: 'w1', conversationId: 'c1', signal: controller.signal, payload: { reason: 'folder' } });
+    const second = request('workspace', { id: 'w2', conversationId: 'c2', payload: { reason: 'other folder' } });
+    controller.abort();
+    expect(await first).toBeNull();
+    resolve('workspace', 'w1', '/late');
+    expect(getSnapshot('workspace', 'c2')?.id).toBe('w2');
+    resolve('workspace', 'w2', '/other');
+    expect(await second).toBe('/other');
+  });
+
   it('command: suspends until resolveActive, then settles', async () => {
     const p = request('command', { conversationId: 'c1', payload: COMMAND_PAYLOAD });
     expect(getSnapshot('command')?.conversationId).toBe('c1');
@@ -98,8 +118,8 @@ describe('approvalBridge — request/resolve round trip', () => {
   });
 });
 
-describe('approvalBridge — command: single active + FIFO queue, no timeout', () => {
-  it('a second concurrent request queues silently (no notify) instead of overwriting', async () => {
+describe('approvalBridge — command: per-conversation FIFO queues, no timeout', () => {
+  it('notifies when another conversation receives its own active request', async () => {
     const listener = vi.fn();
     const unsub = subscribe('command', listener);
 
@@ -107,11 +127,11 @@ describe('approvalBridge — command: single active + FIFO queue, no timeout', (
     expect(listener).toHaveBeenCalledTimes(1); // became active → notify
 
     const p2 = request('command', { conversationId: 'c2', payload: COMMAND_PAYLOAD });
-    expect(listener).toHaveBeenCalledTimes(1); // queued silently — no notify
+    expect(listener).toHaveBeenCalledTimes(2);
     expect(getSnapshot('command')?.conversationId).toBe('c1'); // still the first
 
     resolveActive('command', true); // clears c1, promotes c2 — exactly ONE notify per settle() (see module doc)
-    expect(listener).toHaveBeenCalledTimes(2);
+    expect(listener).toHaveBeenCalledTimes(3);
     expect(await p1).toBe(true);
     expect(getSnapshot('command')?.conversationId).toBe('c2');
 
@@ -150,14 +170,14 @@ describe('approvalBridge — command: single active + FIFO queue, no timeout', (
   });
 });
 
-describe('approvalBridge — file-permission: single active + FIFO queue + dequeue re-check', () => {
-  it('queues like command (no notify on enqueue)', async () => {
+describe('approvalBridge — file-permission: per-conversation FIFO and permission re-check', () => {
+  it('notifies each conversation when its first request arrives', async () => {
     const listener = vi.fn();
     const unsub = subscribe('file-permission', listener);
     const p1 = request('file-permission', { conversationId: 'c1', payload: FILE_PAYLOAD('/a') });
     expect(listener).toHaveBeenCalledTimes(1);
     const p2 = request('file-permission', { conversationId: 'c2', payload: FILE_PAYLOAD('/b') });
-    expect(listener).toHaveBeenCalledTimes(1);
+    expect(listener).toHaveBeenCalledTimes(2);
 
     resolveActive('file-permission', true);
     await p1;
@@ -226,51 +246,69 @@ describe('approvalBridge — file-permission: single active + FIFO queue + deque
   });
 });
 
-describe('approvalBridge — workspace: single active, NO queue (overwrite), 60s timeout', () => {
-  it('a second concurrent request overwrites the first — the first promise is abandoned', async () => {
-    vi.useFakeTimers();
-    let firstSettled = false;
-    const p1 = request('workspace', { conversationId: 'c1', payload: { reason: 'r1' } });
-    void p1.then(() => { firstSettled = true; });
-
-    const p2 = request('workspace', { conversationId: 'c2', payload: { reason: 'r2' } });
-    expect(getSnapshot('workspace')?.conversationId).toBe('c2'); // overwritten, not queued
-
-    resolveActive('workspace', '/picked');
-    expect(await p2).toBe('/picked');
-
-    // The first request's own 60s timeout fires but no-ops (identity check
-    // fails — it's no longer the active entry) — it stays pending forever.
-    await vi.advanceTimersByTimeAsync(60_000 + 100);
-    expect(firstSettled).toBe(false);
-
-    // p1 never settles — avoid an unhandled-rejection / hang by not awaiting it further.
-    void p1;
+describe('approvalBridge — workspace: requests retain their identities', () => {
+  it('answers concurrent conversations independently', async () => {
+    const p1 = request('workspace', { id: 'w1', conversationId: 'c1', payload: { reason: 'r1' } });
+    const p2 = request('workspace', { id: 'w2', conversationId: 'c2', payload: { reason: 'r2' } });
+    expect(getSnapshot('workspace', 'c1')?.id).toBe('w1');
+    expect(getSnapshot('workspace', 'c2')?.id).toBe('w2');
+    resolve('workspace', 'w2', '/second');
+    expect(await p2).toBe('/second');
+    expect(getSnapshot('workspace', 'c1')?.id).toBe('w1');
+    resolve('workspace', 'w1', '/first');
+    expect(await p1).toBe('/first');
   });
 
-  it('auto-resolves to null after 60s when left untouched', async () => {
-    vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const p = request('workspace', { conversationId: 'c1', payload: { reason: 'r1' } });
-    await vi.advanceTimersByTimeAsync(60_000 + 100);
-    expect(await p).toBeNull();
-    expect(warnSpy).toHaveBeenCalledWith('[AgentLoop] Workspace request timed out, auto-cancelling');
-    warnSpy.mockRestore();
+  it('presents requests in order within one conversation', async () => {
+    const p1 = request('workspace', { id: 'w1', conversationId: 'c1', payload: { reason: 'r1' } });
+    const p2 = request('workspace', { id: 'w2', conversationId: 'c1', payload: { reason: 'r2' } });
+    expect(getSnapshot('workspace', 'c1')?.id).toBe('w1');
+    resolve('workspace', 'w1', '/first');
+    expect(getSnapshot('workspace', 'c1')?.id).toBe('w2');
+    resolve('workspace', 'w2', '/second');
+    expect(await Promise.all([p1, p2])).toEqual(['/first', '/second']);
   });
 
-  it('resolving before the timeout clears the timer (no late no-op warning)', async () => {
+  it('cancels every request in one conversation and preserves the other', async () => {
+    const p1 = request('workspace', { id: 'w1', conversationId: 'c1', payload: { reason: 'r1' } });
+    const p2 = request('workspace', { id: 'w2', conversationId: 'c1', payload: { reason: 'r2' } });
+    const p3 = request('workspace', { id: 'w3', conversationId: 'c2', payload: { reason: 'r3' } });
+    drainByConversationId('workspace', 'c1');
+    resolve('workspace', 'w1', '/late');
+    expect(await Promise.all([p1, p2])).toEqual([null, null]);
+    expect(getSnapshot('workspace', 'c2')?.id).toBe('w3');
+    resolve('workspace', 'w3', '/other');
+    expect(await p3).toBe('/other');
+  });
+
+  it('cancels queued requests by loop without cancelling another loop', async () => {
+    const p1 = request('command', { id: 'first', loopId: 'l1', conversationId: 'c1', payload: COMMAND_PAYLOAD });
+    const p2 = request('command', { id: 'second', loopId: 'l2', conversationId: 'c2', payload: COMMAND_PAYLOAD });
+    const p3 = request('command', { id: 'third', loopId: 'l1', conversationId: 'c1', payload: COMMAND_PAYLOAD });
+    drainByLoopId('command', 'l1');
+    expect(await Promise.all([p1, p3])).toEqual([false, false]);
+    expect(getSnapshot('command')?.id).toBe('second');
+    resolve('command', 'second', true);
+    expect(await p2).toBe(true);
+  });
+
+  it('has no timeout — stays pending indefinitely until answered or drained', async () => {
     vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let settled = false;
     const p = request('workspace', { conversationId: 'c1', payload: { reason: 'r1' } });
+    void p.then(() => { settled = true; });
+    // A long wait with nothing settling — the dialog must NOT vanish on its own.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(settled).toBe(false);
+    expect(getSnapshot('workspace')?.conversationId).toBe('c1');
+    // Settles only on the user's explicit answer.
     resolveActive('workspace', '/picked');
     await p;
-    await vi.advanceTimersByTimeAsync(60_000 + 100);
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(settled).toBe(true);
   });
 });
 
-describe('approvalBridge — user-question: many concurrent, addressed by id, 10min timeout', () => {
+describe('approvalBridge — user-question: many concurrent, addressed by id, no timeout', () => {
   it('supports multiple simultaneously-active entries (no single-slot contention)', async () => {
     const p1 = request('user-question', { id: 'tc-1', conversationId: 'c1', payload: { payload: { questions: [] } } });
     const p2 = request('user-question', { id: 'tc-2', conversationId: 'c2', payload: { payload: { questions: [] } } });
@@ -285,14 +323,16 @@ describe('approvalBridge — user-question: many concurrent, addressed by id, 10
     expect(await p1).toBeNull();
   });
 
-  it('auto-resolves to null after 10 minutes when left untouched', async () => {
+  it('has no timeout — stays pending until answered or drained, even after 10 minutes', async () => {
     vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const p = request('user-question', { id: 'tc-timeout', conversationId: 'c1', payload: { payload: { questions: [] } } });
-    await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 100);
-    expect(await p).toBeNull();
-    expect(warnSpy).toHaveBeenCalledWith('[permissionBridge] UserQuestion timed out, auto-cancelling', 'tc-timeout');
-    warnSpy.mockRestore();
+    let settled = false;
+    const p = request('user-question', { id: 'tc-long', conversationId: 'c1', payload: { payload: { questions: [] } } });
+    void p.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000); // 1 hour — nothing should auto-resolve
+    expect(settled).toBe(false);
+    resolve('user-question', 'tc-long', { answers: [] });
+    await p;
+    expect(settled).toBe(true);
   });
 });
 
@@ -357,6 +397,45 @@ describe('approvalBridge — drainByConversationId()', () => {
 
     resolve('user-question', 'tc-b', null);
     await pB;
+  });
+});
+
+describe('approvalBridge — request ownership', () => {
+  it.each(['command', 'file-permission'] as const)('answers %s independently across conversations and preserves each FIFO', async kind => {
+    const payload = kind === 'command' ? COMMAND_PAYLOAD : FILE_PAYLOAD('/target');
+    const first = request(kind, { id: 'a1', conversationId: 'a', payload });
+    const queued = request(kind, { id: 'a2', conversationId: 'a', payload });
+    const other = request(kind, { id: 'b1', conversationId: 'b', payload });
+    const otherId = getSnapshot(kind, 'b')!.requestId;
+    resolve(kind, otherId, true);
+    expect(await other).toBe(true);
+    expect(getSnapshot(kind, 'b')).toBeNull();
+    expect(getSnapshot(kind, 'a')?.id).toBe('a1');
+    resolve(kind, 'a2', true);
+    expect(getSnapshot(kind, 'a')?.id).toBe('a1');
+    resolve(kind, 'a1', false);
+    expect(await first).toBe(false);
+    expect(getSnapshot(kind, 'a')?.id).toBe('a2');
+    resolve(kind, 'a2', true);
+    expect(await queued).toBe(true);
+  });
+
+  it('cancels and answers duplicate provider IDs by their host request identities', async () => {
+    const controller = new AbortController();
+    const payload = { payload: { questions: [] } };
+    const first = request('user-question', { id: 'call_0', conversationId: 'a', payload });
+    const cancelled = request('user-question', { id: 'call_0', conversationId: 'b', payload, signal: controller.signal });
+    const last = request('user-question', { id: 'call_0', conversationId: 'b', payload });
+    const [a, , b] = getSnapshot('user-question');
+    controller.abort();
+    expect(await cancelled).toBeNull();
+    expect(getSnapshot('user-question')).toEqual([a, b]);
+    const answer = { answers: [] };
+    resolve('user-question', b.requestId, answer);
+    expect(await last).toEqual(answer);
+    expect(getSnapshot('user-question')).toEqual([a]);
+    resolve('user-question', a.requestId, answer);
+    expect(await first).toEqual(answer);
   });
 });
 

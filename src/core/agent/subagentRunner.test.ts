@@ -212,7 +212,12 @@ vi.mock('../subagent/delegatedMediaStore', () => ({
   readDelegatedMedia: (...a: unknown[]) => delegatedMediaStoreMocks.readDelegatedMedia(...a),
 }));
 
-const getSettingsSnapshotMock = vi.fn().mockReturnValue({ agentMaxTurns: 200 });
+const runSettingsFixture = {
+  agentMaxTurns: 200,
+  activeModel: { providerId: 'p1', modelId: 'claude-sonnet-4' },
+  providers: [{ id: 'p1', enabled: true, apiKey: 'sk-test', apiFormat: 'anthropic', models: [{ id: 'claude-sonnet-4' }] }],
+};
+const getSettingsSnapshotMock = vi.fn().mockReturnValue(runSettingsFixture);
 vi.mock('./ports/settingsReader', () => ({
   getSettingsReader: () => ({ getSnapshot: () => getSettingsSnapshotMock() }),
 }));
@@ -364,7 +369,7 @@ describe('subagentRunner', () => {
     getAllToolsMock.mockReturnValue([
       { name: 'read_file', description: 'reads a file', inputSchema: { type: 'object', properties: {} }, execute: async () => 'x' },
     ]);
-    getSettingsSnapshotMock.mockReturnValue({ agentMaxTurns: 200 });
+    getSettingsSnapshotMock.mockReturnValue(runSettingsFixture);
     getCurrentPathMock.mockReturnValue('/tmp/workspace');
     getActiveApiKeyMock.mockReturnValue('sk-test');
     getActiveProviderMock.mockReturnValue({ id: 'p1', baseUrl: undefined, apiFormat: 'anthropic', models: [] });
@@ -452,6 +457,9 @@ describe('subagentRunner', () => {
         'onProgress',
         'settingsReader',
         'liveSettingsReader',
+        'modelRecovery',
+        'onModelRecoveryWaiting',
+        'modelBindingRevision',
         'toolInvoker',
         'capsPort',
         'workspaceReader',
@@ -499,7 +507,7 @@ describe('subagentRunner', () => {
         commandConfirmCallback,
         filePermissionCallback,
         onProgress,
-        settingsReader: { getSnapshot: () => ({ agentMaxTurns: 5 }) } as never,
+        settingsReader: { getSnapshot: () => ({ ...runSettingsFixture, agentMaxTurns: 5 }) } as never,
         toolInvoker: {
           getAllTools: () => [],
           executeAnyTool: vi.fn(),
@@ -1109,11 +1117,11 @@ describe('subagentRunner', () => {
       };
       const parentReader = { getSnapshot: () => parentSettings };
       getActiveApiKeyMock.mockImplementation((settings: unknown) => {
-        expect(settings).toBe(parentSettings);
+        expect((settings as typeof parentSettings).providers).toBe(parentSettings.providers);
         return 'parent-key';
       });
       getActiveProviderMock.mockImplementation((settings: unknown) => {
-        expect(settings).toBe(parentSettings);
+        expect((settings as typeof parentSettings).providers).toBe(parentSettings.providers);
         return { id: 'parent-provider', baseUrl: 'https://parent.test', apiFormat: 'openai-compatible', models: [] };
       });
       resolveEffectiveLlmCredsMock.mockImplementation((apiKey: string, baseUrl: string | undefined) => ({

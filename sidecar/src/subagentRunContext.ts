@@ -30,13 +30,7 @@ export interface SubagentRunContext {
   runId: string;
   locale: string;
   uiStrings: SubagentUiStrings;
-  /**
-   * Pre-resolved shell-side at `subagent.run` dispatch time — see
-   * subagentRunner.ts's `buildSubagentRunParams()`. Frozen for the whole
-   * run (see `shims/enterpriseCredsRun.ts`'s doc for why re-deriving
-   * per-call, as the real `resolveEffectiveLlmCreds` does in-process, isn't
-   * done here).
-   */
+  /** Shell-resolved credentials, updated when the user selects a model. */
   resolvedCreds: { apiKey: string; baseUrl: string | undefined; forceOpenAiCompatible: boolean };
 }
 

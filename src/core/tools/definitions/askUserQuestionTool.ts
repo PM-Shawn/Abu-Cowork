@@ -143,7 +143,9 @@ export const askUserQuestionTool: ToolDefinition = {
       })),
     };
 
-    const result = await requestUserQuestion(toolCallId, conversationId, payload);
+    const result = await requestUserQuestion(toolCallId, conversationId, payload, {
+      loopId: context?.loopId, signal: context?.abortSignal,
+    });
 
     // ── Format result ────────────────────────────────────────────────────
     if (result === null) {

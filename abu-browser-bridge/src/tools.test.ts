@@ -19,6 +19,7 @@ import {
   ABU_CREATE_IF_EMPTY_META_KEY,
   ABU_EXPECTED_ORIGIN_META_KEY,
   ABU_RUN_META_KEY,
+  ABU_SCREENSHOT_DELIVERY_META_KEY,
   registerTools,
   type BrowserTransport,
 } from './tools.js';
@@ -365,6 +366,20 @@ describe('ownerId forwarding', () => {
       undefined,
       { signal: undefined }
     );
+  });
+
+  it('forwards only host-provided history probes and navigation entries', async () => {
+    const { registered, transport } = collectTools('built-in');
+    const getTabs = registered.find(tool => tool.name === 'get_tabs')!;
+    const navigate = registered.find(tool => tool.name === 'navigate')!;
+    const navigationProbe = { tabId: 2, action: 'back' };
+    const navigation = { backend: 'built-in', action: 'back', sourceEntry: '1', sourceUrl: 'https://current.example/', targetEntry: '0', targetUrl: 'https://previous.example/' };
+    await getTabs.handler({ _meta: { 'abu/navigationProbe': navigationProbe } });
+    expect(transport.send).toHaveBeenLastCalledWith('get_tabs', { navigationProbe }, undefined, { signal: undefined });
+    await navigate.handler({ tabId: 2, action: 'back', navigation: { targetUrl: 'https://forged.example/' } },
+      { _meta: { 'abu/navigation': navigation, [ABU_EXPECTED_ORIGIN_META_KEY]: 'https://previous.example' } });
+    expect(transport.send).toHaveBeenLastCalledWith('navigate', { tabId: 2, action: 'back', url: undefined,
+      navigation, expectedOrigin: 'https://previous.example' }, undefined, { signal: undefined });
   });
 
   it('query_js omits ownerId without a conversation id, and includes it with one on the get_html call', async () => {
@@ -881,5 +896,76 @@ describe('batch', () => {
       expect(call.payload).toMatchObject({ ownerId: 'conv-1', runId: 'run-2' });
     }
     expect(sent.some((s) => s.action === 'get_tabs' && s.payload.createIfEmpty === false)).toBe(true);
+  });
+});
+
+describe('screenshot file delivery', () => {
+  const DATA_URL = 'data:image/png;base64,AAAA';
+  const PREPARED = { success: true, data: { path: 'C:/shots/capture.png', appDataRoot: 'C:/app', taskDirectory: 'C:/app/browser-downloads/task/run/screenshots', taskRelativeDirectory: 'browser-downloads/task/run/screenshots' } };
+
+  function screenshotTool(name: 'screenshot' | 'screenshot_full_page' = 'screenshot', backend: 'chrome' | 'built-in' = 'built-in') {
+    const { registered, transport } = collectTools(backend);
+    return { tool: registered.find((tool) => tool.name === name)!, transport };
+  }
+
+  it('returns the image when neither the model nor the host asked for a file', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => ({ success: true, data: DATA_URL }));
+    const result = await tool.handler({ tabId: 7 }, {}) as { content: Array<{ type: string }> };
+    expect(transport.send).toHaveBeenCalledWith('screenshot', { tabId: 7 }, undefined, { signal: undefined });
+    expect(result.content[0].type).toBe('image');
+  });
+
+  it('prepares the destination only when the host requests preparation', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => PREPARED);
+    const result = await tool.handler({ tabId: 7, saveToFile: true }, { _meta: { [ABU_SCREENSHOT_DELIVERY_META_KEY]: 'prepare' } }) as { content: Array<{ type: string; text: string }> };
+    expect(transport.send).toHaveBeenCalledWith('screenshot', { tabId: 7, prepareSave: true }, undefined, { signal: undefined });
+    expect(result.content[0].type).toBe('text');
+    expect(JSON.parse(result.content[0].text)).toEqual(PREPARED.data);
+  });
+
+  it('forwards an explicit path during preparation', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => PREPARED);
+    await tool.handler({ tabId: 7, savePath: 'D:/out' }, { _meta: { [ABU_SCREENSHOT_DELIVERY_META_KEY]: 'prepare' } });
+    expect(transport.send).toHaveBeenCalledWith('screenshot', { tabId: 7, prepareSave: true, savePath: 'D:/out' }, undefined, { signal: undefined });
+  });
+
+  it('captures bytes for the host writer without forwarding a write request', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => ({ success: true, data: DATA_URL }));
+    const result = await tool.handler({ tabId: 7 }, { _meta: { [ABU_SCREENSHOT_DELIVERY_META_KEY]: 'file' } }) as { content: Array<{ type: string; text: string }> };
+    expect(transport.send).toHaveBeenCalledWith('screenshot', { tabId: 7 }, undefined, { signal: undefined });
+    expect(result.content[0].type).toBe('image');
+  });
+
+  it('the chrome extension channel refuses file delivery with a redirect to read tools', async () => {
+    const { tool, transport } = screenshotTool('screenshot', 'chrome');
+    const result = await tool.handler({ tabId: 7, saveToFile: true }, {}) as { content: Array<{ type: string; text: string }> };
+    expect(transport.send).not.toHaveBeenCalled();
+    expect(result.content[0].type).toBe('text');
+    expect(result.content[0].text).toContain("only available in Abu's built-in browser");
+  });
+
+  it('refuses model save arguments without host authorization', async () => {
+    const { tool, transport } = screenshotTool();
+    await expect(tool.handler({ tabId: 7, saveToFile: true }, {})).rejects.toThrow('host file authorization');
+    await expect(tool.handler({ tabId: 7, savePath: 'D:/out' }, {})).rejects.toThrow('host file authorization');
+    expect(transport.send).not.toHaveBeenCalled();
+  });
+
+  it('failed destination preparation reports the error', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => ({ success: false, error: 'could not create the screenshot folder: EACCES' }));
+    const result = await tool.handler({ tabId: 7, saveToFile: true }, { _meta: { [ABU_SCREENSHOT_DELIVERY_META_KEY]: 'prepare' } }) as { content: Array<{ type: string; text: string }> };
+    expect(result.content[0].text).toContain('Error: could not create the screenshot folder');
+  });
+
+  it('screenshot_full_page keeps its longer timeout in file mode', async () => {
+    const { tool, transport } = screenshotTool('screenshot_full_page');
+    transport.send = vi.fn(async () => ({ success: true, data: DATA_URL }));
+    await tool.handler({ tabId: 7, saveToFile: true }, { _meta: { [ABU_SCREENSHOT_DELIVERY_META_KEY]: 'file' } });
+    expect(transport.send).toHaveBeenCalledWith('screenshot_full_page', { tabId: 7 }, 120000, { signal: undefined });
   });
 });

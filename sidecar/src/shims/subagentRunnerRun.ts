@@ -66,8 +66,9 @@
  */
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentResult } from '@/core/agent/subagentLoop';
 import { scopeSubagentLoopProgress } from '@/core/agent/subagentProgressIdentity';
-import { getCurrentAgentRunContext } from '../agentRunContext';
-import { getSettingsMirrorReader } from '../settingsMirror';
+import { agentRunContext, getCurrentAgentRunContext } from '../agentRunContext';
+import { createModelRecoveryPort } from '../modelRecovery';
+import type { RunModelBinding } from '@/core/agent/ports/modelRecovery';
 import { sendRequest } from '../rpcClient';
 import type { ShimThrowKind } from './shimThrowKind';
 
@@ -80,21 +81,26 @@ export const SHIM_THROW_KIND: ShimThrowKind = 'input-check';
 export async function runSubagent(options: SubagentLoopOptions): Promise<SubagentResult> {
   const ctx = getCurrentAgentRunContext();
   // The shell retains the original route ownership and checks its live gate.
-  const admission = await sendRequest('agent.assertDirectDelegateEnabled', { runId: ctx.runId });
-  if (!admission || typeof admission !== 'object' || (admission as { allowed?: unknown }).allowed !== true) {
+  const admission = await sendRequest('agent.assertDirectDelegateEnabled', { runId: ctx.runId }) as { allowed: boolean; binding: RunModelBinding };
+  if (!admission || admission.allowed !== true || !admission.binding) {
     throw new Error('Direct delegate admission denied');
   }
+  const delegateCtx = { ...ctx, resolvedCreds: admission.binding.resolvedCreds };
 
   const fullOptions: SubagentLoopOptions = {
     ...options,
-    settingsReader: options.settingsReader ?? getSettingsMirrorReader(),
+    settingsReader: { getSnapshot: () => admission.binding.settingsSnapshot },
+    modelBindingRevision: admission.binding.revision,
+    modelRecovery: createModelRecoveryPort(ctx.runId, (binding) => {
+      delegateCtx.resolvedCreds = binding.resolvedCreds;
+    }, admission.binding.revision),
     toolInvoker: ctx.toolInvoker,
     capsPort: ctx.capsPort,
     workspaceReader: ctx.workspaceReader,
   };
 
   if (options.authorizationScopeId === undefined) {
-    return runSubagentLoop(scopeSubagentLoopProgress(fullOptions));
+    return agentRunContext.run(delegateCtx, () => runSubagentLoop(scopeSubagentLoopProgress(fullOptions)));
   }
 
   const scopedController = new AbortController();
@@ -107,10 +113,10 @@ export async function runSubagent(options: SubagentLoopOptions): Promise<Subagen
   }
 
   try {
-    return await runSubagentLoop(scopeSubagentLoopProgress({
+    return await agentRunContext.run(delegateCtx, () => runSubagentLoop(scopeSubagentLoopProgress({
       ...fullOptions,
       signal: scopedController.signal,
-    }));
+    })));
   } finally {
     parentSignal?.removeEventListener('abort', abortFromParent);
     if (!scopedController.signal.aborted) {

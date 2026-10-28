@@ -118,6 +118,23 @@ export const ABU_EXPECTED_FRAME_ORIGINS_META_KEY = 'abu/expectedFrameOrigins';
 export const ABU_APPROVED_UPLOAD_FILES_META_KEY = 'abu/approvedUploadFiles';
 
 /**
+ * MCP `_meta` key telling the screenshot tools to deliver the capture as a
+ * FILE on disk instead of an image block. The host (Abu's client) stamps it
+ * when the active model cannot consume images: a base64 screenshot would be
+ * stripped on the way out anyway (`messageNormalizer`), so the capture is
+ * written to Abu's per-task screenshot folder and returned as TEXT — a path,
+ * pixel size and byte size the model can hand to the user or a later
+ * vision-capable/OCR step.
+ *
+ * Same `_meta`-not-input-schema and duplication rationale as above: an
+ * authorization/capability fact the model must be able to neither read nor
+ * forge. The tool's own `saveToFile`/`savePath` arguments cover the case the
+ * MODEL wants a file; this key covers the case the HOST knows the model can't
+ * look at one.
+ */
+export const ABU_SCREENSHOT_DELIVERY_META_KEY = 'abu/screenshotDelivery';
+
+/**
  * What every DOM-scoped tool says about `frameId`.
  *
  * One sentence, everywhere, because the model has to learn the concept once:
@@ -175,6 +192,16 @@ export interface BrowserTransport {
 
 const BROWSER_EXTENSION_NOT_CONNECTED =
   'Browser extension is not connected. Please install and enable the Abu Browser Extension, then check the connection status in the extension popup.';
+
+/**
+ * The Chrome extension channel is a service worker with NO filesystem (see
+ * `UploadDelivery`), so file delivery can only be honored by the built-in
+ * browser. Said as an instruction, not an apology, so a non-vision model
+ * routed to the extension channel re-routes itself to a read tool.
+ */
+const SCREENSHOT_SAVE_NOT_AVAILABLE =
+  "Error: saving screenshots to disk is only available in Abu's built-in browser. "
+  + 'Read the page with snapshot/extract_text instead.';
 
 const chromeWsTransport: BrowserTransport = {
   // A service worker cannot open a file, so this side reads it. See
@@ -256,6 +283,7 @@ function ownerPayloadFromExtra(extra: unknown): Record<string, unknown> {
     ...(expectedOrigin ? { expectedOrigin } : {}),
     ...(popupOrigin ? { popupOrigin } : {}),
     ...(unattended ? { unattended: true } : {}),
+    ...(meta?.['abu/navigation'] ? { navigation: meta['abu/navigation'] } : {}),
   };
 }
 
@@ -360,6 +388,13 @@ function safeParse(raw: string): unknown {
 function approvedUploadFilesFromExtra(extra: unknown): ApprovedUploadFile[] | null {
   const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
   return parseApprovedUploadFiles(meta?.[ABU_APPROVED_UPLOAD_FILES_META_KEY]);
+}
+
+/** File preparation and capture are selected by the trusted tool host. */
+function screenshotDelivery(extra: unknown): 'prepare' | 'file' | undefined {
+  const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  const delivery = meta?.[ABU_SCREENSHOT_DELIVERY_META_KEY];
+  return delivery === 'prepare' || delivery === 'file' ? delivery : undefined;
 }
 
 /**
@@ -630,10 +665,12 @@ export function registerTools(
       const owner = ownerPayloadFromExtra(extra);
       const createIfEmpty = createIfEmptyFromExtra(extra);
       const framesForTabId = framesForTabFromExtra(extra);
+      const navigationProbe = (extra as { _meta?: Record<string, unknown> })?._meta?.['abu/navigationProbe'];
       const res = await sendWithSignal(transport, 'get_tabs', {
         ...owner,
         ...(createIfEmpty === false ? { createIfEmpty: false } : {}),
         ...(framesForTabId !== undefined ? { framesForTabId } : {}),
+        ...(navigationProbe ? { navigationProbe } : {}),
       }, extra);
       return { content: [{ type: 'text' as const, text: formatResult(res) }] };
     }
@@ -1097,11 +1134,37 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     'Take a screenshot of the visible area of a tab. Returns a base64-encoded PNG image. Useful for visual confirmation of actions.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
+      saveToFile: z.coerce.boolean().optional().describe(
+        'Save the PNG to disk instead of returning it as an image, and get the file path back as text. '
+        + 'Use this when the result only needs to be a file: the current model cannot view images, '
+        + 'or the user asked for the file itself. Without savePath, the file lands in Abu\'s '
+        + 'screenshot folder for this task.',
+      ),
+      savePath: z.string().optional().describe(
+        'Where to save when saveToFile is true. A directory path (trailing separator, or an existing '
+        + 'directory) gets the default file name generated inside it; a file path is used as-is, a '
+        + 'missing .png extension is appended, and a name conflict gets an incrementing suffix rather '
+        + 'than overwriting. Parent directories are created if missing. Relative paths resolve '
+        + 'against this task\'s screenshot folder.',
+      ),
     },
-    async ({ tabId }, extra) => {
+    async ({ tabId, saveToFile, savePath }, extra) => {
       await ensureConnected(transport);
+      const delivery = screenshotDelivery(extra);
+      const saveMode = saveToFile === true || savePath !== undefined || delivery !== undefined;
+      if (saveMode && options.backend !== 'built-in') {
+        return { content: [{ type: 'text' as const, text: SCREENSHOT_SAVE_NOT_AVAILABLE }] };
+      }
+      if (saveMode && delivery === undefined) throw new Error('Screenshot files require host file authorization');
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'screenshot', { tabId, ...owner }, extra);
+      const res = await sendWithSignal(transport, 'screenshot', {
+        tabId,
+        ...(delivery === 'prepare' ? { prepareSave: true, ...(savePath ? { savePath } : {}) } : {}),
+        ...owner,
+      }, extra);
+      if (delivery === 'prepare') {
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      }
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -1121,12 +1184,38 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     'Take a full-page screenshot by scrolling and stitching the entire page content. Returns a base64-encoded PNG image of the complete page. Use this when the user asks for a "long screenshot" or wants to capture content beyond the visible viewport. This is slower than a regular screenshot.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
+      saveToFile: z.coerce.boolean().optional().describe(
+        'Save the PNG to disk instead of returning it as an image, and get the file path back as text. '
+        + 'Use this when the result only needs to be a file: the current model cannot view images, '
+        + 'or the user asked for the file itself. Without savePath, the file lands in Abu\'s '
+        + 'screenshot folder for this task.',
+      ),
+      savePath: z.string().optional().describe(
+        'Where to save when saveToFile is true. A directory path (trailing separator, or an existing '
+        + 'directory) gets the default file name generated inside it; a file path is used as-is, a '
+        + 'missing .png extension is appended, and a name conflict gets an incrementing suffix rather '
+        + 'than overwriting. Parent directories are created if missing. Relative paths resolve '
+        + 'against this task\'s screenshot folder.',
+      ),
     },
-    async ({ tabId }, extra) => {
+    async ({ tabId, saveToFile, savePath }, extra) => {
       await ensureConnected(transport);
+      const delivery = screenshotDelivery(extra);
+      const saveMode = saveToFile === true || savePath !== undefined || delivery !== undefined;
+      if (saveMode && options.backend !== 'built-in') {
+        return { content: [{ type: 'text' as const, text: SCREENSHOT_SAVE_NOT_AVAILABLE }] };
+      }
+      if (saveMode && delivery === undefined) throw new Error('Screenshot files require host file authorization');
       const owner = ownerPayloadFromExtra(extra);
       // Full-page capture needs more time: scroll + multiple captures + stitch
-      const res = await sendWithSignal(transport, 'screenshot_full_page', { tabId, ...owner }, extra, 120_000);
+      const res = await sendWithSignal(transport, 'screenshot_full_page', {
+        tabId,
+        ...(delivery === 'prepare' ? { prepareSave: true, ...(savePath ? { savePath } : {}) } : {}),
+        ...owner,
+      }, extra, 120_000);
+      if (delivery === 'prepare') {
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      }
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{

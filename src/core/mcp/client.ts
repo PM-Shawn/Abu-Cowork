@@ -1,4 +1,5 @@
 import { ensureBrowserRunRegistered } from '../browser/browserRunLifecycle';
+import type { BrowserHistoryAction, BrowserNavigationPin } from '@/core/permissions/browserNavigation';
 import { acquirePluginUse } from '../plugin/runtimeLease';
 import { pluginOwnerForMcp } from '../plugin/activationPolicy';
 import { format, getI18n } from '@/i18n';
@@ -79,6 +80,18 @@ const ABU_EXPECTED_ORIGIN_META_KEY = 'abu/expectedOrigin';
  * Mirrors `ABU_UNATTENDED_META_KEY` in `abu-browser-bridge/src/tools.ts`.
  */
 const ABU_UNATTENDED_META_KEY = 'abu/unattended';
+
+/**
+ * MCP request `_meta` key telling the browser server's screenshot tools to
+ * deliver the capture as a FILE on disk (text answer with the path) instead
+ * of an image block. Stamped by the agent loop's executor when the active
+ * model has no vision: the image would be stripped on the way out anyway, so
+ * the capture lands in Abu's per-task screenshot folder and the model gets a
+ * path it can hand to the user or a later vision-capable/OCR step. Mirrors
+ * `ABU_SCREENSHOT_DELIVERY_META_KEY` in `abu-browser-bridge/src/tools.ts`
+ * (same duplication rationale as above).
+ */
+const ABU_SCREENSHOT_DELIVERY_META_KEY = 'abu/screenshotDelivery';
 
 /**
  * MCP request `_meta` key asking the browser server's `get_tabs` to include
@@ -1294,8 +1307,12 @@ export class MCPClientManager {
        * execution-time origin pin — see `ABU_EXPECTED_ORIGIN_META_KEY`.
        */
       expectedOrigin?: string;
+      navigationProbe?: { tabId: number; action: BrowserHistoryAction };
+      navigation?: BrowserNavigationPin;
       popupOrigin?: string;
       unattended?: boolean;
+      /** Host-only screenshot path preparation or capture for an approved file. */
+      screenshotDelivery?: 'prepare' | 'file';
       /**
        * Only meaningful for the browser server's `get_tabs`: include this
        * tab's frame tree in the listing, so the gate can resolve a
@@ -1406,6 +1423,11 @@ export class MCPClientManager {
       if (opts?.unattended === true) {
         meta[ABU_UNATTENDED_META_KEY] = true;
       }
+      if (opts?.screenshotDelivery) {
+        meta[ABU_SCREENSHOT_DELIVERY_META_KEY] = opts.screenshotDelivery;
+      }
+      if (opts?.navigationProbe) meta['abu/navigationProbe'] = opts.navigationProbe;
+      if (opts?.navigation) meta['abu/navigation'] = opts.navigation;
       if (typeof opts?.framesForTabId === 'number' && Number.isFinite(opts.framesForTabId)) {
         meta[ABU_FRAMES_FOR_TAB_META_KEY] = opts.framesForTabId;
       }

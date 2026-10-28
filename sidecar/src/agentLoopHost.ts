@@ -58,6 +58,7 @@ import type { ToolInvoker } from '@/core/agent/ports/toolInvoker';
 import type { CapsPort } from '@/core/agent/ports/capsPort';
 import type { PlanModeState } from '@/core/agent/planMode';
 import { runAgentLoop, type AgentLoopOptions, type AgentLoopResult } from '@/core/agent/agentLoop';
+import { createModelRecoveryPort } from './modelRecovery';
 import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
 import {
   createAgentRunTerminal,
@@ -1205,6 +1206,7 @@ export async function handleAgentRun(rawParams: unknown): Promise<unknown> {
 
   try {
     const options: AgentLoopOptions = {
+      modelRecovery: createModelRecoveryPort(runId, (binding) => { runCtx.resolvedCreds = binding.resolvedCreds; }),
       blockedTools: params.options.blockedTools,
       allowedTools: params.options.allowedTools,
       authorizationScopeId: params.options.authorizationScopeId,

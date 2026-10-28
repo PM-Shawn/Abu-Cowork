@@ -219,7 +219,10 @@ const BASE_WIRE: ProfileWire = {
 };
 
 const guardsOff = { textOnlyEndTurnNudge: false, toolArgumentRepair: false } as const;
-const guardsRepair = { textOnlyEndTurnNudge: false, toolArgumentRepair: true } as const;
+// textOnlyEndTurnNudge：OpenAI-compatible 家族全开。网关/第三方模型会以空响应
+// （无正文、无工具调用）静默结束回合，任务中途死掉却记 completed——2026-10-27
+// 会话 mvphffrthde2vb 的 0/106 事故即此。claude/gpt 走 guardsOff 保持关闭。
+const guardsRepair = { textOnlyEndTurnNudge: true, toolArgumentRepair: true } as const;
 
 /**
  * Per-family defaults. The values are the request shapes the adapters sent

@@ -271,6 +271,12 @@ export function getToolLabel(
         detail: typeof toolInput.text === 'string' ? toolInput.text : undefined,
       };
 
+    case 'model_failover':
+      return {
+        label: isZh ? '已选择模型继续任务' : 'Continuing with the selected model',
+        detail: typeof toolInput.model === 'string' ? toolInput.model : undefined,
+      };
+
     default:
       return {
         label: isZh ? `调用 ${toolName}` : `Call ${toolName}`,

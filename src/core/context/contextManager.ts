@@ -237,7 +237,7 @@ function sanitizeToolPairs(messages: Message[]): Message[] {
   });
 }
 
-function calculateSafetyMargin(rawInputBudget: number, contextWindowSize: number): number {
+export function calculateSafetyMargin(rawInputBudget: number, contextWindowSize: number): number {
   if (rawInputBudget <= 0) return 0;
   return Math.min(
     Math.floor(rawInputBudget * 0.05),

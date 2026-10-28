@@ -49,17 +49,17 @@ import {
   computeInputBudget,
   enforceContextBudget,
   trimOldScreenshots,
+  type ContextBudgetResult,
 } from '../context/contextManager';
 import {
   buildContextFromBoundary,
   createFailedCompactBoundaryMarker,
 } from '../context/compactBoundary';
 import {
-  COMPACTION_TRIGGER_RATIO,
-  RETAINED_TAIL_RATIO,
   compactHistory,
   readFileThroughTool,
 } from '../context/compaction';
+import { compactionTriggerRatio, retainedTailRatio, anchorPreservationEnabled } from '../context/compressionTuning';
 import { measureInputTokens, usageContext, type UsageAnchor } from '../context/contextMeasure';
 import { getUsagePercent, getDisplayPercent } from '../context/autoCompact';
 import { estimateTokens, estimateMessageTokens, calibrateFromUsage, setActiveModel } from '../context/tokenEstimator';
@@ -92,6 +92,9 @@ import {
   type SemanticToolLoopReason,
   type ToolLoopObservation,
 } from './loopGuards';
+import { failoverModelLabel, isFailoverWorthyError } from './modelFailover';
+import type { ModelRecoveryPort, RunModelBinding } from './ports/modelRecovery';
+import { refreshModelPromptSections } from './prompts/modelPromptSections';
 import { createMaxTurnsNoticeMessage, deriveMaxTurnsStreak } from './maxTurnsNotice';
 import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
 import {
@@ -121,7 +124,14 @@ import { resolveAgentModelCapabilities, resolveCapabilities, computeReasoningPar
 import { probeContextWindow } from '../llm/contextWindowProbe';
 import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
-import { contextTooSmallMessage } from './contextWindowMessages';
+import {
+  contextTooSmallMessage,
+  contextTooSmallMessageWithNumbers,
+  formatTokenCount,
+  planOllamaNumCtx,
+  OLLAMA_NUM_CTX_MIN,
+  OLLAMA_NUM_CTX_MAX,
+} from './contextWindowMessages';
 import { learnContextWindowAfterOverflow } from './contextOverflowRecovery';
 import { resolveImagePolicy } from '../llm/imagePolicy';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
@@ -552,6 +562,7 @@ function deactivateAllSkills(conversationId: string, loopId: string): void {
 }
 
 export interface AgentLoopOptions {
+  modelRecovery?: ModelRecoveryPort;
   /** Process-local authority owner captured at dispatch; omitted from wire options. */
   operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   /** Trusted UI selection for this specific retry turn; not accepted from the wire. */
@@ -933,7 +944,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   const pinnedConv = getConversationReader().getConversation(conversationId);
   const settingsForModel = settingsForConversation(conversationId, settings);
   const baseModel = settingsForModel.activeModel;
-  const entrySettingsReader: SettingsReader = { getSnapshot: () => settingsForModel };
+  // Delegations inherit the current model selected for this run.
+  const entrySettingsReader: SettingsReader = { getSnapshot: () => runSettings };
 
   // Generate a unique loopId for this agent loop - all messages in this loop share it.
   // Shell dispatch (P1-3B-3B) can override via options.loopId — see that
@@ -1115,6 +1127,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     return { reason: 'error', error: detail, messageTaken: true };
   }
   const { route, systemPromptSections } = orchestration;
+  let currentPromptSections = systemPromptSections;
   if (route.team?.requirePlanApproval && precomputeToolContext.interactionMode !== 'background') {
     setPlanMode(conversationId, 'planning');
   }
@@ -1219,7 +1232,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // entryOrchestration.ts's precomputeOrchestration and the shell
   // dispatcher's buildAgentRunParams — single source, see that module's
   // doc); setActiveModel's side effect stays uniquely here.
-  const { effectiveModelId, entryModelDeclared } = resolveEntryModel(route, settingsForModel);
+  // User selection updates every model-dependent input for the next request.
+  const { effectiveModelId: entryEffectiveModelId, entryModelDeclared } = resolveEntryModel(route, settingsForModel);
+  let effectiveModelId = entryEffectiveModelId;
+  // Run-scoped settings for the current model.
+  let runSettings = settingsForModel;
   // Set active model for per-model token calibration
   setActiveModel(effectiveModelId);
 
@@ -1239,6 +1256,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   toolContext.computerUseTier = entryAgentCapabilities.computerUseTier;
   toolContext.modelCapabilitySource = entryAgentCapabilities.capabilitySource;
   toolContext.modelId = effectiveModelId;
+  toolContext.modelBindingRevision = 0;
 
   // `systemPromptSections` (including the skills already active at entry)
   // was already resolved above, together with `route`, via
@@ -1288,8 +1306,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // selectChatAdapter routes through the sidecar transport when it's healthy
   // ('running'), else falls back to the local in-process adapter — the
   // kind-choosing condition itself is unchanged (P1-1).
-  const adapterKind: AdapterKind = adapterKindFor(getActiveProvider(settingsForModel), isEnterpriseGatewayMode);
-  const adapter: LLMAdapter = selectChatAdapter(adapterKind);
+  let adapterKind: AdapterKind = adapterKindFor(getActiveProvider(runSettings), isEnterpriseGatewayMode);
+  let adapter: LLMAdapter = selectChatAdapter(adapterKind);
 
   // Validate required tools are available (blocking check — one-time at start)
   if (route.type === 'skill' && route.skill?.requiredTools) {
@@ -1693,6 +1711,48 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   if (entryProvider && entryModelDeclared?.maxInputTokens === undefined) {
     runProbedContextWindow = await probeContextWindow(entryProvider, effectiveModelId);
   }
+  // A feasible Ollama window may be enlarged once per selected model when
+  // the user has left the context length automatic.
+  let runRequestedContextLength: number | undefined;
+  // A repeated budget failure offers model selection.
+  let numCtxRaisedForRun = false;
+  // Numbers carried out of a FIXED_CONTEXT_TOO_LARGE that no escape could
+  // clear; the terminal error handler renders them in the friendly note.
+  let contextBudgetNumbers: { needed: number; window: number } | undefined;
+
+  async function applyRecoveryModel(binding: RunModelBinding): Promise<void> {
+    runSettings = binding.settingsSnapshot;
+    effectiveModelId = binding.model.modelId;
+    adapterKind = adapterKindFor(getActiveProvider(runSettings), binding.resolvedCreds.forceOpenAiCompatible);
+    adapter = selectChatAdapter(adapterKind);
+    Object.assign(toolContext, {
+      modelId: binding.capabilities.modelId,
+      modelBindingRevision: binding.revision,
+      supportsVision: binding.capabilities.vision,
+      computerUseTier: binding.capabilities.computerUseTier,
+      modelCapabilitySource: binding.capabilities.capabilitySource,
+    });
+    setActiveModel(effectiveModelId);
+    runProbedContextWindow = undefined;
+    runRequestedContextLength = undefined;
+    numCtxRaisedForRun = false;
+    maxOutputTokensRecoveryCount = 0;
+    usageAnchor = null;
+    contextBudgetNumbers = undefined;
+    semanticToolHistory.length = 0;
+    const provider = getActiveProvider(runSettings);
+    const declared = resolveModelDeclared(provider, effectiveModelId);
+    currentPromptSections = refreshModelPromptSections(systemPromptSections,
+      resolveModelProfile({ modelId: effectiveModelId, provider, declared }), {
+        supportsTools: declared?.supportsTools !== false,
+        computerUseTier: binding.capabilities.computerUseTier,
+        windows: isWindows(),
+        customIdentity: !!route.skill?.agent,
+      });
+    if (provider && declared?.maxInputTokens === undefined && !abortController.signal.aborted) {
+      runProbedContextWindow = await probeContextWindow(provider, effectiveModelId);
+    }
+  }
 
   // Phase 2 relevant-memory injection — content of memories most relevant to
   // *this* user message, surfaced as a dynamic system-prompt section. The
@@ -1807,7 +1867,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // Hitting the turn cap means every LLM call succeeded (a failed call throws
       // to the catch) → provider is healthy; record it so a prior config-failure
       // is cleared even when the run ends via the cap rather than end_turn.
-      recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
+      recordProviderCallOutcome(getActiveProvider(runSettings)?.id, { ok: true, at: Date.now() });
       // C: report the cap to callers (scheduler/trigger) instead of 'completed'.
       exitReason = 'max_turns';
       // Same terminal cleanup as the normal end_turn path — now that the cap is
@@ -1856,6 +1916,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     let lastStopReason = '';
     let malformedToolCallSeen = false;
     let modelSupportsVision = false;
+    let requestedModelRecovery = false;
+    let toolsDispatchedThisTurn = false;
     let streamFlushTimer: ReturnType<typeof setInterval> | null = null;
 
     try {
@@ -1870,7 +1932,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // ("deepseek endpoint, model mimo-v2.5-pro"). freshSettings below is only
       // for non-identity, mid-loop-tunable knobs (computerUse, maxOutputTokens,
       // contextWindowSize).
-      const activeProvider = getActiveProvider(settingsForModel);
+      const activeProvider = getActiveProvider(runSettings);
       const modelDeclared = resolveModelDeclared(activeProvider, effectiveModelId);
       const builtinWebSearch = activeProvider
         ? getBuiltinSearchConfig(activeProvider.capabilities, true)
@@ -1981,9 +2043,15 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const discoveredCaps = activeProvider
         ? getCapsPort().get(activeProvider.id, effectiveModelId)
         : undefined;
-      const { effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, requestedMaxOutputTokens, requestedContextLength, localServer, outputCeiling: effectiveModelCeiling } = resolveRequestBudget(
+      const {
+        effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, requestedMaxOutputTokens,
+        requestedContextLength: userPinnedContextLength, localServer, outputCeiling: effectiveModelCeiling,
+      } = resolveRequestBudget(
         effectiveModelId, modelCaps, activeProvider, freshSettings, discoveredCaps, runProbedContextWindow,
       );
+      // Escape A's raise wins for the rest of the run; without it, the value
+      // is the user-pinned length exactly as resolveRequestBudget computed it.
+      const requestedContextLength = runRequestedContextLength ?? userPinnedContextLength;
       let maxOutputTokens = reasoningParams.maxTokens;
 
       // Escalate maxOutputTokens on max_tokens recovery (legacy CC pattern),
@@ -2018,7 +2086,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       // end (recency). Kept UNMERGED here so section identity (pinToEnd)
       // survives the compression-hint append below; merging happens once at
       // the send boundary.
-      const allSections = composeRequestPromptSections(systemPromptSections, tools, deferredToolsSummary);
+      const allSections = composeRequestPromptSections(currentPromptSections, tools, deferredToolsSummary);
       // String form for token estimation and context management
       const effectiveSystemPrompt = sectionsToString(allSections);
 
@@ -2026,8 +2094,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       // Resolve apiKey + baseUrl for the provider this conversation is bound to.
       const effectiveCreds = resolveEffectiveLlmCreds(
-        getActiveApiKey(settingsForModel),
-        getActiveProvider(settingsForModel)?.baseUrl || undefined,
+        getActiveApiKey(runSettings),
+        getActiveProvider(runSettings)?.baseUrl || undefined,
       )
 
       // The options this step's model request and a compaction summary share,
@@ -2139,7 +2207,9 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
               conversationId,
               providerInstanceId: activeProvider?.id ?? 'unknown',
               signal: abortController.signal,
+              preserveAnchors: anchorPreservationEnabled(),
             },
+            keepAnchors: anchorPreservationEnabled(),
             fitSummaryInput: (summaryMessages) => enforceContextBudget(
               summaryMessages,
               effectiveSystemPrompt,
@@ -2180,8 +2250,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       let requestEstimate = measureView();
       if (
         fixedPartOf(requestEstimate) < inputBudget
-        && measureInputTokens(requestEstimate.total, measurementContext(), usageAnchor) >= inputBudget * COMPACTION_TRIGGER_RATIO
-        && await compactBeforeRequest(contextWindowSize, baseChatOptions, Math.floor(inputBudget * RETAINED_TAIL_RATIO))
+        && measureInputTokens(requestEstimate.total, measurementContext(), usageAnchor) >= inputBudget * compactionTriggerRatio()
+        && await compactBeforeRequest(contextWindowSize, baseChatOptions, Math.floor(inputBudget * retainedTailRatio()))
       ) {
         requestEstimate = measureView();
       }
@@ -2193,13 +2263,33 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const trimmedMessages = trimOldScreenshots(boundaryView, usagePercent);
 
       // Step 3: Hard truncation as safety net
-      const initialBudgetResult = enforceContextBudget(
-        trimmedMessages,
-        effectiveSystemPrompt,
-        contextWindowSize,
-        maxOutputTokens,
-        toolTokens
-      );
+      let initialBudgetResult: ContextBudgetResult;
+      try {
+        initialBudgetResult = enforceContextBudget(
+          trimmedMessages,
+          effectiveSystemPrompt,
+          contextWindowSize,
+          maxOutputTokens,
+          toolTokens
+        );
+      } catch (gateErr) {
+        // The FIXED_CONTEXT_TOO_LARGE escapes (Ollama num_ctx raise / model
+        // failover) live in the retryErr catch below, which only sees errors
+        // thrown inside chatFn. Defer this one: chatFn's provider-bound gate
+        // re-runs the same check and re-raises it there, so the escapes get
+        // their chance. Any other gate error still fails fast.
+        if (!(gateErr instanceof ContextBudgetError && gateErr.code === 'FIXED_CONTEXT_TOO_LARGE')) {
+          throw gateErr;
+        }
+        initialBudgetResult = {
+          messages: trimmedMessages,
+          tokensBefore: 0,
+          tokensAfter: 0,
+          inputBudget: 0,
+          safetyMarginTokens: 0,
+          strategy: 'unchanged',
+        };
+      }
       let preparedMessages = initialBudgetResult.messages;
       let lastProviderMessages = preparedMessages;
       let primaryBudgetGateLogged = false;
@@ -2306,7 +2396,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
       const chatFn = async () => {
         const providerBudgetResult = await buildProviderAttemptMessages(preparedMessages, contextWindowSize, maxOutputTokens);
-        publishContextUsage(sentTokens(), contextWindowSize);
+      publishContextUsage(sentTokens(), contextWindowSize);
         if (!primaryBudgetGateLogged && (
           initialBudgetResult.strategy !== 'unchanged'
           || providerBudgetResult.strategy !== 'unchanged'
@@ -2547,8 +2637,90 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           }
         );
       } catch (retryErr) {
-        // 服务说内容太长：读出真实上限并记住，按新上限整理后重试一次；仍失败就把错误交给外层显示
-        if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
+        const budgetErr = retryErr instanceof ContextBudgetError && retryErr.code === 'FIXED_CONTEXT_TOO_LARGE'
+          ? retryErr
+          : undefined;
+        if (budgetErr) {
+          let numCtxRaised = false;
+          let windowFailoverSwitched = false;
+          if (
+            adapterKind === 'ollama' && !userPinnedContextLength
+            && !numCtxRaisedForRun && !abortController.signal.aborted
+          ) {
+            const planned = planOllamaNumCtx(budgetErr.estimatedTokens, budgetErr.inputBudget, {
+              min: Math.max(OLLAMA_NUM_CTX_MIN, contextWindowSize + 1),
+              max: OLLAMA_NUM_CTX_MAX,
+            }, (windowSize) => {
+              const candidate = resolveRequestBudget(
+                effectiveModelId, modelCaps, activeProvider, freshSettings, discoveredCaps, windowSize,
+              );
+              const candidateEscalation = escalateMaxOutputTokens(
+                candidate.reasoningParams.maxTokens, candidate.contextWindowSize,
+                maxOutputTokensRecoveryCount, candidate.reserveWindowSize,
+              );
+              const candidateOutput = candidateEscalation.changed
+                ? Math.max(candidate.reasoningParams.maxTokens, Math.min(candidateEscalation.maxOutputTokens, candidate.outputCeiling))
+                : candidate.reasoningParams.maxTokens;
+              return computeInputBudget(candidate.contextWindowSize, candidateOutput).inputBudget;
+            });
+            if (planned !== null) {
+              numCtxRaised = true;
+              numCtxRaisedForRun = true;
+              logger.warn('Context window too small for fixed cost: raising Ollama num_ctx for the rest of this run', {
+                from: contextWindowSize,
+                to: planned,
+                fixedTokens: budgetErr.estimatedTokens,
+                spentBudget: budgetErr.inputBudget,
+              });
+              chatDelta.flushTokens(conversationId, assistantMsgId);
+              chatDelta.setLastMessageContent(conversationId, '', assistantMsgId);
+              chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
+              chatDelta.appendText(
+                conversationId,
+                format(getI18n().chat.ollamaContextRaised, { to: formatTokenCount(planned) }),
+                assistantMsgId,
+              );
+              chatDelta.finishStreaming(conversationId, assistantMsgId);
+              runRequestedContextLength = planned;
+              runProbedContextWindow = planned;
+              continueLoop = true;
+            }
+          }
+          if (!numCtxRaised && !abortController.signal.aborted) {
+            requestedModelRecovery = true;
+            const binding = await options?.modelRecovery?.waitForSelection('context-window');
+            if (binding) {
+              windowFailoverSwitched = true;
+              chatDelta.flushTokens(conversationId, assistantMsgId);
+              chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
+              chatDelta.appendText(
+                conversationId,
+                format(getI18n().chat.modelFailoverSwitched, {
+                  to: failoverModelLabel(binding.model),
+                }),
+                assistantMsgId,
+              );
+              chatDelta.finishStreaming(conversationId, assistantMsgId);
+              await applyRecoveryModel(binding);
+              continueLoop = true;
+            }
+          }
+          if (numCtxRaised || windowFailoverSwitched) {
+            turnCount--;
+            continue;
+          } else {
+            // No escape available — record the numbers and rethrow; the
+            // terminal error handler below renders the friendly note with
+            // them (raise the length in the local server, or pick a bigger
+            // model).
+            contextBudgetNumbers = {
+              needed: budgetErr.estimatedTokens,
+              window: budgetErr.estimatedTokens + budgetErr.inputBudget,
+            };
+            throw budgetErr;
+          }
+        } else if (retryErr instanceof LLMError && retryErr.code === 'context_too_long') {
+          // 服务说内容太长：读出真实上限并记住，按新上限整理后重试一次；仍失败就把错误交给外层显示
           const learnedWindow = await learnContextWindowAfterOverflow({
             error: retryErr,
             provider: activeProvider,
@@ -2727,6 +2899,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // 按工具的 inputSchema 修复写错形状的参数（档案打开该护栏时）；修不好的
         // 原样交给工具，由工具把错误返回给模型
         const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, modelProfile, logger);
+        toolsDispatchedThisTurn = true;
         const batchResult = await executeToolBatch({
           collectedToolCalls: dispatchToolCalls,
           toolCallToStepId,
@@ -2930,8 +3103,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         consecutiveNoProgress = 0;
       }
 
-      // 只说不做的续推：做过操作的运行以纯文字的 end_turn 结束，且文字没有向用户
-      // 提问时，注入一条续写消息再跑一轮（每次运行最多两次，档案打开该护栏时才生效）
+      // Empty responses and unfinished current plans receive bounded recovery.
       if (
         !continueLoop
         && !awaitingUserRecovery
@@ -2951,6 +3123,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           stopReason: lastStopReason,
           toolCalls: collectedToolCalls,
           text: turnText,
+          hasUnfinishedWork: executionPort.getExecutionByLoopId(loopId)?.plannedSteps
+            .some((step) => step.status !== 'completed') ?? false,
         });
         if (nudge) {
           logger.info('Text-only end_turn nudge', {
@@ -2967,9 +3141,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             isSystem: true as const,
           });
           continueLoop = true;
+        } else if (textOnlyEndTurnNudge.exhausted) {
+          noProgressAborted = true;
         }
       } else {
-        // 本轮要继续或者已经按别的原因结束：只记录这一轮有没有操作，供后面的轮次判断
+        // Record tool activity for the next response.
         textOnlyEndTurnNudge.observeTurn({
           enabled: false,
           stopReason: lastStopReason,
@@ -2986,6 +3162,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         !continueLoop
         && !awaitingUserRecovery
         && !malformedToolCallGaveUp
+        && !noProgressAborted
         && hasSystemQueuedInputs(conversationId)
         && !abortController.signal.aborted
       ) {
@@ -3025,7 +3202,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         logger.info('Agent loop ended', { conversationId, loopId, turnCount, reason: endReason });
         // Reaching this point means no LLM call threw, so ok:true is correct
         // regardless of endReason (no_progress / max_tokens_exhausted / end_turn).
-        recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: true, at: Date.now() });
+        recordProviderCallOutcome(getActiveProvider(runSettings)?.id, { ok: true, at: Date.now() });
         // Complete the TaskExecution
         eventRouter.route({ type: 'done', loopId, reason: endReason });
         persistExecutionSnapshot(conversationId, loopId);
@@ -3053,20 +3230,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         import('../session/checkpoint').then(({ clearCheckpointForLoop }) => {
           clearCheckpointForLoop(conversationId, loopId);
         }).catch(() => {});
-        // Mark conversation status — error if recovery exhausted, otherwise completed.
-        // no_progress is a soft stop (visible marker, status completed) like maxTurns.
+        // Preserve incomplete outcomes in the conversation status and notifications.
         if (awaitingUserRecovery) {
           exitReason = 'awaiting_user';
         } else if (maxTokensRecoveryExhausted) {
           exitReason = 'error';
           exitError = 'Max output tokens recovery exhausted';
         } else if (noProgressAborted || malformedToolCallGaveUp) {
-          // 重写后操作仍然写坏：任务没有做成，按未完成交给调用方
           exitReason = 'no_progress';
         }
         chatDelta.setConversationStatus(
           conversationId,
-          awaitingUserRecovery ? 'idle' : maxTokensRecoveryExhausted ? 'error' : 'completed',
+          isIncompleteReason(exitReason) ? 'idle' : maxTokensRecoveryExhausted ? 'error' : 'completed',
         );
   
         // Interactive-desktop gate: user-visible conversations only.
@@ -3116,12 +3291,44 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             logger.warn('[proposalSignal] compute failed', { err: err instanceof Error ? err.message : String(err) });
           }
         }
-        if (!awaitingUserRecovery) {
+        if (exitReason === 'completed') {
           const convTitle = getConversationReader().getIndexEntry(conversationId)?.title ?? getI18n().chat.notificationTaskFallback;
           notifyTaskCompleted(convTitle, conversationId);
         }
       }
     } catch (err) {
+      const recoveryReason = isFailoverWorthyError(err) ? 'quota'
+        : (err instanceof LLMError && err.code === 'context_too_long')
+          || (err instanceof ContextBudgetError && err.code === 'FIXED_CONTEXT_TOO_LARGE') ? 'context-window' : undefined;
+      if (recoveryReason && !requestedModelRecovery && !abortController.signal.aborted && options?.modelRecovery) {
+        if (!toolsDispatchedThisTurn) {
+          const interrupted = 'The model response was interrupted before this tool could run.';
+          for (const call of collectedToolCalls) {
+            call.isExecuting = false;
+            call.isError = true;
+            call.result = interrupted;
+            const stepId = toolCallToStepId.get(call.id);
+            if (stepId) eventRouter.route({ type: 'step-error', loopId, stepId, error: interrupted });
+          }
+          if (collectedToolCalls.length) chatDelta.setMessageToolCalls(conversationId, assistantMsgId, collectedToolCalls);
+        }
+        chatDelta.flushTokens(conversationId, assistantMsgId);
+        chatDelta.setMessageStreamingFlag(conversationId, assistantMsgId, false);
+        if (finalUsage) chatDelta.updateMessageUsage(conversationId, {
+          ...finalUsage, promptTokens: promptTokensOf(usageProtocolFor(adapterKind), finalUsage),
+        }, assistantMsgId);
+        const binding = await options.modelRecovery.waitForSelection(recoveryReason);
+        if (binding && !abortController.signal.aborted) {
+          chatDelta.appendText(conversationId, format(getI18n().chat.modelFailoverSwitched, {
+            to: failoverModelLabel(binding.model),
+          }), assistantMsgId);
+          chatDelta.finishStreaming(conversationId, assistantMsgId);
+          await applyRecoveryModel(binding);
+          continueLoop = true;
+          turnCount--;
+          continue;
+        }
+      }
       // Handle abort errors gracefully.
       // retry.ts wraps signal-aborted sleeps in LLMError(code='cancelled'); treat
       // it as a user abort too, otherwise it would surface as "Error: Request cancelled".
@@ -3160,10 +3367,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // are discarded because their parent task no longer exists.
         pauseUserInputQueue(conversationId);
         drainSystemQueuedInputs(conversationId);
-        drainConfirmationQueue();
-        drainFilePermissionQueue();
-        drainWorkspaceRequest();
-        drainUserQuestions();
+        drainConfirmationQueue(loopId);
+        drainFilePermissionQueue(loopId);
+        drainWorkspaceRequest(loopId);
+        drainUserQuestions(loopId);
         drainCapabilitySetupRequests(loopId);
 
         // Drop the untouched placeholder BEFORE cancelStreaming: an abort that
@@ -3242,7 +3449,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         error: errorMessage,
         code: errorCode,
         model: effectiveModelId,
-        providerId: getActiveProvider(settingsForModel)?.id,
+        providerId: getActiveProvider(runSettings)?.id,
         status: err instanceof LLMError ? err.upstream?.status : undefined,
         error_type: err instanceof LLMError ? err.upstream?.error_type : undefined,
         traceId: err instanceof LLMError ? err.upstream?.traceId : undefined,
@@ -3256,7 +3463,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // limit / 5xx / network blip, and not a non-LLM agent crash) should mark
         // this provider unhealthy for the diagnostic.
         if (isConfigFailureCode(err.code)) {
-          recordProviderCallOutcome(getActiveProvider(settingsForModel)?.id, { ok: false, code: err.code, at: Date.now() });
+          recordProviderCallOutcome(getActiveProvider(runSettings)?.id, { ok: false, code: err.code, at: Date.now() });
         }
       } else {
         reportError('agent_crash', errorCode ?? 'unknown', undefined, effectiveModelId, errorMessage);
@@ -3281,11 +3488,18 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const isInsufficientBalanceError = /余额不足|无可用资源包/.test(errorMessage);
       const managedProviderUnreachable = describeManagedProviderUnreachable(
         getI18n().chat,
-        getActiveProvider(settingsForModel),
+        getActiveProvider(runSettings),
         errorCode,
       );
       const isContextBudgetError = err instanceof ContextBudgetError;
-      const contextTooSmall = contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(settingsForModel)));
+      const contextTooSmall = contextBudgetNumbers !== undefined && err instanceof ContextBudgetError && err.code === 'FIXED_CONTEXT_TOO_LARGE'
+        ? contextTooSmallMessageWithNumbers(
+            getI18n().chat,
+            localServerKind(getActiveProvider(runSettings)),
+            contextBudgetNumbers.needed,
+            contextBudgetNumbers.window,
+          )
+        : contextTooSmallMessage(getI18n().chat, localServerKind(getActiveProvider(runSettings)));
       // 窗口放不下说明（含超长恢复后仍放不下）时给用户的是一句普通说明，不加错误前缀
       const showsContextTooSmall = !managedProviderUnreachable
         && !(isContextBudgetError && err.code === 'INPUT_TOO_LARGE')

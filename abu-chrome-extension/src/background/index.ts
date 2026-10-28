@@ -11,6 +11,7 @@
 import type { BridgeRequest, BridgeResponse, FrameTree, JsDialogAction } from '../shared/types.js';
 import { MAIN_FRAME_REF } from '../shared/types.js';
 import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
+import { probeHistoryNavigation, executeHistoryNavigation, type ChromeNavigationPin } from './historyNavigation.js';
 import { noCaptureAreaRefusal } from '../shared/captureArea.js';
 import {
   createDownloadTracker,
@@ -712,6 +713,17 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
           }
         }
 
+        const navigationProbe = payload.navigationProbe as { tabId?: unknown; action?: unknown } | undefined;
+        if (navigationProbe && typeof navigationProbe.tabId === 'number' && typeof navigationProbe.action === 'string') {
+          for (const win of windows) {
+            for (const tab of win.tabs) {
+              if (tab.tabId === navigationProbe.tabId) {
+                (tab as { navigation?: ChromeNavigationPin | null }).navigation = await probeHistoryNavigation(tab.tabId, navigationProbe.action);
+              }
+            }
+          }
+        }
+
         // Sort: current window first
         windows.sort((a, b) => (b.isCurrentWindow ? 1 : 0) - (a.isCurrentWindow ? 1 : 0));
 
@@ -843,16 +855,10 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
             return { id, success: false, error: `Invalid URL scheme. Only http: and https: URLs are allowed.` };
           }
           await chrome.tabs.update(tabId, { url });
-        } else if (navAction === 'reload') {
-          await chrome.tabs.reload(tabId);
-        } else if (navAction === 'back' || navAction === 'forward') {
-          // Execute history navigation in page main world
-          await chrome.scripting.executeScript({
-            target: { tabId },
-            func: (dir: string) => { if (dir === 'back') { history.back(); } else { history.forward(); } },
-            args: [navAction],
-            world: 'MAIN',
-          });
+        } else if (['reload', 'back', 'forward'].includes(navAction)) {
+          await executeHistoryNavigation(tabId, payload);
+        } else {
+          throw new Error('Invalid navigation action');
         }
         return { id, success: true, data: `Navigation: ${navAction}` };
       }

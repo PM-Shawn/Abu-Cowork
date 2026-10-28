@@ -83,6 +83,8 @@
  */
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
+import path from 'node:path';
 import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { ElectronApplication, Page } from 'playwright';
@@ -1213,6 +1215,118 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
       removeElectronDataRoot(dataRoot);
       dataRoot = undefined;
     }
+  });
+
+  test('saves real screenshots without overwriting and follows verified history without confirmation', async () => {
+    const fixture = await startFormFixture(`capture-history-${randomUUID()}`);
+    fixtures.push(fixture);
+    const secondUrl = new URL('/second', fixture.url).href;
+    let firstPath = '';
+    let firstBytes: Buffer;
+    const screenshotFiles = () => readdirSync(dataRoot!.appDataDir, { recursive: true })
+      .filter((entry): entry is string => typeof entry === 'string' && /capture(?:-2)?\.png$/.test(entry))
+      .map(entry => path.join(dataRoot!.appDataDir, entry));
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: 'tabs', toolName: 'abu-browser__get_tabs' },
+      async body => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return { kind: 'tool-call', arguments: { tabId: (await currentTab(app!, body)).tabId, url: fixture.url }, toolCallId: 'open', toolName: 'abu-browser__navigate' };
+      },
+      async body => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return { kind: 'tool-call', arguments: { tabId: (await tabOn(app!, fixture.url)).tabId, saveToFile: true, savePath: 'capture.png' }, toolCallId: 'capture-one', toolName: 'abu-browser__screenshot' };
+      },
+      async body => {
+        const result = lastSuccessfulToolResult(body, 'abu-browser__screenshot');
+        expect(screenshotFiles()).toHaveLength(1);
+        firstPath = screenshotFiles()[0];
+        firstBytes = readFileSync(firstPath);
+        expect(result).toContain(firstPath);
+        const size = await app!.evaluate(({ nativeImage }, filename) => nativeImage.createFromPath(filename).getSize(), firstPath);
+        expect(size.width).toBeGreaterThan(0);
+        expect(size.height).toBeGreaterThan(0);
+        return { kind: 'tool-call', arguments: { tabId: (await tabOn(app!, fixture.url)).tabId, saveToFile: true, savePath: 'capture.png' }, toolCallId: 'capture-two', toolName: 'abu-browser__screenshot' };
+      },
+      async body => {
+        const result = lastSuccessfulToolResult(body, 'abu-browser__screenshot');
+        expect(screenshotFiles()).toHaveLength(2);
+        expect(readFileSync(firstPath)).toEqual(firstBytes);
+        expect(result).toContain('capture-2.png');
+        return { kind: 'tool-call', arguments: { tabId: (await tabOn(app!, fixture.url)).tabId, url: secondUrl }, toolCallId: 'second', toolName: 'abu-browser__navigate' };
+      },
+      async body => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return { kind: 'tool-call', arguments: { tabId: (await tabOn(app!, secondUrl)).tabId, action: 'back' }, toolCallId: 'back', toolName: 'abu-browser__navigate' };
+      },
+      async body => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return { kind: 'tool-call', arguments: { tabId: (await tabOn(app!, fixture.url)).tabId, action: 'forward' }, toolCallId: 'forward', toolName: 'abu-browser__navigate' };
+      },
+      async body => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return { kind: 'tool-call', arguments: { tabId: (await tabOn(app!, secondUrl)).tabId, action: 'reload' }, toolCallId: 'reload', toolName: 'abu-browser__navigate' };
+      },
+      async body => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        await tabOn(app!, secondUrl);
+        return { kind: 'complete', responseText: 'Screenshot and history verification completed.' };
+      },
+    ]);
+    const page = await launchConfiguredApp(mock.baseUrl);
+    const taskName = `Screenshot history ${randomUUID()}`;
+    await seedUnattendedRun(page, { allowUnattendedBrowser: true, sitePermissions: { [fixture.origin]: 'allowed' },
+      scheduleId: randomUUID(), scheduleName: taskName, prompt: `Capture ${fixture.url} and verify navigation.` });
+    await waitForBuiltinBrowserRuntime(page);
+    await watchConfirmDialogTitles(page);
+    await runScheduledTaskNow(page, taskName);
+    await waitForTaskTurns(mock, 9);
+    expect(mock.planFailure()).toBeUndefined();
+    await expectNoConfirmationDialogEverAppeared(page);
+  });
+
+  test('refuses a denied history destination while preserving the current allowed page', async () => {
+    const allowed = await startFormFixture(`history-allowed-${randomUUID()}`);
+    const denied = await startFormFixture(`history-denied-${randomUUID()}`);
+    fixtures.push(allowed, denied);
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: 'history-tabs', toolName: 'abu-browser__get_tabs' },
+      async body => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return { kind: 'tool-call', arguments: { tabId: (await currentTab(app!, body)).tabId, url: allowed.url }, toolCallId: 'history-open', toolName: 'abu-browser__navigate' };
+      },
+      async body => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        const tabId = (await tabOn(app!, allowed.url)).tabId;
+        // Fixture preparation represents pages the user visited before this action.
+        const previous = await app!.evaluate(async ({ webContents }, fixture) => {
+          const contents = webContents.fromId(fixture.tabId);
+          if (!contents) throw new Error('Fixture tab is unavailable');
+          await contents.loadURL(fixture.denied);
+          await contents.loadURL(fixture.allowed);
+          return contents.navigationHistory.getEntryAtIndex(contents.navigationHistory.getActiveIndex() - 1)?.url;
+        }, { tabId, denied: denied.url, allowed: allowed.url });
+        expect(previous).toBe(denied.url);
+        await tabOn(app!, allowed.url);
+        return { kind: 'tool-call', arguments: { tabId, action: 'back' }, toolCallId: 'history-denied-back', toolName: 'abu-browser__navigate' };
+      },
+      async body => {
+        expect(toolResultFor(body, 'abu-browser__navigate')).toMatch(/^Error:/);
+        expect(toolResultFor(body, 'abu-browser__navigate')).not.toMatch(/无法确认|could not be determined|origin-unverified/);
+        await tabOn(app!, allowed.url);
+        return { kind: 'complete', responseText: 'The current page was preserved after the denied navigation.' };
+      },
+    ]);
+    const page = await launchConfiguredApp(mock.baseUrl);
+    const taskName = `Denied history ${randomUUID()}`;
+    await seedUnattendedRun(page, { allowUnattendedBrowser: true,
+      sitePermissions: { [allowed.origin]: 'allowed', [denied.origin]: 'denied' },
+      scheduleId: randomUUID(), scheduleName: taskName, prompt: `Open ${allowed.url} and go back.` });
+    await waitForBuiltinBrowserRuntime(page);
+    await watchConfirmDialogTitles(page);
+    await runScheduledTaskNow(page, taskName);
+    await waitForTaskTurns(mock, 4);
+    expect(mock.planFailure()).toBeUndefined();
+    await expectNoConfirmationDialogEverAppeared(page);
   });
 
   // ① master switch on + site allowed ⇒ the scheduled run really fills the form

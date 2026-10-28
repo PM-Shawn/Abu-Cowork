@@ -251,7 +251,9 @@ export const reportPlanTool: ToolDefinition = {
       // immune to a UI-locale switch during the await below (the dock echoes
       // back the payload's own option label, not a freshly-resolved one).
       const approveLabel = payload.questions[0].options[0].label;
-      const result = await requestUserQuestion(context.toolCallId, convId, payload);
+      const result = await requestUserQuestion(context.toolCallId, convId, payload, {
+        loopId: context.loopId, signal: context.abortSignal,
+      });
       if (interpretPlanApproval(result, approveLabel)) {
         if (timeoutKey) planApprovalTimedOut.delete(timeoutKey);
         setPlanMode(convId, 'approved');

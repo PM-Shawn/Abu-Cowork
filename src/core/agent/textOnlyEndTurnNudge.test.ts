@@ -38,7 +38,27 @@ describe('textAsksUser', () => {
 
 describe('createTextOnlyEndTurnNudge', () => {
   const toolTurn = { enabled: true, stopReason: 'tool_use', toolCalls: [{ name: 'read_file' }], text: '' };
-  const textTurn = { enabled: true, stopReason: 'end_turn', toolCalls: [], text: 'Next I will edit the file.' };
+  const textTurn = { enabled: true, stopReason: 'end_turn', toolCalls: [], text: 'Next I will edit the file.', hasUnfinishedWork: true };
+
+  it('accepts a complete result when the current plan has no unfinished work', () => {
+    const nudge = createTextOnlyEndTurnNudge();
+    nudge.observeTurn(toolTurn);
+    expect(nudge.observeTurn({ ...textTurn, hasUnfinishedWork: false,
+      text: '任务已经完成，报告已保存，没有剩余工作。' })).toBe(false);
+    expect(nudge.count).toBe(0);
+    expect(nudge.exhausted).toBe(false);
+  });
+
+  it('reports unfinished work after the recovery limit', () => {
+    const nudge = createTextOnlyEndTurnNudge();
+    nudge.observeTurn(toolTurn);
+    nudge.observeTurn(textTurn);
+    nudge.observeTurn(textTurn);
+    expect(nudge.observeTurn(textTurn)).toBe(false);
+    expect(nudge.exhausted).toBe(true);
+    expect(nudge.observeTurn({ ...textTurn, hasUnfinishedWork: false, text: 'The report is complete.' })).toBe(false);
+    expect(nudge.exhausted).toBe(false);
+  });
 
   it('nudges a text-only end_turn after a tool turn, at most twice per run', () => {
     const nudge = createTextOnlyEndTurnNudge();
@@ -89,5 +109,26 @@ describe('createTextOnlyEndTurnNudge', () => {
     nudge.observeTurn(toolTurn);
     expect(nudge.observeTurn(textTurn)).toBe(true);
     expect(nudge.observeTurn(textTurn)).toBe(false);
+  });
+
+  it('nudges an empty response (no text, no tool calls) after a tool turn', () => {
+    // 网关吞内容场景：token 计了但正文没到。空正文不算提问（textAsksUser('')=false），
+    // 应照常续推。
+    const nudge = createTextOnlyEndTurnNudge();
+    nudge.observeTurn(toolTurn);
+    expect(nudge.sawToolCall).toBe(true);
+    expect(nudge.observeTurn({ ...textTurn, text: '' })).toBe(true);
+    expect(nudge.observeTurn({ ...textTurn, text: '' })).toBe(true);
+    expect(nudge.observeTurn({ ...textTurn, text: '' })).toBe(false);
+    expect(nudge.count).toBe(TEXT_ONLY_END_TURN_NUDGE_LIMIT);
+  });
+
+  it('reports sawToolCall only after a turn that carried a tool call', () => {
+    const nudge = createTextOnlyEndTurnNudge();
+    expect(nudge.sawToolCall).toBe(false);
+    nudge.observeTurn(textTurn);
+    expect(nudge.sawToolCall).toBe(false);
+    nudge.observeTurn(toolTurn);
+    expect(nudge.sawToolCall).toBe(true);
   });
 });

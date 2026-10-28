@@ -42,8 +42,7 @@ export interface LoopContext {
   eventRouter: EventRouter;
   loopId: string;
   conversationId: string;
-  /** Frozen provider/model snapshot owned by this parent run. Nested agents
-   * must inherit it instead of consulting the mutable global selection. */
+  /** Provider/model binding owned by this run and updated on user selection. */
   settingsReader?: SettingsReader;
   toolCallToStepId: Map<string, string>;
   /** Execution denylist inherited by tools that may create nested work. */
@@ -163,23 +162,24 @@ export function subscribeToCommandConfirmation(callback: () => void): () => void
 /**
  * Get the current pending command confirmation request
  */
-export function getPendingCommandConfirmation() {
-  return approvalBridge.getSnapshot('command');
+export function getPendingCommandConfirmation(conversationId?: string) {
+  return approvalBridge.getSnapshot('command', conversationId);
 }
 
 /**
  * Resolve the pending command confirmation and process next in queue
  */
-export function resolveCommandConfirmation(confirmed: boolean) {
-  approvalBridge.resolveActive('command', confirmed);
+export function resolveCommandConfirmation(confirmed: boolean, requestId?: string) {
+  if (requestId !== undefined) approvalBridge.resolve('command', requestId, confirmed);
+  else approvalBridge.resolveActive('command', confirmed);
 }
 
 /**
  * Drain the confirmation queue — reject all pending confirmations.
  * Called on abort to prevent stale confirmation dialogs.
  */
-export function drainConfirmationQueue() {
-  approvalBridge.drainAll('command');
+export function drainConfirmationQueue(loopId?: string) {
+  drainApprovalKind('command', loopId);
 }
 
 /**
@@ -231,7 +231,8 @@ export async function requestCommandConfirmation(info: ConfirmationInfo, loopId?
   });
   if (teamDecision !== 'ask') return teamDecision === 'approved';
   return approvalBridge.request('command', {
-    loopId,
+    loopId: loopId ?? ctx?.loopId,
+    signal: ctx?.signal,
     conversationId: convId,
     payload: { info, agentName },
   });
@@ -300,8 +301,8 @@ export function subscribeToFilePermission(callback: () => void): () => void {
 /**
  * Get the current pending file permission request
  */
-export function getPendingFilePermission(): FilePermissionRequest | null {
-  return approvalBridge.getSnapshot('file-permission');
+export function getPendingFilePermission(conversationId?: string) {
+  return approvalBridge.getSnapshot('file-permission', conversationId);
 }
 
 /**
@@ -317,22 +318,25 @@ export function resolveFilePermission(
   granted: boolean,
   path?: string,
   capabilities?: ('read' | 'write' | 'execute')[],
-  duration?: PermissionDuration
+  duration?: PermissionDuration,
+  request?: { requestId: string; conversationId: string },
 ) {
-  const hasPending = approvalBridge.getSnapshot('file-permission') !== null;
+  const pending = approvalBridge.getSnapshot('file-permission', request?.conversationId);
+  const hasPending = pending !== null && (request === undefined || pending.requestId === request.requestId);
+  if (!hasPending) return;
   if (hasPending && granted && path && capabilities && duration) {
     // Grant permission via permissionStore (which syncs to pathSafety)
     usePermissionStore.getState().grantPermission(path, capabilities, duration);
   }
-  approvalBridge.resolveActive('file-permission', granted);
+  approvalBridge.resolve('file-permission', pending.requestId, granted);
 }
 
 /**
  * Drain the file permission queue — reject all pending requests.
  * Called on abort to prevent stale permission dialogs.
  */
-export function drainFilePermissionQueue() {
-  approvalBridge.drainAll('file-permission');
+export function drainFilePermissionQueue(loopId?: string) {
+  drainApprovalKind('file-permission', loopId);
 }
 
 /**
@@ -375,7 +379,8 @@ export async function requestFilePermission(request: Parameters<FilePermissionCa
     return true;
   }
   return approvalBridge.request('file-permission', {
-    loopId,
+    loopId: loopId ?? ctx?.loopId,
+    signal: ctx?.signal,
     conversationId: convId,
     payload: { ...request, agentName },
   });
@@ -384,7 +389,7 @@ export async function requestFilePermission(request: Parameters<FilePermissionCa
 // ── Workspace Request Infrastructure ──
 
 export interface WorkspaceRequest {
-  /** Identifies this request against a newer one that takes its place (a window per request). */
+  /** Stable identity used by answers returning from the system folder picker. */
   id: string;
   reason: string;
   conversationId: string;
@@ -401,8 +406,8 @@ export function subscribeToWorkspaceRequest(callback: () => void): () => void {
 /**
  * Get the current pending workspace request
  */
-export function getPendingWorkspaceRequest(): WorkspaceRequest | null {
-  return approvalBridge.getSnapshot('workspace');
+export function getPendingWorkspaceRequest(conversationId?: string): WorkspaceRequest | null {
+  return approvalBridge.getSnapshot('workspace', conversationId);
 }
 
 /**
@@ -414,8 +419,7 @@ export function resolveWorkspaceRequest(path: string | null): void {
 
 /**
  * Resolve one specific workspace request. No-op when that request is no
- * longer the pending one (timed out, drained, or replaced) — for answers that
- * arrive after an await, such as a folder picked in the system dialog.
+ * longer pending. Answers returning from a system dialog retain their identity.
  */
 export function resolveWorkspaceRequestById(id: string, path: string | null): void {
   approvalBridge.resolve('workspace', id, path);
@@ -424,32 +428,42 @@ export function resolveWorkspaceRequestById(id: string, path: string | null): vo
 /**
  * Drain workspace request — reject pending request on abort
  */
-export function drainWorkspaceRequest(): void {
-  approvalBridge.drainAll('workspace');
+export function drainWorkspaceRequest(loopId?: string): void {
+  drainApprovalKind('workspace', loopId);
 }
 
 /**
  * Request the user to select a workspace folder.
  * Called from the request_workspace tool.
- * Auto-resolves to null after timeout to prevent indefinite hangs.
+ * No timeout: settles only on the user's explicit answer (or on abort/drain).
  *
- * NOTE: a second concurrent call silently overwrites the first — the first
- * request's promise is then abandoned (see approvalBridge.ts's module doc,
- * 'overwrite' mode). This is a pre-existing quirk of the original singleton,
- * reproduced verbatim, not something this refactor fixes.
+ * Concurrent requests retain their own identities and are displayed in order
+ * within each conversation.
  */
-export async function requestWorkspace(reason: string, conversationId?: string, suggestedPath?: string): Promise<string | null> {
+export async function requestWorkspace(
+  reason: string,
+  conversationId?: string,
+  suggestedPath?: string,
+  owner?: { loopId?: string; signal?: AbortSignal; authorizationScopeId?: string },
+): Promise<string | null> {
   const convId = conversationId ?? getCurrentLoopContext()?.conversationId ?? '';
-  return approvalBridge.request('workspace', {
+  const selected = await approvalBridge.request('workspace', {
+    loopId: owner?.loopId,
+    signal: owner?.signal,
     conversationId: convId,
     payload: { reason, suggestedPath },
   });
+  if (!selected || owner?.signal?.aborted) return null;
+  if (owner?.authorizationScopeId !== undefined) scopedAuthorizeWorkspace(owner.authorizationScopeId, selected);
+  else authorizeWorkspace(selected);
+  return selected;
 }
 
 // ── User Question Infrastructure ──
 
 export interface PendingUserQuestion {
   id: string;              // = toolCallId
+  requestId: string;
   conversationId: string;
   payload: UserQuestionPayload;
 }
@@ -491,7 +505,7 @@ export function getPendingUserQuestions(): PendingUserQuestion[] {
 }
 
 /**
- * Resolve a specific user question (from UserQuestionCard on submit, or timeout).
+ * Resolve a specific user question using its host approval identity.
  */
 export function resolveUserQuestion(id: string, r: UserQuestionResult | null): void {
   approvalBridge.resolve('user-question', id, r);
@@ -500,8 +514,19 @@ export function resolveUserQuestion(id: string, r: UserQuestionResult | null): v
 /**
  * Drain all pending user questions — resolve(null) so blocked tools exit.
  */
-export function drainUserQuestions(): void {
-  approvalBridge.drainAll('user-question');
+export function drainUserQuestions(loopId?: string): void {
+  drainApprovalKind('user-question', loopId);
+}
+
+function drainApprovalKind(kind: approvalBridge.ApprovalKind, loopId?: string): void {
+  if (loopId === undefined) approvalBridge.drainAll(kind);
+  else approvalBridge.drainByLoopId(kind, loopId);
+}
+
+export function drainApprovalsForConversation(conversationId: string): void {
+  for (const kind of ['command', 'file-permission', 'workspace', 'user-question'] as const) {
+    approvalBridge.drainByConversationId(kind, conversationId);
+  }
 }
 
 /**
@@ -512,16 +537,18 @@ export function drainUserQuestionsForConversation(conversationId: string): void 
 }
 
 /**
- * Request the user to answer a structured question set. Suspends until the
- * user submits or it times out (10 min). Resolves to result, or null.
+ * Request structured answers. Waits for the user's answer or cancellation.
  */
 export function requestUserQuestion(
   id: string,
   conversationId: string,
   payload: UserQuestionPayload,
+  owner?: { loopId?: string; signal?: AbortSignal },
 ): Promise<UserQuestionResult | null> {
   return approvalBridge.request('user-question', {
     id,
+    loopId: owner?.loopId,
+    signal: owner?.signal,
     conversationId,
     payload: { payload },
   });

@@ -52,6 +52,7 @@ export const UNBOUNDED_REVERSE_RPC_METHODS: ReadonlySet<string> = new Set([
   'tool.invoke',   // runs for as long as the tool itself does
   'native.invoke', // same, through the shell's native command host
   'approval.check',// waits on a person
+  'model.recovery.wait',
 ]);
 
 const REVERSE_RPC_TIMEOUT_OVERRIDES_MS: Readonly<Record<string, number>> = {

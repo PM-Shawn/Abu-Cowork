@@ -32,6 +32,7 @@ import type { WorkspaceReader } from '@/core/agent/ports/workspaceReader';
 import type { SettingsState } from '@/stores/settingsStore';
 import type { DelegatedUserTurn } from '@/core/subagent/delegatedUserTurn';
 import type { SubagentUiStrings } from '@/core/agent/subagentUiStrings';
+import { createModelRecoveryPort } from './modelRecovery';
 import { runSubagentLoop, type SubagentLoopOptions, type SubagentProgressEvent, type SubagentStopReason } from '@/core/agent/subagentLoop';
 import { clearDispatchInputs } from '@/core/agent/dispatchInput';
 import { isRunPermissionCeiling } from '@/core/permissions/runPermissionCeiling';
@@ -624,6 +625,7 @@ export async function handleSubagentRun(rawParams: unknown): Promise<unknown> {
 
   const options: SubagentLoopOptions = {
     ...wireBackedLoopOptions,
+    modelRecovery: createModelRecoveryPort(runId, (binding) => { runCtx.resolvedCreds = binding.resolvedCreds; }),
     signal: controller.signal,
     settingsReader,
     // Already live (mirror + pinned model), and the bare getSettingsReader()

@@ -70,6 +70,8 @@ import { getCapsPort } from './ports/capsPort';
 import { getAbortRegistry } from './ports/abortRegistry';
 import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
+import { buildRunModelBinding, registerModelRecovery, recoveryAcceptsMedia } from './modelRecovery';
+import type { RunModelBinding } from './ports/modelRecovery';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { toSerializableTool } from './subagentRunner';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
@@ -136,6 +138,7 @@ import {
 import type { ConversationMeta } from '../session/conversationStorage';
 import { resolveActiveSkillInfo, type ActiveSkillInfo } from '../skill/activeSkillInstructions';
 import { resolveEntryModel } from './resolveEntryModel';
+import { resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
 import { getActiveApiKey, getActiveProvider } from '../../utils/settingsSelectors';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
 import {
@@ -350,12 +353,15 @@ export interface AgentLoopRunOptions {
   directDelegateAgentName?: string;
   /** Ownership captured by the shell, never accepted from reverse RPC params. */
   directDelegatePluginKey?: string | null;
-  directDelegateAgent?: { filePath: string };
+  directDelegateAgent?: { filePath: string; model?: string };
   /** Frozen provider/model snapshot inherited by nested shell-side agents. */
   settingsReader?: SettingsReader;
 }
 
 export interface RunSession {
+  modelBinding: RunModelBinding;
+  directDelegateAdmitted?: boolean;
+  releaseModelRecovery?: () => void;
   releasePluginUse?: () => void;
   /** Captured exactly once, before any reverse request can execute. */
   teamSnapshot?: Pick<ToolExecutionContext, 'teamRoster' | 'teamRequirePlanApproval'>;
@@ -567,6 +573,7 @@ registerSidecarRunPredicate(isConversationRunningInSidecar);
 /** Unregister a run session. Uninstalls the push emitters once the LAST session is gone. */
 export function unregisterRunSession(runId: string): void {
   const session = sessions.get(runId);
+  session?.releaseModelRecovery?.();
   if (session?.abortWatchdog) clearTimeout(session.abortWatchdog);
   if (session?.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
   session?.resourceSettlement?.seal();
@@ -1166,10 +1173,10 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       await (session.frameApplyTail ?? Promise.resolve());
 
       // Permission dialogs live in the shell and must not survive a force-stop.
-      drainConfirmationQueue();
-      drainFilePermissionQueue();
-      drainWorkspaceRequest();
-      drainUserQuestions();
+      drainConfirmationQueue(session.loopId);
+      drainFilePermissionQueue(session.loopId);
+      drainWorkspaceRequest(session.loopId);
+      drainUserQuestions(session.loopId);
 
       if (getConversationReader().getConversation(session.conversationId)) {
         const chatDelta = getChatDelta();
@@ -1329,20 +1336,22 @@ function requestSidecarRunAbort(session: RunSession): Promise<void> {
   return session.abortRequestPromise;
 }
 
-/** The four permissionBridge drain functions, addressable by `approval.drain`'s `kind`. The queues themselves are global (not per-run/per-loop — see permissionBridge.ts), so `runId` in the params is informational only; the drain always executes for the named kind(s) regardless of whether that runId is still a known session. */
-const DRAIN_BY_KIND: Record<'command' | 'file-permission' | 'workspace' | 'user-question', () => void> = {
+/** Approval cancellation is scoped to the shell-owned loop. */
+const DRAIN_BY_KIND: Record<'command' | 'file-permission' | 'workspace' | 'user-question', (loopId: string) => void> = {
   command: drainConfirmationQueue,
   'file-permission': drainFilePermissionQueue,
   workspace: drainWorkspaceRequest,
   'user-question': drainUserQuestions,
 };
 
-/** `approval.drain` (NOTIFICATION) → {runId, kind} → the corresponding permissionBridge drain function(s). `kind: 'all'` drains every queue (used on abort, matching the shell's own today-discipline of clearing every pending dialog). Unknown kind → warn + drop. */
+/** Ignore notifications from runs that have already been released. */
 function handleApprovalDrain(rawParams: unknown): void {
   const params = rawParams as { runId?: unknown; kind?: unknown } | null;
   if (!params || typeof params.kind !== 'string') return;
+  const session = typeof params.runId === 'string' ? sessions.get(params.runId) : undefined;
+  if (!session || session.terminalPublished) return;
   if (params.kind === 'all') {
-    for (const drain of Object.values(DRAIN_BY_KIND)) drain();
+    for (const drain of Object.values(DRAIN_BY_KIND)) drain(session.loopId);
     return;
   }
   const drain = DRAIN_BY_KIND[params.kind as keyof typeof DRAIN_BY_KIND];
@@ -1350,7 +1359,7 @@ function handleApprovalDrain(rawParams: unknown): void {
     logger.warn('approval.drain: unknown kind, dropping', { kind: params.kind });
     return;
   }
-  drain();
+  drain(session.loopId);
 }
 
 /**
@@ -1661,9 +1670,17 @@ function contextForSession(
 ): ToolExecutionContext {
   assertWireOfferedToolNames(incoming);
   assertWireModelCapabilities(incoming);
+  if (incoming && (incoming.modelBindingRevision ?? 0) !== session.modelBinding.revision) {
+    throw new SidecarRequestError(-32000, 'Tool request uses a stale model binding');
+  }
   const browserDenials = browserDenialsForSession(session);
   const trustedContext: ToolExecutionContext = {
     ...incoming,
+    modelBindingRevision: session.modelBinding.revision,
+    modelId: session.modelBinding.capabilities.modelId,
+    supportsVision: session.modelBinding.capabilities.vision,
+    computerUseTier: session.modelBinding.capabilities.computerUseTier,
+    modelCapabilitySource: session.modelBinding.capabilities.capabilitySource,
     operationOwner: session.options.operationOwner,
     files: undefined,
     conversationId: session.conversationId,
@@ -1800,7 +1817,7 @@ function assertRunNotStopping(session: RunSession, runId: string): void {
   }
 }
 
-async function handleDirectDelegateAdmission(raw: unknown): Promise<{ allowed: true }> {
+async function handleDirectDelegateAdmission(raw: unknown): Promise<{ allowed: true; binding: RunModelBinding }> {
   const runId = (raw as { runId?: unknown } | null)?.runId;
   const session = typeof runId === 'string' ? sessions.get(runId) : undefined;
   if (!session || typeof runId !== 'string') throw new SidecarRequestError(-32000, 'Unknown direct delegate run');
@@ -1812,7 +1829,17 @@ async function handleDirectDelegateAdmission(raw: unknown): Promise<{ allowed: t
   if (owner === null) throw new SidecarRequestError(-32000, 'Conflicting plugin ownership');
   if (owner !== undefined) assertPluginEnabled(owner);
   if (session.options.directDelegateAgent) assertPluginAgentEnabled(session.options.directDelegateAgent);
-  return { allowed: true };
+  if (session.directDelegateAdmitted) return { allowed: true, binding: session.modelBinding };
+  const agent = session.options.directDelegateAgent;
+  if (!agent) throw new SidecarRequestError(-32000, 'Direct delegate definition is unavailable');
+  const settings = session.modelBinding.settingsSnapshot;
+  const capabilities = resolveDelegatedModelCapabilities(agent.model, settings);
+  session.modelBinding = buildRunModelBinding(settings, {
+    providerId: settings.activeModel.providerId,
+    modelId: capabilities.modelId,
+  }, session.modelBinding.revision);
+  session.directDelegateAdmitted = true;
+  return { allowed: true, binding: session.modelBinding };
 }
 
 async function handleMainLoopToolInvoke(rawParams: unknown): Promise<unknown> {
@@ -1961,7 +1988,7 @@ async function handleApprovalCheck(rawParams: unknown): Promise<ToolApprovalDeci
   const decision = await checkToolApproval(
     params.toolName,
     (params.input as Record<string, unknown>) ?? {},
-    contextForSession(session, params.context as ToolExecutionContext | undefined),
+    contextForSession(session, (params.context as ToolExecutionContext | undefined) ?? {}),
     session.options.requestCommandConfirmation ?? requestCommandConfirmation,
     session.options.requestFilePermission ?? requestFilePermission,
   );
@@ -3769,6 +3796,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     resolveTerminal = resolve;
   });
   const session: RunSession = {
+    modelBinding: buildRunModelBinding(params.settingsSnapshot, {
+      providerId: params.settingsSnapshot.activeModel.providerId,
+      modelId: resolveEntryModel(params.orchestration.route, params.settingsSnapshot).effectiveModelId,
+    }, 0),
     agentToolPolicy: agentToolPolicyForRoute(params.orchestration.route),
     teamSnapshot: captureTeamExecutionSnapshot(params.conversationSnapshot.teamId, params.orchestration.route.team),
     conversationId,
@@ -3804,7 +3835,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
           }
         : undefined,
       unattendedApproval: options?.unattendedApproval,
-      settingsReader: { getSnapshot: () => params.settingsSnapshot },
+      settingsReader: { getSnapshot: () => session.modelBinding.settingsSnapshot },
       directDelegateAgentName: params.orchestration.route.type === 'delegate' ? params.orchestration.route.delegateAgent?.name : undefined,
       directDelegatePluginKey: params.orchestration.route.type === 'delegate' && params.orchestration.route.delegateAgent ? pluginOwnerForAgent(params.orchestration.route.delegateAgent) : undefined,
       directDelegateAgent: params.orchestration.route.type === 'delegate' ? params.orchestration.route.delegateAgent : undefined,
@@ -3847,6 +3878,20 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   shellAbortController.signal.addEventListener('abort', onShellAbort, { once: true });
 
   registerRunSession(runId, session);
+  session.releaseModelRecovery = registerModelRecovery(runId, {
+    conversationId,
+    signal: shellAbortController.signal,
+    interactive: session.interactionMode !== 'background',
+    getBinding: () => session.modelBinding,
+    acceptsModel: (binding) => recoveryAcceptsMedia(binding, useChatStore.getState().conversations[conversationId]?.messages ?? []),
+    isCurrent: () => sessions.get(runId) === session && !session.terminalPublished
+      && !session.abortRequested && !!useChatStore.getState().conversations[conversationId]
+      && session.options.operationOwner?.isCurrent() !== false,
+    onSelected: (binding) => {
+      session.modelBinding = binding;
+      useChatStore.getState().setConversationModel(conversationId, binding.model);
+    },
+  });
   // The session is now what `findJoinableRunSessionForConversation` returns,
   // so a dispatch that waited on a redo's hold stages into this run.
   options?.startHold?.release();

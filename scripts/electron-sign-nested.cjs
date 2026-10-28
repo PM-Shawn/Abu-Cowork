@@ -25,6 +25,7 @@ const fs = require('node:fs');
 const { createHash } = require('node:crypto');
 const { execFileSync, spawnSync } = require('node:child_process');
 const { localizeMacAppName } = require('./electron-localize-app-name.cjs');
+const { prepareInstallerTools, writeInstallerManifest } = require('./electron-installer-tools.cjs');
 
 /** Dirs under Contents/Resources whose Mach-O contents we own and must sign. */
 // speech-runtime: sherpa-onnx .node + ONNX Runtime dylibs loaded by the voice-input worker.
@@ -170,6 +171,10 @@ function copyDirectory(source, destination, platform) {
 
 /** @param {import('app-builder-lib').AfterPackContext} context */
 module.exports = async function afterPack(context) {
+  if (context.electronPlatformName === 'win32') {
+    await prepareInstallerTools(context.packager.projectDir);
+    await writeInstallerManifest(context.appOutDir);
+  }
   // Localized name files must land before any signing seals Contents/Resources.
   localizeMacAppName(context);
   signNestedMacBinaries(context);

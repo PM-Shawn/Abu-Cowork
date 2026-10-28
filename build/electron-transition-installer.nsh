@@ -12,23 +12,164 @@
 
 !ifndef BUILD_UNINSTALLER
   Var abuTauriTransitionUpdate
+  Var AbuFinalDirectory
+  Var AbuHelperResult
+  Var AbuRecoveryResult
+  Var AbuTransactionStarted
+  Var AbuHelperShell
+  Var AbuFailed
+  Var AbuRetryRequested
 !endif
 
+!macro preInit
+  !ifndef BUILD_UNINSTALLER
+    StrCpy $AbuRetryRequested ""
+    ${GetParameters} $0
+    ClearErrors
+    ${GetOptions} "$0" "/ABURETRYPID=" $1
+    ${IfNot} ${Errors}
+      System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i r1) p.r2 ?e'
+      Pop $3
+      ${If} $2 != 0
+        System::Call 'kernel32::WaitForSingleObject(p r2, i 15000) i.r3'
+        System::Call 'kernel32::CloseHandle(p r2)'
+        ${If} $3 != 0
+          SetErrorLevel 2
+          Quit
+        ${EndIf}
+      ${ElseIf} $3 != 87
+        SetErrorLevel 2
+        Quit
+      ${EndIf}
+      StrCpy $AbuRetryRequested "1"
+    ${EndIf}
+  !endif
+!macroend
+
+!macro customHeader
+  LangString AbuAppRunning 1033 "Close Abu and try again."
+  LangString AbuAppRunning 2052 "请关闭阿布后重试。"
+  LangString AbuProcessError 1033 "Unable to check running applications. Installation cannot continue."
+  LangString AbuProcessError 2052 "无法检查正在运行的应用，安装无法继续。"
+  LangString AbuFinishUpdateFirst 1033 "Run the Abu installer to complete the unfinished update before uninstalling."
+  LangString AbuFinishUpdateFirst 2052 "请运行阿布安装器处理未完成的更新，然后再卸载。"
+  !ifndef BUILD_UNINSTALLER
+    !include "${BUILD_RESOURCES_DIR}\abu-installer-pages.nsh"
+    !include "${BUILD_RESOURCES_DIR}\abu-installer-transaction.nsh"
+  !endif
+!macroend
+
+!macro customCheckAppRunning
+  !ifndef BUILD_UNINSTALLER
+    !include "${BUILD_RESOURCES_DIR}\abu-installer-overrides.nsh"
+  !endif
+  Var /GLOBAL AbuProcessWaitCount
+  StrCpy $AbuProcessWaitCount 0
+  System::Call 'kernel32::SetEnvironmentVariableW(w "ABU_INSTALLER_DIRECTORY", w "$INSTDIR") i.r0'
+  ${If} $0 == 0
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
+  abuCheckProcesses:
+    nsExec::Exec `"$PowerShellPath" -NoProfile -NonInteractive -Command "$$ErrorActionPreference='Stop'; $$root=$$env:ABU_INSTALLER_DIRECTORY.TrimEnd('\') + '\'; $$found=@(Get-CimInstance -ClassName Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$root,[StringComparison]::OrdinalIgnoreCase) }); if ($$found.Count -gt 0) { exit 4 }; exit 0"`
+    Pop $R0
+    ${If} $R0 == 4
+      ${If} ${isUpdated}
+        IntOp $AbuProcessWaitCount $AbuProcessWaitCount + 1
+        ${If} $AbuProcessWaitCount < 30
+          Sleep 500
+          Goto abuCheckProcesses
+        ${EndIf}
+      ${EndIf}
+      ${IfNot} ${Silent}
+        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "$(AbuAppRunning)" IDRETRY abuCheckProcesses
+      ${EndIf}
+      SetErrorLevel 2
+      Quit
+    ${ElseIf} $R0 != 0
+      ${IfNot} ${Silent}
+        MessageBox MB_OK|MB_ICONEXCLAMATION "$(AbuProcessError)"
+      ${EndIf}
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+!macroend
+
+!macro customWelcomePage
+  Page custom AbuWelcome AbuWelcomeLeave
+!macroend
+
+!macro customFinishPage
+  Page custom AbuFinish
+!macroend
+
+!macro customPageAfterChangeDir
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE AbuProgressPre
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW AbuShowProgress
+!macroend
+
 !macro customInit
+  System::Call 'kernel32::CreateMutexW(p 0, i 1, w "${APP_GUID}-abu-installation") p.r0 ?e'
+  Pop $1
+  ${If} $0 == 0
+  ${OrIf} $1 == 183
+    SetErrorLevel 2
+    Quit
+  ${EndIf}
   StrCpy $abuTauriTransitionUpdate "false"
+  SetAutoClose true
+  ${If} ${isUpdated}
+    SetSilent silent
+  ${EndIf}
   ${GetParameters} $R8
   ClearErrors
   ${GetOptions} "$R8" "/UPDATE" $R9
   ${IfNot} ${Errors}
     StrCpy $abuTauriTransitionUpdate "true"
+    SetSilent silent
+  ${EndIf}
+  Call AbuInitializeTransaction
+  ${If} $AbuFailed == "1"
+    Call AbuStopSilentFailure
+    Return
+  ${EndIf}
+  ${If} ${Silent}
+    StrCpy $AbuPath $INSTDIR
+    Call AbuValidatePath
+    ${If} $AbuFailed == "1"
+      Call AbuStopSilentFailure
+    ${EndIf}
+    ${If} $AbuError != ""
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+    StrCpy $INSTDIR $AbuPath
   ${EndIf}
 !macroend
 
+!macro customInstallMode
+  StrCpy $installMode CurrentUser
+  SetShellVarContext current
+  Abort
+!macroend
+
 !macro customInstall
-  ${If} $abuTauriTransitionUpdate == "true"
-    # Run only after files, registry entries, and shortcuts have been written.
-    # ExecShellAsUser keeps the launched app in the current user's session.
-    ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "--tauri-transition"
+  abuInstallResult:
+  ${If} $AbuFailed != "1"
+    !insertmacro AbuRunTransaction Commit
+    ${If} $AbuHelperResult != 0
+    ${AndIf} $AbuHelperResult != 3
+      Call AbuRecoverFailure
+    ${EndIf}
+  ${EndIf}
+  ${If} $AbuFailed == "1"
+    Call AbuStopSilentFailure
+  ${Else}
+    StrCpy $AbuTransactionStarted ""
+    ${If} $abuTauriTransitionUpdate == "true"
+      # Run after files, registry entries, and shortcuts have been verified.
+      ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "--tauri-transition"
+    ${EndIf}
   ${EndIf}
 !macroend
 
@@ -82,4 +223,21 @@
 
 !macro customUnInstall
   !insertmacro restoreLegacyTauriUninstallVisibility
+!macroend
+
+!macro customUnInit
+  System::Call 'kernel32::CreateMutexW(p 0, i 1, w "${APP_GUID}-abu-installation") p.r0 ?e'
+  Pop $1
+  ${If} $0 == 0
+  ${OrIf} $1 == 183
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
+  ${If} ${FileExists} "$INSTDIR.abu-update\*.*"
+    ${IfNot} ${Silent}
+      MessageBox MB_OK|MB_ICONEXCLAMATION "$(AbuFinishUpdateFirst)"
+    ${EndIf}
+    SetErrorLevel 2
+    Abort
+  ${EndIf}
 !macroend

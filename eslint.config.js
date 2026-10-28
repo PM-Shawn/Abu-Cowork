@@ -223,6 +223,7 @@ export default defineConfig([
   // flags as "rule not found" rather than silently ignoring. It's a build artifact,
   // never hand-edited — same treatment as `dist`.
   globalIgnores([
+    '.agent/',
     'dist',
     'dist-electron-spike', // vite build output for the Electron shell (bundled, never hand-edited)
     'release-electron', // electron-builder packaged output

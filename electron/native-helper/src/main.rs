@@ -111,6 +111,7 @@ fn supported_commands() -> Vec<&'static str> {
     ]);
     #[cfg(target_os = "windows")]
     commands.extend([
+        "capture_session_exclusion_capability",
         "input_lease_begin",
         "input_lease_activate",
         "input_lease_commit_observation",
@@ -478,6 +479,11 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
                 object.insert("healthy".to_string(), Value::Bool(true));
             }
             Ok(identity)
+        }
+
+        #[cfg(target_os = "windows")]
+        "capture_session_exclusion_capability" => {
+            Ok(json!({ "supported": windows_backend::supports_capture_session_exclusion()? }))
         }
 
         #[cfg(target_os = "windows")]
@@ -992,6 +998,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
                     opt_i32(params, "expected_process_id")
                         .and_then(|value| u32::try_from(value).ok()),
                     opt_str(params, "expected_window_id"),
+                    opt_str(params, "excluded_main_window"),
                 )?;
                 serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }
@@ -1043,6 +1050,7 @@ fn handle(method: &str, params: &Value) -> Result<Value, HelperError> {
                     opt_i32(params, "expected_process_id")
                         .and_then(|value| u32::try_from(value).ok()),
                     opt_str(params, "expected_window_id"),
+                    opt_str(params, "excluded_main_window"),
                 )?;
                 serde_json::to_value(result).map_err(|e| HelperError::internal(format!("serialize failed: {e}")))
             }

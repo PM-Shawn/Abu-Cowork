@@ -30,6 +30,7 @@ const fs = require('node:fs');
 const {
   registerTauriHost,
   wireWindowEvents,
+  prepareMainWindowCapture,
   getMainWindow,
   getMigrationStartupBlock,
   getMigrationBackupPath,
@@ -229,7 +230,7 @@ function showTransitionSuccess(appInstance, win) {
   });
 }
 
-function createWindow(transitionWindow = null) {
+async function createWindow(transitionWindow = null) {
   const material = windowMaterial();
   const win = new BrowserWindow({
     show: false,
@@ -258,8 +259,7 @@ function createWindow(transitionWindow = null) {
     },
   });
   if (process.platform === 'win32') {
-    // Keep Abu itself out of Windows Graphics Capture frames. This allows the
-    // user-visible app and Stop control to remain present during Computer Use.
+    // Keep the main window protected until session exclusion is confirmed.
     win.setContentProtection?.(true);
   }
   attachEditContextMenu(win, Menu, {
@@ -331,6 +331,9 @@ function createWindow(transitionWindow = null) {
   // close with the isQuitting + has-listener guards, reload subscription purge).
   // Shared with the boot-verify harness so both exercise identical wiring.
   wireWindowEvents(win);
+  if (process.platform === 'win32') {
+    await prepareMainWindowCapture(win);
+  }
 
   const trustedPage = hasFrontend ? FRONTEND_INDEX : PLACEHOLDER_INDEX;
   registerPrivilegedWindow(win, trustedPage, { label: MAIN_WINDOW_LABEL });
@@ -588,8 +591,8 @@ if (!app.requestSingleInstanceLock()) {
       systemPreferences,
       isTrustedMainWindowPage,
     });
-    createWindow(transitionWindow);
-    app.on('activate', () => {
+    await createWindow(transitionWindow);
+    app.on('activate', async () => {
       // Dock-icon click / reactivation. Target the tracked MAIN window
       // specifically — NOT BrowserWindow.getAllWindows()[0], which since the GUI
       // families landed may be the pet / overlay (small, transparent) window, so
@@ -600,7 +603,7 @@ if (!app.requestSingleInstanceLock()) {
         mainWin.show();
         mainWin.focus();
       } else if (!mainWin) {
-        createWindow();
+        await createWindow();
       }
       // TODO(slice E): Windows/Linux minimize-to-tray restore needs a tray
       // (no dock/activate equivalent there) — out of scope for slice D.

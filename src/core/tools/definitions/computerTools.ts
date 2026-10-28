@@ -946,8 +946,8 @@ async function executeScreenshot(
   const excludeId = await getExcludeWindowId();
 
   if (excludeId != null || isWindows()) {
-    // macOS uses explicit CGWindow exclusion. Windows uses WGC together with
-    // WDA_EXCLUDEFROMCAPTURE on Abu/overlay windows; the numeric id is ignored.
+    // macOS uses explicit CGWindow exclusion. Windows excludes the main
+    // window in the capture session when supported; older systems use WDA.
     return captureWithExclusion(
       excludeId ?? 0, input, workspacePath, elements, invocation, runKey, binding,
     );

@@ -4,6 +4,8 @@
 //! be added to the frozen Tauri compatibility path.
 
 mod app_catalog;
+mod capture_bindings;
+mod capture_session;
 mod clipboard;
 mod dpi;
 mod input;
@@ -34,6 +36,7 @@ pub use interaction::{
     pause_input_lease, resume_input_lease,
 };
 pub use screenshot::capture_screen_state_impl;
+pub use capture_session::supports_exclusion as supports_capture_session_exclusion;
 pub use window::{
     activate_app_impl, activate_window_impl, frontmost_app_identity_impl,
     frontmost_matches_target_impl, get_window_graph_impl, get_window_impl, list_windows_impl,

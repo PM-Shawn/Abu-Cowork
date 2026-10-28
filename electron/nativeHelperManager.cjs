@@ -773,6 +773,20 @@ async function ensureHelperCompatibility() {
   return helperHandshake;
 }
 
+function readCaptureSessionExclusionCapability() {
+  return requestScheduler.run(async () => {
+    const hello = await ensureHelperCompatibility();
+    if (!hello.supported_commands.includes('capture_session_exclusion_capability')) {
+      throw new Error('native-helper does not support capture session capability checks');
+    }
+    const result = await callHelper('capture_session_exclusion_capability', {});
+    if (!result || typeof result.supported !== 'boolean') {
+      throw new Error('native-helper returned invalid capture session capability');
+    }
+    return result.supported;
+  });
+}
+
 /**
  * Dispatch a `tauri:invoke` command to the native-helper if it owns it.
  * @param {string} cmd
@@ -951,6 +965,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
 }
 
 module.exports = {
+  readCaptureSessionExclusionCapability,
   createNativeFileSession,
   readDirectoryNameComparison,
   nativeHelperDispatch,

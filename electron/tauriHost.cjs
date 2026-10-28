@@ -115,6 +115,7 @@ const {
   killNativeHelper,
   getNativeHelperGeneration,
   getNativeHelperDriverCapabilities,
+  readCaptureSessionExclusionCapability,
   subscribeNativeHelperEvents,
 } = require('./nativeHelperManager.cjs');
 const {
@@ -203,6 +204,7 @@ let quitting = false;
 let quitGate = null;
 let sessionEnding = false;
 let computerUseGate = null;
+let sessionExclusionWindow = null;
 let computerUseGrantStore = null;
 let unsubscribeNativeHelperEvents = null;
 let migrationStartupBlock = null;
@@ -261,6 +263,21 @@ function showMigrationRetryDialog(app) {
 /** @param {import('electron').BrowserWindow} win */
 function setMainWindow(win) {
   mainWindow = win;
+  sessionExclusionWindow = null;
+}
+
+async function prepareMainWindowCapture(win) {
+  let supported;
+  try {
+    supported = await readCaptureSessionExclusionCapability();
+  } catch (error) {
+    console.warn('[screen-capture] Capability check failed; keeping window content protection', error);
+    return;
+  }
+  if (supported && getMainWindow() === win) {
+    win.setContentProtection(false);
+    sessionExclusionWindow = win;
+  }
 }
 
 /**
@@ -997,7 +1014,19 @@ function registerTauriHost(app, options = {}) {
       if (permissionResult !== COMPUTER_USE_PERMISSION_HOST_MISS) {
         return permissionResult;
       }
-      const result = nativeHelperDispatch(cmd, args);
+      const helperArgs = { ...args };
+      if (cmd.startsWith('capture_screen')) {
+        for (const key of Object.keys(helperArgs)) {
+          if (key.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`) === 'excluded_main_window') {
+            delete helperArgs[key];
+          }
+        }
+        const win = getMainWindow();
+        if (process.platform === 'win32' && win && sessionExclusionWindow === win) {
+          helperArgs.excludedMainWindow = `0x${win.getNativeWindowHandle().readBigUInt64LE().toString(16)}`;
+        }
+      }
+      const result = nativeHelperDispatch(cmd, helperArgs);
       if (result === NATIVE_HELPER_MISS) {
         throw new Error(`native helper does not own Computer Use command ${cmd}`);
       }
@@ -1964,6 +1993,7 @@ function getStubbedCommands() {
 }
 
 module.exports = {
+  prepareMainWindowCapture,
   registerTauriHost,
   shouldAutoDeclineCuApprovals,
   osInternals,

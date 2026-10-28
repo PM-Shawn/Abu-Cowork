@@ -106,9 +106,8 @@ describe('design tokens — layer levels', () => {
   });
 
   // The whole list: a new hand-written value in src/ fails here and has to be a layer utility.
-  // The one entry is the `z-index:10` inside the SVG markup of the enlarged diagram.
   it('finds exactly the hand-written stacking values left in src/', () => {
-    expect(handWrittenLevels()).toEqual([{ file: 'components/chat/MermaidBlock.tsx', value: 10 }]);
+    expect(handWrittenLevels()).toEqual([]);
   });
 
   it.each(['z-popover', 'z-dialog', 'z-toast', 'z-tooltip'])('puts %s above every hand-written stacking value in src/', (name) => {

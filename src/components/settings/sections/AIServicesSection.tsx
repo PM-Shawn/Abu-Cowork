@@ -29,16 +29,18 @@ function AuxiliaryRow({ ready, icon, name, status, action, children }: {
   children?: ReactNode;
 }) {
   return (
-    <div>
-      <div className="flex items-center justify-between gap-3 py-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <StatusIcon tone={ready ? 'success' : 'warning'} />
-          <Icon icon={AppIcons[icon]} size="sm" className="text-label-secondary" />
-          <span className="truncate text-ui text-label">{name}</span>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {status}
-          {action}
+    <div role="group" aria-label={name}>
+      <div className="@container">
+        <div className="flex flex-col gap-2 py-3 @min-[480px]:flex-row @min-[480px]:items-center @min-[480px]:justify-between @min-[480px]:gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <StatusIcon tone={ready ? 'success' : 'warning'} />
+            <Icon icon={AppIcons[icon]} size="sm" className="text-label-secondary" />
+            <span className="truncate text-ui text-label">{name}</span>
+            {action && <div className="shrink-0">{action}</div>}
+          </div>
+          <div className="flex max-w-full shrink-0 items-center self-end @min-[480px]:self-auto [&>button]:max-w-full [&>button>span]:h-auto [&>button>span]:min-h-5 [&>span]:h-auto [&>span]:min-h-5">
+            {status}
+          </div>
         </div>
       </div>
       {children && <div className="mb-3 rounded-control bg-code p-3">{children}</div>}
@@ -56,7 +58,7 @@ function StatusToggle({ ready, expanded, onToggle, children }: {
   return (
     <Pressable aria-expanded={expanded} onClick={onToggle} className="inline-flex rounded-control">
       <Tag tone={ready ? 'success' : 'warning'}>
-        {children}
+        <span className="min-w-0 break-words">{children}</span>
         <Icon icon={AppIcons.expand} size="sm" className={cn('transition-transform duration-fast', expanded && 'rotate-180')} />
       </Tag>
     </Pressable>
@@ -116,7 +118,7 @@ export default function AIServicesSection() {
 
   return (
     <div className="space-y-6">
-      {/* Header — shared component; add button in the action slot (clears the modal X). */}
+      {/* The shared header keeps the add action available above the provider list. */}
       <SettingsSectionHeader
         title={t.settings.aiServices}
         description={enabledCount > 0 ? t.settings.enabledCount.replace('{count}', String(enabledCount)) : undefined}
@@ -159,7 +161,7 @@ export default function AIServicesSection() {
           icon="webPage"
           name={t.settings.auxiliarySearch}
           status={hasBuiltinSearch ? (
-            <Tag tone="success">{t.settings.builtinVia.replace('{name}', searchProviderName ?? '')}</Tag>
+            <Tag tone="success"><span className="min-w-0 break-words">{t.settings.builtinVia.replace('{name}', searchProviderName ?? '')}</span></Tag>
           ) : (
             <StatusToggle ready={hasCustomSearch} expanded={searchExpanded} onToggle={() => setSearchExpanded(!searchExpanded)}>
               {hasCustomSearch ? t.settings.configured : t.settings.builtinNotSupported}
@@ -169,12 +171,7 @@ export default function AIServicesSection() {
           {!hasBuiltinSearch && searchExpanded && <WebSearchForm />}
         </AuxiliaryRow>
 
-        {/* Image Generation — independent config (design doc §3.1, "C-a"):
-            a user-managed list of backends, decoupled from chat providers.
-            The "add backend" trigger lives here (row end) rather than inside
-            the collapsible panel, mirroring the AI Services section header's
-            own add button above — see P2 design note: it must stay visible
-            even while the panel is collapsed. */}
+        {/* Image generation keeps its add action beside the title while the list is closed. */}
         <AuxiliaryRow
           ready={imageGenBackends.length > 0}
           icon="imageGen"

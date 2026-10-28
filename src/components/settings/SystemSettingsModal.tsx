@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { SettingsHeaderContext } from './settingsHeaderContext';
 import { useSettingsStore, type SystemSettingsTab } from '@/stores/settingsStore';
 import { useI18n } from '@/i18n';
 import { AppIcons } from '@/components/ds/icons';
@@ -21,6 +22,7 @@ import { useLabsFlag } from '@/core/labs/resolve';
 import { LABS_PET } from '@/core/labs/registry';
 
 export default function SystemSettingsView() {
+  const [headerHost, setHeaderHost] = useState<HTMLDivElement | null>(null);
   const {
     activeSystemTab,
     setActiveSystemTab,
@@ -149,9 +151,18 @@ export default function SystemSettingsView() {
           </div>
         ))}
       </nav>
-      <ScrollArea className="min-w-0 flex-1">
-        <div className="p-6">{renderContent()}</div>
-      </ScrollArea>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <div data-settings-header ref={setHeaderHost} className="flex h-12 shrink-0 items-center border-b border-separator bg-raised pl-6 pr-14">
+          <span aria-hidden="true" className="hidden truncate text-title text-label only:block">
+            {navGroups.flat().find((item) => item.id === activeSystemTab)?.label}
+          </span>
+        </div>
+        <ScrollArea className="min-h-0 flex-1">
+          <SettingsHeaderContext.Provider value={headerHost}>
+            <div className="p-6">{renderContent()}</div>
+          </SettingsHeaderContext.Provider>
+        </ScrollArea>
+      </div>
     </div>
   );
 }

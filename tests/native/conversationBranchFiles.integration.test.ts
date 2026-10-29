@@ -50,6 +50,34 @@ afterEach(async () => {
 afterAll(() => native.killNativeHelper('branch-files-tests-finished'));
 
 describe('branch files through the Electron host and real filesystem', () => {
+  it('moves a native branch directory only for its retained identity and an unused destination', async () => {
+    const sourceFile = await put('conversation-branches/child/results.txt', 'Branch content');
+    const child = { path: path.dirname(sourceFile), purpose: 'list', followFinalSymlink: false };
+    const inspection = native.createNativeFileSession([child]);
+    let identity: string;
+    try {
+      identity = (await inspection.request('observe', child)).identity;
+    } finally { await inspection.release(); }
+    const source = { path: path.join(root, 'conversation-branches'), purpose: 'write', followFinalSymlink: false };
+    const destination = { path: path.join(root, 'conversations'), purpose: 'write', followFinalSymlink: false };
+    const session = native.createNativeFileSession([source, destination]);
+    try {
+      const from = await session.request('observe', source);
+      const to = await session.request('observe', destination);
+      const move = { reference: from.reference, destination: to.reference, name: 'child', identity };
+      await expect(session.request('branch-move', { ...move, identity: 'different-identity' })).rejects.toThrow();
+      expect(await fs.promises.readFile(sourceFile, 'utf8')).toBe('Branch content');
+      const occupied = await put('conversations/child/keep.txt', 'Existing content');
+      await expect(session.request('branch-move', move)).rejects.toThrow();
+      expect(await fs.promises.readFile(occupied, 'utf8')).toBe('Existing content');
+      expect(await fs.promises.readFile(sourceFile, 'utf8')).toBe('Branch content');
+      await fs.promises.rm(path.dirname(occupied), { recursive: true });
+      await session.request('branch-move', move);
+      expect(fs.existsSync(child.path)).toBe(false);
+      expect(await fs.promises.readFile(path.join(destination.path, 'child/results.txt'), 'utf8')).toBe('Branch content');
+    } finally { await session.release(); }
+  });
+
   it('uses the current shared bundle and the same pure file plan', () => {
     const stdout = execFileSync(process.execPath, ['scripts/gen-conversation-branch.mjs', '--check'], { encoding: 'utf8', cwd: process.cwd(), env: { ...process.env, TMPDIR: path.resolve('.agent/tmp') } });
     expect(stdout).toContain('is up to date');

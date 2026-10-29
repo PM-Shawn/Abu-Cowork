@@ -79,21 +79,25 @@ mod platform {
     }
 
     pub(crate) fn move_directory(parent: &File, name: &str, destination: &File, expected: &str) -> io::Result<()> {
-        use windows::Win32::Storage::FileSystem::{SetFileInformationByHandle, FileRenameInfo, FILE_RENAME_INFO};
+        use windows::Wdk::Storage::FileSystem::{NtSetInformationFile, FileRenameInformation, FILE_RENAME_INFORMATION};
         let source = relative(parent, name, Access::Delete, false, None)?;
         if !source.metadata()?.is_dir() || source.metadata()?.file_type().is_symlink() || identity(&source)? != expected {
             return Err(error());
         }
         let units: Vec<u16> = name.encode_utf16().collect();
-        let size = std::mem::size_of::<FILE_RENAME_INFO>() + units.len() * 2;
+        let size = std::mem::size_of::<FILE_RENAME_INFORMATION>() + units.len() * 2;
         let mut storage = vec![0u64; size.div_ceil(8)];
-        let info = storage.as_mut_ptr() as *mut FILE_RENAME_INFO;
-        unsafe {
+        let info = storage.as_mut_ptr() as *mut FILE_RENAME_INFORMATION;
+        let mut status = IO_STATUS_BLOCK::default();
+        let result = unsafe {
             (*info).RootDirectory = handle(destination);
             (*info).FileNameLength = (units.len() * 2) as u32;
             std::ptr::copy_nonoverlapping(units.as_ptr(), (*info).FileName.as_mut_ptr(), units.len());
-            SetFileInformationByHandle(handle(&source), FileRenameInfo, info.cast(), size as u32)
-        }.map_err(|failure| io::Error::other(format!("Cannot move the retained directory: {failure}")))?;
+            NtSetInformationFile(handle(&source), &mut status, info.cast(), size as u32, FileRenameInformation)
+        };
+        if result.0 < 0 {
+            return Err(io::Error::other(format!("Cannot move the retained directory: {:08x}", result.0 as u32)));
+        }
         Ok(())
     }
 

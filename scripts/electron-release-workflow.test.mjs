@@ -917,6 +917,20 @@ test('normal Electron release leaves the frozen Tauri root pointer untouched', (
   assert.ok(surface.feeds.every((feed) => feed.includes('version: 0.34.0')));
 });
 
+test('Electron E2E uses supported macOS runners and requires every shard', () => {
+  const jobs = workflow('e2e.yml').jobs;
+  const shards = jobs['e2e-electron-shard'];
+  assert.equal(shards['runs-on'], 'macos-15');
+  assert.deepEqual(shards.strategy.matrix.shard, [1, 2, 3]);
+  assert.equal(shards.strategy['fail-fast'], false);
+  assert.equal(shards.steps.find((step) => step.name === 'Run Electron E2E tests').run,
+    'npm run test:e2e:electron -- --shard=${{ matrix.shard }}/3');
+  assert.equal(jobs['e2e-electron'].needs, 'e2e-electron-shard');
+  assert.equal(jobs['e2e-electron'].if, 'always()');
+  assert.match(jobs['e2e-electron'].steps[0].run, /\[ "\$SHARDS" != "success" \]/);
+  assert.match(jobs['e2e-electron'].steps[0].run, /exit 1/);
+});
+
 test('packaged conversation branching includes its Host validation dependency', () => {
   const builder = YAML.parse(fs.readFileSync(path.join(root, 'electron-builder.yml'), 'utf8'));
   assert.ok(builder.files.includes('node_modules/zod/**/*'));

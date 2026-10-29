@@ -232,7 +232,9 @@ function convertUserContent(
         blocks.push({ type: 'text', text: '[An image was attached but could not be loaded.]' });
       }
     } else if (c.type === 'document') {
-      blocks.push({ type: 'document', mediaType: c.source.media_type, data: c.source.data });
+      blocks.push(c.source.data
+        ? { type: 'document', mediaType: c.source.media_type, data: c.source.data }
+        : { type: 'text', text: `[An attached document (${c.name ?? 'PDF'}) could not be loaded.]` });
     }
   }
 

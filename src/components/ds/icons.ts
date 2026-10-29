@@ -1,7 +1,7 @@
 import {
   Activity, AppWindow, Archive, ArrowLeft, ArrowRight, ArrowUp, ArrowUpRight, AtSign, Ban, BarChart3, BookOpen, Bot, Brain, Building2, Calculator, Camera, ChartBar, Check, CheckSquare, ChevronDown, ChevronLeft, ChevronRight, ChevronsUpDown, ChevronUp, Chrome, CircleCheck, CircleHelp,
   Circle, CircleMinus, CircleStop, CircleX, Clock, CloudOff, Code, Compass, Copy, CornerDownRight, Cpu, Database, Download, Ellipsis, ExternalLink, Eye, EyeOff, File, FileArchive, FileCode, FileImage, FileJson, FilePen, FilePlus,
-  FileSearch, FileText, FileType2, FileWarning, FileX, FlaskConical, Folder, FolderInput, FolderLock, FolderOpen, FolderPlus, Globe, Hand, Hash, Heart, History, ImageIcon, ImageOff, ImagePlus, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
+  FileSearch, FileText, FileType2, FileWarning, FileX, FlaskConical, Folder, FolderInput, FolderLock, FolderOpen, FolderPlus, GitBranch, Globe, Hand, Hash, Heart, History, ImageIcon, ImageOff, ImagePlus, Inbox, Info, LayoutGrid, Lightbulb, Link2, ListChecks, ListTree,
   LoaderCircle, Lock, LogIn, LogOut, Maximize2, Megaphone, MessageCircle, MessageSquare, MessageSquarePlus, Mic, Minimize2, Minus, Monitor, MonitorCog, MousePointer2, Palette, PanelLeft, PanelRight,
   Package, Paperclip, Pause, PawPrint, Pencil, PenLine, Pin, PinOff, Play, Plug, Plus, Presentation, Puzzle, Radio, Redo2, RefreshCw, RotateCcw, RotateCw, Save, Scale, Scan, ScanEye, ScanLine, Search, Send, Server, Settings, Settings2, Share, Sheet, Shield, ShieldAlert, ShieldCheck,
   SlidersHorizontal, Sparkles, Square, SquareDashedMousePointer, SquarePen, Star, Target, Terminal, ThumbsDown, ThumbsUp, Timer, Trash2, TriangleAlert, Undo2, Upload, UserCheck, UserRound, UsersRound,
@@ -16,6 +16,7 @@ export const AppIcons = {
   delete: Trash2,
   share: Share,
   more: Ellipsis,
+  branch: GitBranch,
   add: Plus,
   close: X,
   search: Search,

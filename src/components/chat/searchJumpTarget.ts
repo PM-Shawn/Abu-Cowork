@@ -10,10 +10,11 @@ export function searchJumpTarget(
   messages: readonly Message[],
   groups: readonly (readonly Message[])[],
   query: string,
+  messageId?: string,
 ): { groupIndex: number; messageId: string } | null {
   const q = query.trim().toLowerCase();
   const target = messages.find(
-    (m) => (!m.isSystem || m.isRecoveryNotice)
+    (m) => messageId ? m.id === messageId : (!m.isSystem || m.isRecoveryNotice)
       && getMessageText(m.content).toLowerCase().includes(q),
   );
   if (!target) return null;

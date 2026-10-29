@@ -301,6 +301,22 @@ export interface TranslationDict {
 
   // Chat/Welcome
   chat: {
+    branch: {
+      action: string;
+      creating: string;
+      incomplete: string;
+      title: string;
+      source: string;
+      boundary: string;
+      currentFiles: string;
+      sourceDeleted: string;
+      sourceUnavailable: string;
+      sourceInaccessible: string;
+      failed: string;
+      saveFailed: string;
+      selectionUnavailable: string;
+      historyUnavailable: string;
+    };
     inputPlaceholder: string;
     inputPlaceholderBusy: string;
     inputPlaceholderWithSkill: string;

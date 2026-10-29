@@ -35,6 +35,11 @@ describe('searchJumpTarget', () => {
     expect(searchJumpTarget(messages, groups, 'nothing like this')).toBeNull();
   });
 
+  it('locates an exact source reply independently of matching text', () => {
+    expect(searchJumpTarget(messages, groups, '', 'a2')).toEqual({ groupIndex: 1, messageId: 'a2' });
+    expect(searchJumpTarget(messages, groups, 'first', 'missing')).toBeNull();
+  });
+
   it('returns null when the matching message is in no shown group', () => {
     expect(searchJumpTarget(messages, [groups[0]], 'invoices')).toBeNull();
   });

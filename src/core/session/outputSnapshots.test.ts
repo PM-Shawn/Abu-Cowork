@@ -1080,6 +1080,51 @@ describe('outputSnapshots', () => {
       return memFs.files.has(`${APP_DATA}/conversations/${convId}/outputs/${entry?.snapshotRelPath}`);
     }
 
+    it('preserves inherited files when ordinary copies reach the conversation limit', async () => {
+      const inherited = {
+        originalPath: '/old/report.txt', basename: 'report.txt', snapshotRelPath: 'files/protected/report.txt',
+        size: 200 * MB, originalMtime: 1, snapshottedAt: 1, source: 'tool-output' as const,
+        refId: 'old-call', refKind: 'write_file', inheritedFromBranch: true as const,
+      };
+      memFs.addUserFile(`${OUTPUTS_DIR}/${inherited.snapshotRelPath}`, inherited.size);
+      mod.__testing.setManifest(CONV_ID, { version: 1, entries: { [inherited.originalPath]: inherited } });
+      for (const name of ['a.mov', 'b.mov', 'c.mov', 'd.mov', 'e.mov', 'f.mov']) await keep(name, 200 * MB);
+      expect(copyExists(inherited)).toBe(true);
+      expect(await keptNames()).toContain('report.txt');
+    });
+
+    it('resolves an unavailable inherited image exactly despite an available image with the same filename', async () => {
+      const missing = {
+        originalPath: '/a/photo.png', basename: 'photo.png', snapshotRelPath: 'inherited/1/photo.png',
+        size: 10, originalMtime: 1, snapshottedAt: 1, source: 'user-upload' as const,
+        refId: 'child-user', refKind: 'image', inheritedFromBranch: true as const, missing: true as const,
+      };
+      const available = { ...missing, originalPath: '/b/photo.png', snapshotRelPath: 'inherited/2/photo.png', missing: undefined };
+      memFs.addUserFile(`${OUTPUTS_DIR}/${available.snapshotRelPath}`, 10);
+      memFs.addUserFile('/workspace/photo.png', 10);
+      mod.__testing.setManifest(CONV_ID, { version: 1, entries: { [missing.originalPath]: missing, [available.originalPath]: available } });
+      const result = await mod.resolveFileSource(CONV_ID, `${OUTPUTS_DIR}/${missing.snapshotRelPath}`, '/workspace');
+      expect(result.status).toBe('missing');
+      memFs.addUserFile(`${OUTPUTS_DIR}/${missing.snapshotRelPath}`, 10);
+      expect((await mod.resolveOutputRefSource(CONV_ID, missing.snapshotRelPath)).status).toBe('missing');
+    });
+
+    it('uses the independent copy for an ancestor managed file while external workspace files stay current', async () => {
+      const inherited = {
+        originalPath: `${APP_DATA}/conversations/source/outputs/report.csv`, basename: 'report.csv', snapshotRelPath: 'inherited/1/report.csv',
+        size: 10, originalMtime: 1, snapshottedAt: 1, source: 'tool-output' as const,
+        refId: 'old-call', refKind: 'write_file', inheritedFromBranch: true as const, inheritedManagedPath: true as const,
+      };
+      const external = { ...inherited, originalPath: '/workspace/report.csv', snapshotRelPath: 'inherited/2/report.csv', inheritedManagedPath: undefined };
+      memFs.addUserFile(inherited.originalPath, 20);
+      memFs.addUserFile(external.originalPath, 20);
+      memFs.addUserFile(`${OUTPUTS_DIR}/${inherited.snapshotRelPath}`, 10);
+      memFs.addUserFile(`${OUTPUTS_DIR}/${external.snapshotRelPath}`, 10);
+      mod.__testing.setManifest(CONV_ID, { version: 1, entries: { [inherited.originalPath]: inherited, [external.originalPath]: external } });
+      expect(await mod.resolveFileSource(CONV_ID, inherited.originalPath)).toEqual({ status: 'available', path: `${OUTPUTS_DIR}/${inherited.snapshotRelPath}`, isFromSnapshot: true });
+      expect(await mod.resolveFileSource(CONV_ID, external.originalPath)).toEqual({ status: 'available', path: external.originalPath, isFromSnapshot: false });
+    });
+
     it('copies a file of 200 MB and records a larger one as oversized', async () => {
       const atLimit = await keep('at-limit.mov', 200 * MB);
       const over = await keep('over.mov', 200 * MB + 1);

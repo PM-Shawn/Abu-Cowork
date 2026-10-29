@@ -28,6 +28,8 @@ import { formatRelativeTime } from '@/utils/messageTime';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import { useRedoTurn } from './redoTurn';
 import { reattachRoutingPrefix, retryTurn } from './retryTurn';
+import { ConversationBranchButton } from './ConversationBranchButton';
+import { isConversationBranchReply } from '@/core/session/conversationBranchHistory';
 import abuAvatar from '@/assets/abu-avatar.png';
 import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
@@ -266,6 +268,18 @@ function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId 
     const conv = conversationId ? s.conversations[conversationId] : undefined;
     return conv?.activeSkills?.[0] ?? null;
   });
+  const branchMessageId = useChatStore(state => {
+    if (isConversationBranchReply(message)) return message.id;
+    const messages = conversationId ? state.conversations[conversationId]?.messages : undefined;
+    const index = messages?.findIndex(candidate => candidate.id === message.id) ?? -1;
+    if (!messages || index < 0) return undefined;
+    for (let cursor = index - 1; cursor >= 0; cursor--) {
+      const candidate = messages[cursor];
+      if (candidate.role === 'user' && !candidate.isSystem) break;
+      if (isConversationBranchReply(candidate)) return candidate.id;
+    }
+    return undefined;
+  });
 
   const handleCopy = async () => {
     const text = getTextContent(message.content);
@@ -275,7 +289,7 @@ function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId 
   };
 
   return (
-    <div className="flex items-center gap-1 opacity-0 transition-opacity duration-fast group-hover:opacity-100 focus-within:opacity-100">
+    <div className="flex items-center gap-1 opacity-0 transition-opacity duration-fast group-hover:opacity-100 focus-within:opacity-100 has-[[role=status]]:opacity-100">
       <IconButton
         icon={copied ? AppIcons.done : AppIcons.copy}
         label={t.chat.copy}
@@ -341,6 +355,7 @@ function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId 
         />
       )}
 
+      {!isUser && conversationId && branchMessageId && <ConversationBranchButton conversationId={conversationId} messageId={branchMessageId} />}
     </div>
   );
 }

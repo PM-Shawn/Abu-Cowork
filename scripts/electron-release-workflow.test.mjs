@@ -917,6 +917,11 @@ test('normal Electron release leaves the frozen Tauri root pointer untouched', (
   assert.ok(surface.feeds.every((feed) => feed.includes('version: 0.34.0')));
 });
 
+test('packaged conversation branching includes its Host validation dependency', () => {
+  const builder = YAML.parse(fs.readFileSync(path.join(root, 'electron-builder.yml'), 'utf8'));
+  assert.ok(builder.files.includes('node_modules/zod/**/*'));
+});
+
 test('packaged feeds are architecture-isolated', () => {
   const builderPath = path.join(root, 'electron-builder.yml');
   const builder = fs.readFileSync(builderPath, 'utf8');

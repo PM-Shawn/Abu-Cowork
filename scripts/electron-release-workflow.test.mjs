@@ -927,8 +927,8 @@ test('Electron E2E uses supported macOS runners and requires every shard', () =>
   const testIndex = shards.steps.findIndex((step) => step.name === 'Run Electron E2E tests');
   assert.ok(displayIndex >= 0 && displayIndex < testIndex);
   assert.equal(shards.steps[displayIndex].shell, 'bash');
-  assert.match(shards.steps[displayIndex].run, /displayplacer "id:\$display_id res:1440x900 scaling:off origin:\(0,0\) degree:0"/);
-  assert.match(shards.steps[displayIndex].run, /grep -Fx 'Resolution: 1440x900'/);
+  assert.match(shards.steps[displayIndex].run, /displayplacer "id:\$display_id res:1600x900 scaling:off origin:\(0,0\) degree:0"/);
+  assert.match(shards.steps[displayIndex].run, /grep -Fx 'Resolution: 1600x900'/);
   assert.match(shards.steps[displayIndex].run, /grep -Fx 'Scaling: off'/);
   assert.equal(shards.steps[displayIndex]['continue-on-error'], undefined);
   assert.equal(shards.steps.find((step) => step.name === 'Run Electron E2E tests').run,

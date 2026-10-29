@@ -99,11 +99,11 @@ jobs:
           printf '%s\n' "$display_before"
           display_id=$(printf '%s\n' "$display_before" | awk '/^Persistent screen id: / { print $4 }')
           [[ "$display_id" =~ ^[0-9A-Fa-f-]{36}$ ]]
-          displayplacer "id:$display_id res:1440x900 scaling:off origin:(0,0) degree:0"
+          displayplacer "id:$display_id res:1600x900 scaling:off origin:(0,0) degree:0"
           display_after=$(displayplacer list)
           printf '%s\n' "$display_after"
           [[ "$(printf '%s\n' "$display_after" | awk '/^Persistent screen id: / { print $4 }')" == "$display_id" ]]
-          printf '%s\n' "$display_after" | grep -Fx 'Resolution: 1440x900'
+          printf '%s\n' "$display_after" | grep -Fx 'Resolution: 1600x900'
           printf '%s\n' "$display_after" | grep -Fx 'Scaling: off'
           printf '%s\n' "$display_after" | grep -Fx 'Origin: (0,0) - main display'
           printf '%s\n' "$display_after" | grep -Fx 'Rotation: 0'

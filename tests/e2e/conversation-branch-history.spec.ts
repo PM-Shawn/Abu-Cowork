@@ -67,9 +67,11 @@ test('built branch history loads independently and keeps its origin across an El
     await page.getByRole('button', { name: /^History child/ }).first().click();
     await expect(page.getByText('BRANCH-FIRST-ANSWER', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await expect(page.getByText('SOURCE-LATER-ANSWER', { exact: true })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() =>
+      JSON.parse(localStorage.getItem('abu-chat')!).state.conversationIndex['history-child'].branchInitialOpenPending),
+    { timeout: READY_TIMEOUT }).toBeUndefined();
     const persisted = await page.evaluate(() => JSON.parse(localStorage.getItem('abu-chat')!).state.conversationIndex['history-child']);
     expect(persisted.branchOrigin).toEqual(branch.branchOrigin);
-    expect(persisted.branchInitialOpenPending).toBeUndefined();
     await page.getByRole('button', { name: /^History source/ }).first().click();
     await expect(page.getByText('SOURCE-LATER-ANSWER', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     await closeAbuElectron(app);

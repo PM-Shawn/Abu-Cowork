@@ -143,6 +143,8 @@ test('recovers a committed branch after restarting before its index publication'
   app = (await launchAbuElectron(dataRoot)).app;
   page = await app.firstWindow({ timeout: READY_TIMEOUT });
   await waitForApp(page);
+  await expect.poll(() => page.evaluate(() => window.__TAURI_INTERNALS__.invoke('catalog_get_conversation',
+    { convId: 'recovery-source' })), { timeout: READY_TIMEOUT }).toMatchObject({ conv_id: 'recovery-source' });
   const identity = { sourceConversationId: 'recovery-source', targetMessageId: 'answer', childConversationId: 'recovered-child' };
   const request = { ...identity, title: 'Recovered branch', errorEmptyBody: '', watermark: Buffer.byteLength(ledger),
     prefix: conversationBranchPrefix(messages, identity.sourceConversationId, identity.targetMessageId, () => null) };

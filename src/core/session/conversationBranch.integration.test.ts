@@ -75,6 +75,22 @@ beforeEach(async () => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('branch creation across the renderer, store and real writer', () => {
+  it('leaves recovery inactive outside the Electron renderer', async () => {
+    const callsBeforeRecovery = [...bridge.mock.calls];
+    vi.stubGlobal('__ABU_SHELL__', undefined);
+    await branch.recoverConversationBranches();
+    expect(bridge.mock.calls).toEqual(callsBeforeRecovery);
+    expect(toasts.getState().toasts).toHaveLength(0);
+    expect(chat.getState().conversationIndex).toEqual({});
+  });
+
+  it('reports an unavailable recovery bridge inside Electron', async () => {
+    vi.stubGlobal('__ABU_SHELL__', { mainSupervisesSidecar: true });
+    await branch.recoverConversationBranches();
+    expect(toasts.getState().toasts).toHaveLength(1);
+    expect(toasts.getState().toasts[0].actions).toHaveLength(1);
+  });
+
   it('shares one pending operation and publishes only after the saved index', async () => {
     const first = branch.createConversationBranch('source', 'answer');
     const second = branch.createConversationBranch('source', 'answer');

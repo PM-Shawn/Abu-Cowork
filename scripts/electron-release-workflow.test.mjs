@@ -438,6 +438,9 @@ test('Electron build uses native runners for all three release targets', () => {
   assert.match(branchAcceptance.run, /npm run build:sandbox-launcher/);
   assert.match(branchAcceptance.run, /npm run test:e2e:electron -- tests\/e2e\/smoke\.spec\.ts tests\/e2e\/conversation-branching\.spec\.ts tests\/e2e\/conversation-branch-history\.spec\.ts/);
   assert.ok(windowsStepNames.indexOf(branchAcceptance.name) < windowsStepNames.indexOf('Require all Windows gates'));
+  const branchEvidence = build.jobs['build-windows'].steps.find(step => step.name === 'Upload Windows conversation branch evidence');
+  assert.equal(branchEvidence.with['include-hidden-files'], true);
+  assert.match(branchEvidence.with.path, /\.agent\/windows-branch-acceptance\//);
   assert.ok(
     windowsStepNames.indexOf('Require all Windows gates') <
       windowsStepNames.indexOf('Resolve Windows candidate configuration')

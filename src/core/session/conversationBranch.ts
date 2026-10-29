@@ -2,7 +2,7 @@ import { useChatStore, waitForConversationPersistence } from '@/stores/chatStore
 import { useSettingsStore } from '@/stores/settingsStore';
 import { useToastStore } from '@/stores/toastStore';
 import { getI18n, format } from '@/i18n';
-import { invokeElectronConversationBranch } from '@/utils/electronHost';
+import { hasElectronRawBodyInvoke, invokeElectronConversationBranch } from '@/utils/electronHost';
 import { settingsForConversation } from '@/core/agent/conversationSettings';
 import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnapshots';
 import { conversationBranchPrefix, type BranchIdentity, type BranchResult } from './conversationBranchProtocol';
@@ -133,6 +133,7 @@ export function requestConversationBranch(sourceId: string, targetId: string): v
 }
 
 export async function recoverConversationBranches(): Promise<void> {
+  if (!hasElectronRawBodyInvoke()) return;
   try {
     const failed = await invokeElectronConversationBranch<string[]>('cleanup');
     if (failed.length) throw new Error('preparation-cleanup-failed');

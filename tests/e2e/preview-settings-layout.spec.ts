@@ -49,6 +49,62 @@ async function openSettings(page: Page) {
   return settings;
 }
 
+async function scrollPopoverToEnd(page: Page, list: Locator) {
+  const dimensions = await list.evaluate((element) => ({ height: element.clientHeight, total: element.scrollHeight }));
+  expect(dimensions.total).toBeGreaterThan(dimensions.height);
+  await list.hover();
+  await page.mouse.wheel(0, dimensions.total);
+  await expect.poll(() => list.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  await expect.poll(() => list.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThanOrEqual(1);
+}
+
+for (const size of [{ width: 1200, height: 800 }, { width: 900, height: 700 }]) {
+  test(`scrolls the provider list to its last choice at ${size.width}x${size.height}`, async () => {
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await dismissFirstRunOverlays(page);
+    await resize(size.width, size.height);
+    const settings = await openSettings(page);
+    await settings.getByRole('button', { name: '模型', exact: true }).click();
+    await settings.locator('[data-settings-header]').getByRole('button', { name: '添加', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: '添加 AI 服务', exact: true });
+    await dialog.getByRole('button', { name: '选择供应商', exact: true }).click();
+    const popover = page.locator('[data-ds-popover]');
+    await scrollPopoverToEnd(page, popover.locator('.max-h-64'));
+    await expect(popover.getByRole('button', { name: '自定义 API', exact: true })).toBeInViewport();
+    await popover.getByRole('button', { name: '自定义 API', exact: true }).click();
+    await expect(popover).toHaveCount(0);
+    await expect(dialog.getByLabel('服务名称', { exact: true })).toHaveValue('自定义 API');
+  });
+}
+
+test('scrolls a provider model list and returns focus after closing it', async () => {
+  const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await waitForApp(page);
+  await dismissFirstRunOverlays(page);
+  await resize(1200, 800);
+  const settings = await openSettings(page);
+  await settings.getByRole('button', { name: '模型', exact: true }).click();
+  await settings.locator('[data-settings-header]').getByRole('button', { name: '添加', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: '添加 AI 服务', exact: true });
+  await dialog.getByRole('button', { name: '选择供应商', exact: true }).click();
+  const popover = page.locator('[data-ds-popover]');
+  await popover.getByPlaceholder('搜索供应商...').fill('七牛');
+  await popover.getByRole('button', { name: '七牛云', exact: true }).click();
+  await expect(popover).toHaveCount(0);
+  const trigger = dialog.getByRole('button', { name: '选择模型', exact: true });
+  await trigger.click();
+  await scrollPopoverToEnd(page, popover.locator('.max-h-64'));
+  const last = popover.getByRole('checkbox', { name: 'Claude 4.6 Opus', exact: true });
+  await expect(last).toBeInViewport();
+  await last.click();
+  await expect(last).toBeChecked();
+  await page.keyboard.press('Escape');
+  await expect(popover).toHaveCount(0);
+  await expect(dialog.getByRole('button', { name: 'Claude 4.6 Opus', exact: true })).toBeFocused();
+  await expect(dialog).toBeVisible();
+});
+
 test('renders every diagram when one reply contains concurrent Mermaid renders', async () => {
   const count = 8;
   model = await startOpenAiMock([{ kind: 'complete', responseText: Array.from({ length: count }, (_, index) => [

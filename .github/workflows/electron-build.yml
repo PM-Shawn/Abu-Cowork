@@ -589,6 +589,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: windows-conversation-branch-acceptance
+          include-hidden-files: true
           path: |
             .agent/windows-branch-acceptance/
             test-results/

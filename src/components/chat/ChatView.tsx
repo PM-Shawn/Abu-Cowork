@@ -39,7 +39,9 @@ import { useBackgroundCommandStore } from '@/stores/backgroundCommandStore';
 import { isTauriEnv } from '@/utils/tauriEnv';
 import { ensureConversationModelUsable } from './sendModelGuard';
 import ChatInput from './ChatInput';
-import { focusComposerAfterPageChange, focusComposerFromWindow } from './composerFocus';
+import { focusComposer, focusComposerAfterPageChange, focusComposerFromWindow } from './composerFocus';
+import { ConversationBranchOrigin } from './ConversationBranchOrigin';
+import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, readComposerDraft } from '@/stores/composerDraftStore';
 import UserQuestionDock, { type ArrivedQuestion } from './UserQuestionDock';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
@@ -847,7 +849,7 @@ export default function ChatView({
     // Consume regardless of match so a missing target doesn't retry forever.
     useChatStore.getState().setPendingSearchJump(null);
     const shown = conv.messages.filter(isShownMessage);
-    const hit = searchJumpTarget(conv.messages, groupMessagesByLoop(shown), jump.query);
+    const hit = searchJumpTarget(conv.messages, groupMessagesByLoop(shown), jump.query, jump.messageId);
     if (!hit) return;
     // Release the bottom lock so late height-measurements don't yank the view
     // from the hit back to the bottom.
@@ -1115,12 +1117,32 @@ export default function ChatView({
   // so the hooks that depend on it stay unconditional (rules-of-hooks).
   const visibleMessages = messages.filter(isShownMessage);
   const messageGroups = groupMessagesByLoop(visibleMessages);
+  const branchBoundaryId = visibleMessages.filter(message => message.inheritedFromBranch).at(-1)?.id;
+  useEffect(() => {
+    if (!activeConvId || !scrollParentEl) return;
+    const conversation = useChatStore.getState().conversations[activeConvId];
+    if (!conversation?.branchInitialOpenPending) return;
+    const scope = getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode);
+    const draft = readComposerDraft(getComposerDraftKey(activeConvId, scope));
+    const emptyDraft = !draft.text && !draft.images.length && !draft.files.length && !draft.references.length
+      && !draft.selectedSkill && !draft.selectedAgent;
+    if (!emptyDraft || !conversation.messages.every(message => message.inheritedFromBranch)) {
+      useChatStore.getState().completeBranchInitialOpen(activeConvId);
+      return;
+    }
+    const frame = requestAnimationFrame(() => {
+      if (useChatStore.getState().activeConversationId !== activeConvId
+        || document.querySelector('[data-ds-layer]:not([hidden])')) return;
+      if (focusComposer()) useChatStore.getState().completeBranchInitialOpen(activeConvId);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeConvId, scrollParentEl]);
   const lastGroupOfLoop = lastGroupIndexByLoop(messageGroups);
   // Where the list stands when it mounts for this conversation: on the search
   // hit when one is waiting for it, else at the newest message. The list reads
   // it at mount only.
   const searchHit = pendingSearchJump?.convId === activeConvId
-    ? searchJumpTarget(messages, messageGroups, pendingSearchJump.query)
+    ? searchJumpTarget(messages, messageGroups, pendingSearchJump.query, pendingSearchJump.messageId)
     : null;
   const initialListLocation: ChatListLocation = searchHit
     ? { index: searchHit.groupIndex, align: 'center' }
@@ -1658,6 +1680,8 @@ export default function ChatView({
           data-chat-scroll-content
           className="flex flex-col w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden"
         >
+          {activeConv.branchOrigin && messageGroups.length === 0 &&
+            <ConversationBranchOrigin origin={activeConv.branchOrigin} workspacePath={activeConv.workspacePath} />}
           {scrollParentEl && <ChatMessageList
             // Remount per conversation: the list computes its first rows at
             // `initialLocation` and scrolls there before the first paint, so a
@@ -1718,7 +1742,10 @@ export default function ChatView({
               />
               </>
             )}
-            itemContent={(index, group) =>
+            itemContent={(index, group) => <>
+              {index === 0 && activeConv.branchOrigin && !branchBoundaryId &&
+                <ConversationBranchOrigin origin={activeConv.branchOrigin} workspacePath={activeConv.workspacePath} />}
+              {
               group.length === 1 && isCompactBoundary(group[0]) ? (
                 <CompactDivider
                   message={group[0]}
@@ -1767,8 +1794,10 @@ export default function ChatView({
                   expandedCompactIds={expandedCompactIds}
                   onToggleCompactSummary={toggleCompactSummary}
                 />
-              )
-            }
+              )}
+              {activeConv.branchOrigin && group.some(message => message.id === branchBoundaryId) &&
+                <ConversationBranchOrigin origin={activeConv.branchOrigin} workspacePath={activeConv.workspacePath} />}
+            </>}
           />}
 
           {/* Active-turn filler: takes the part of the turn's minimum content

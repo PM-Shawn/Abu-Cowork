@@ -241,6 +241,16 @@ describe('toastStore', () => {
   });
 
   describe('equal notifications merge', () => {
+    it('keeps equal errors from different operations independently retryable', () => {
+      const retryA = vi.fn();
+      const retryB = vi.fn();
+      useToastStore.getState().addToast({ type: 'error', title: 'Save failed', dedupeKey: 'operation-a', actions: [{ label: 'Retry', onClick: retryA }] });
+      useToastStore.getState().addToast({ type: 'error', title: 'Save failed', dedupeKey: 'operation-b', actions: [{ label: 'Retry', onClick: retryB }] });
+      expect(useToastStore.getState().toasts).toHaveLength(2);
+      useToastStore.getState().toasts[0].actions![0].onClick();
+      expect(retryA).toHaveBeenCalledOnce();
+      expect(retryB).not.toHaveBeenCalled();
+    });
     it('shows five equal errors once, as the newest, with its full time again', async () => {
       add({ type: 'error', title: 'Send blocked', message: 'Pick a model first' });
       await vi.advanceTimersByTimeAsync(2000);

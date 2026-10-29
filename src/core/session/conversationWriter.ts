@@ -73,7 +73,7 @@ import {
   stripForDisk,
   type FindToolResultImageSnapshot,
 } from './ledgerLineSerializer';
-import type { Message, SandboxRecoveryAction } from '@/types';
+import type { ConversationBranchOrigin, Message, SandboxRecoveryAction } from '@/types';
 
 // ════════════════════════════════════════════════════════════
 // Types
@@ -81,6 +81,9 @@ import type { Message, SandboxRecoveryAction } from '@/types';
 
 export interface ConversationMeta {
   id: string;
+  branchOrigin?: ConversationBranchOrigin;
+  branchInitialOpenPending?: true;
+  enabledMCPServers?: string[];
   title: string;
   createdAt: number;
   updatedAt: number;

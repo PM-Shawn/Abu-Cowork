@@ -48,6 +48,7 @@ export default function SandboxRecoveryCard({
   settledAction,
 }: Props) {
   const { t } = useI18n();
+  const historical = useChatStore(state => state.conversations[conversationId]?.messages.find(message => message.id === messageId)?.inheritedFromBranch === true);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [processing, setProcessing] = useState(false);
   const [localAction, setLocalAction] = useState<SandboxRecoveryAction>();
@@ -202,7 +203,7 @@ export default function SandboxRecoveryCard({
         )}
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      {!historical && <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
           variant="primary"
           size="sm"
@@ -231,7 +232,7 @@ export default function SandboxRecoveryCard({
         >
           {t.sandbox.appAutomationAdvanced}
         </Button>
-      </div>
+      </div>}
 
       {advancedOpen && (
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-separator pt-2 text-ui-sm text-label-secondary">

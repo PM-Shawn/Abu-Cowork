@@ -393,6 +393,7 @@ test('Electron build uses native runners for all three release targets', () => {
     HOST_SECURITY_OUTCOME: '${{ steps.windows_host_security_gates.outcome }}',
     ACTIVE_WINDOW_OUTCOME: '${{ steps.windows_active_window_probe.outcome }}',
     NATIVE_HELPER_OUTCOME: '${{ steps.windows_native_helper_gates.outcome }}',
+    BRANCH_ACCEPTANCE_OUTCOME: '${{ steps.windows_branch_acceptance.outcome }}',
   });
   for (const gate of [
     'frontend:$FRONTEND_OUTCOME',
@@ -400,6 +401,7 @@ test('Electron build uses native runners for all three release targets', () => {
     'host-security:$HOST_SECURITY_OUTCOME',
     'active-window:$ACTIVE_WINDOW_OUTCOME',
     'native-helper:$NATIVE_HELPER_OUTCOME',
+    'conversation-branch:$BRANCH_ACCEPTANCE_OUTCOME',
   ]) {
     assert.match(requireWindowsGates.run, new RegExp(gate.replace('$', '\\$')));
   }
@@ -410,6 +412,7 @@ test('Electron build uses native runners for all three release targets', () => {
     HOST_SECURITY_OUTCOME: 'success',
     ACTIVE_WINDOW_OUTCOME: 'success',
     NATIVE_HELPER_OUTCOME: 'success',
+    BRANCH_ACCEPTANCE_OUTCOME: 'success',
   };
   assert.equal(runBash(requireWindowsGates.run, successfulOutcomes).status, 0);
   for (const [outcome, label] of [
@@ -418,6 +421,7 @@ test('Electron build uses native runners for all three release targets', () => {
     ['HOST_SECURITY_OUTCOME', 'host-security'],
     ['ACTIVE_WINDOW_OUTCOME', 'active-window'],
     ['NATIVE_HELPER_OUTCOME', 'native-helper'],
+    ['BRANCH_ACCEPTANCE_OUTCOME', 'conversation-branch'],
   ]) {
     const failedGate = runBash(requireWindowsGates.run, {
       ...successfulOutcomes,
@@ -427,6 +431,13 @@ test('Electron build uses native runners for all three release targets', () => {
     assert.match(failedGate.stderr, new RegExp(`${label}:failure`));
   }
   const windowsStepNames = build.jobs['build-windows'].steps.map((step) => step.name);
+  const branchAcceptance = build.jobs['build-windows'].steps.find(step => step.id === 'windows_branch_acceptance');
+  assert.equal(branchAcceptance.shell, 'pwsh');
+  assert.equal(branchAcceptance['continue-on-error'], true);
+  assert.match(branchAcceptance.run, /npm run test:branch-native/);
+  assert.match(branchAcceptance.run, /npm run build:sandbox-launcher/);
+  assert.match(branchAcceptance.run, /npm run test:e2e:electron -- tests\/e2e\/smoke\.spec\.ts tests\/e2e\/conversation-branching\.spec\.ts tests\/e2e\/conversation-branch-history\.spec\.ts/);
+  assert.ok(windowsStepNames.indexOf(branchAcceptance.name) < windowsStepNames.indexOf('Require all Windows gates'));
   assert.ok(
     windowsStepNames.indexOf('Require all Windows gates') <
       windowsStepNames.indexOf('Resolve Windows candidate configuration')

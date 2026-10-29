@@ -53,6 +53,7 @@ export default function SkillProposalCard({
   settledAction,
 }: Props) {
   const { t } = useI18n();
+  const historical = useChatStore(state => state.conversations[conversationId]?.messages.find(message => message.id === messageId)?.inheritedFromBranch === true);
   const [expanded, setExpanded] = useState(false);
   const [processing, setProcessing] = useState(false);
   const addToast = useToastStore((s) => s.addToast);
@@ -274,7 +275,7 @@ export default function SkillProposalCard({
   //
   //    Guarded by draftsInitialized so the first render (before listDrafts
   //    has populated) doesn't flash a false "missing" state. ──────────
-  if (draftsInitialized && !draftsLoading && !draftExists) {
+  if (!historical && draftsInitialized && !draftsLoading && !draftExists) {
     return (
       <div className="my-2 rounded-panel border border-separator bg-surface px-3 py-2 text-ui-sm text-label-tertiary">
         <span className="font-medium text-label-secondary">{proposal.skillName}</span> — {t.toolbox.skillProposalCardMissing}
@@ -288,7 +289,7 @@ export default function SkillProposalCard({
   // Toolbox → Drafts, where the proactivity-preset picker is waiting.
   // Still shows the skill name + description so the user has context,
   // but buttons are suppressed until preferences are set.
-  if (!onboardingShown) {
+  if (!historical && !onboardingShown) {
     const handleOpenExtensions = () => {
       // 「我的」 for the same reason as the accepted pill above: the drafts and
       // the proactivity picker this gate sends the user to live there.
@@ -367,7 +368,7 @@ export default function SkillProposalCard({
         )}
       </div>
 
-      <div className="flex items-center gap-2 border-t border-separator px-3 py-2">
+      {!historical && <div className="flex items-center gap-2 border-t border-separator px-3 py-2">
         <Button variant="primary" size="sm" icon={AppIcons.done} onClick={handleAccept} disabled={processing}>
           {t.toolbox.skillProposalCardAccept}
         </Button>
@@ -384,7 +385,7 @@ export default function SkillProposalCard({
         <Button variant="plain" size="sm" icon={AppIcons.clock} onClick={handleDefer} disabled={processing} className="ml-auto">
           {t.toolbox.skillProposalCardDefer}
         </Button>
-      </div>
+      </div>}
     </div>
   );
 }

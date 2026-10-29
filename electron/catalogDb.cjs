@@ -54,6 +54,15 @@ const { projectLedger } = require('./generated/ledgerReader.cjs');
 /** Sentinel returned when `cmd` isn't a catalog command. */
 const CATALOG_MISS = Symbol('catalog-dispatch-miss');
 
+function branchPending(root, convId) {
+  try {
+    return !!fs.lstatSync(path.join(root, convId, 'branch-recovery.json'), { throwIfNoEntry: false });
+  } catch {
+    // An unreadable recovery state excludes this conversation from the catalog.
+    return true;
+  }
+}
+
 const ROW_COLUMNS =
   'conv_id, title, created_at, updated_at, message_count, last_message_id, model, source_bytes, source_mtime, missing';
 
@@ -604,6 +613,10 @@ function reconcileScanCore(conversationsRoot, existing, existingFtsIds) {
   for (const convId of allIds) {
     seen.add(convId);
     stats.scanned_dirs++;
+    if (branchPending(conversationsRoot, convId)) {
+      markMissingIds.push(convId);
+      continue;
+    }
 
     const jsonl = path.join(conversationsRoot, convId, 'messages.jsonl');
     let diskMeta = null;
@@ -691,6 +704,7 @@ function reconcileApplyCore(db, upserts, markMissingIds, existingFtsIds) {
 // ── Single-conversation reindex (mirrors reindex_scan_core / _apply_core) ──
 
 function reindexScanCore(convId, conversationsRoot) {
+  if (branchPending(conversationsRoot, convId)) return null;
   const jsonl = path.join(conversationsRoot, convId, 'messages.jsonl');
   let diskMeta = null;
   try {
@@ -728,6 +742,7 @@ function reindexApplyCore(db, result) {
  */
 function catalogDispatch(app, cmd, args) {
   const a = args || {};
+  const pending = convId => branchPending(path.join(abuAppDataDir(app), 'conversations'), convId);
 
   switch (cmd) {
     case 'catalog_upsert_conversation': {
@@ -738,23 +753,25 @@ function catalogDispatch(app, cmd, args) {
       // bump_count already established. See catalog_db.rs's doc on
       // `create_conversation_core` for the full rationale.
       const db = getDb(app);
+      if (pending(a.row.conv_id)) return null;
       createConversationCore(db, a.row);
       return null;
     }
 
     case 'catalog_get_conversation': {
       const db = getDb(app);
-      return getCore(db, a.convId);
+      return pending(a.convId) ? null : getCore(db, a.convId);
     }
 
     case 'catalog_list_conversations': {
       const db = getDb(app);
       const orderDesc = a.order !== 'asc';
-      return listCore(db, a.limit ?? 200, a.offset ?? 0, orderDesc);
+      return listCore(db, a.limit ?? 200, a.offset ?? 0, orderDesc).filter(row => !pending(row.conv_id));
     }
 
     case 'catalog_bump_count': {
       const db = getDb(app);
+      if (pending(a.convId)) return null;
       const jsonl = path.join(String(a.conversationsRoot), String(a.convId), 'messages.jsonl');
       let sourceBytes = null;
       let sourceMtime = null;
@@ -802,7 +819,7 @@ function catalogDispatch(app, cmd, args) {
 
     case 'catalog_search': {
       const db = getDb(app);
-      return searchCore(db, a.query, a.limit ?? 50);
+      return searchCore(db, a.query, a.limit ?? 50).filter(row => !pending(row.conv_id));
     }
 
     case 'catalog_reindex_conversation': {

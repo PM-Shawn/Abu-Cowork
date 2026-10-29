@@ -3,7 +3,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy)]
-pub(crate) enum Access { Attributes, Read, Write }
+pub(crate) enum Access { Attributes, Read, Write, Delete }
 
 #[cfg(target_os = "windows")]
 mod platform {
@@ -53,7 +53,7 @@ mod platform {
             Attributes: if matches!(sensitive(parent), Ok(false)) { 0x40 } else { 0 }, ..Default::default() };
         let mut output = HANDLE::default();
         let mut status = IO_STATUS_BLOCK::default();
-        let data_access = match access { Access::Attributes => 0, Access::Read => 1, Access::Write => 2 };
+        let data_access = match access { Access::Attributes => 0, Access::Read => 1, Access::Write => 2, Access::Delete => 0x0001_0000 };
         let mut options = FILE_SYNCHRONOUS_IO_NONALERT;
         if !follow { options |= FILE_OPEN_REPARSE_POINT; }
         if let Some(directory) = create {
@@ -76,6 +76,35 @@ mod platform {
         unsafe { GetFileInformationByHandleEx(handle(file), FileIdInfo,
             &mut info as *mut _ as *mut _, std::mem::size_of_val(&info) as u32) }.map_err(|_| error())?;
         Ok(format!("{}:{:02x?}", info.VolumeSerialNumber, info.FileId.Identifier))
+    }
+
+    pub(crate) fn move_directory(parent: &File, name: &str, destination: &File, expected: &str) -> io::Result<()> {
+        use windows::Win32::Storage::FileSystem::{SetFileInformationByHandle, FileRenameInfo, FILE_RENAME_INFO};
+        let source = relative(parent, name, Access::Delete, false, None)?;
+        if !source.metadata()?.is_dir() || source.metadata()?.file_type().is_symlink() || identity(&source)? != expected {
+            return Err(error());
+        }
+        let units: Vec<u16> = name.encode_utf16().collect();
+        let size = std::mem::size_of::<FILE_RENAME_INFO>() + units.len() * 2;
+        let mut storage = vec![0u64; size.div_ceil(8)];
+        let info = storage.as_mut_ptr() as *mut FILE_RENAME_INFO;
+        unsafe {
+            (*info).RootDirectory = handle(destination);
+            (*info).FileNameLength = (units.len() * 2) as u32;
+            std::ptr::copy_nonoverlapping(units.as_ptr(), (*info).FileName.as_mut_ptr(), units.len());
+            SetFileInformationByHandle(handle(&source), FileRenameInfo, info.cast(), size as u32)
+        }.map_err(|_| error())?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_entry(parent: &File, name: &str, directory: bool) -> io::Result<()> {
+        use windows::Win32::Storage::FileSystem::{SetFileInformationByHandle, FileDispositionInfo, FILE_DISPOSITION_INFO};
+        let entry = relative(parent, name, Access::Delete, false, None)?;
+        if entry.metadata()?.is_dir() != directory { return Err(error()); }
+        let info = FILE_DISPOSITION_INFO { DeleteFile: true.into() };
+        unsafe { SetFileInformationByHandle(handle(&entry), FileDispositionInfo,
+            &info as *const _ as *const _, std::mem::size_of_val(&info) as u32) }.map_err(|_| error())?;
+        Ok(())
     }
 
     pub(crate) fn canonical(file: &File) -> io::Result<PathBuf> {
@@ -233,13 +262,36 @@ mod platform {
             }
         }
         let mut flags = libc::O_CLOEXEC | libc::O_NONBLOCK | match access {
-            Access::Attributes => libc::O_EVTONLY, Access::Read => libc::O_RDONLY, Access::Write => libc::O_WRONLY,
+            Access::Attributes | Access::Delete => libc::O_EVTONLY, Access::Read => libc::O_RDONLY, Access::Write => libc::O_WRONLY,
         };
         if !follow { flags |= libc::O_SYMLINK; }
         if create == Some(false) { flags |= libc::O_CREAT | libc::O_EXCL; }
         let fd = unsafe { libc::openat(parent.as_raw_fd(), name.as_ptr(), flags, 0o600) };
         if fd < 0 { return Err(io::Error::last_os_error()); }
         Ok(unsafe { File::from_raw_fd(fd) })
+    }
+    pub(crate) fn move_directory(parent: &File, name: &str, destination: &File, expected: &str) -> io::Result<()> {
+        let source = relative(parent, name, Access::Delete, false, None)?;
+        if !source.metadata()?.is_dir() || source.metadata()?.file_type().is_symlink() || identity(&source)? != expected {
+            return Err(io::Error::other("Branch directory changed"));
+        }
+        let name = string(name)?;
+        if unsafe { libc::renameatx_np(parent.as_raw_fd(), name.as_ptr(), destination.as_raw_fd(), name.as_ptr(), libc::RENAME_EXCL) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let moved = relative(destination, name.to_str().map_err(io::Error::other)?, Access::Attributes, false, None)?;
+        if identity(&moved)? != expected { return Err(io::Error::other("Branch directory changed")); }
+        parent.sync_all()?;
+        destination.sync_all()?;
+        Ok(())
+    }
+
+    pub(crate) fn remove_entry(parent: &File, name: &str, directory: bool) -> io::Result<()> {
+        let name = string(name)?;
+        if unsafe { libc::unlinkat(parent.as_raw_fd(), name.as_ptr(), if directory { libc::AT_REMOVEDIR } else { 0 }) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        parent.sync_all()
     }
     pub(crate) fn identity(file: &File) -> io::Result<String> {
         let metadata = file.metadata()?;

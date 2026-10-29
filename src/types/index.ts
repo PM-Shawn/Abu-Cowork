@@ -302,6 +302,8 @@ export interface UserQuestionResult {
 
 export interface ToolCall {
   id: string;
+  /** Full text stored under this conversation's results directory. */
+  fullResultRef?: ToolResultFileRef;
   name: string;
   input: Record<string, unknown>;
   result?: string;
@@ -468,6 +470,8 @@ export interface UpstreamErrorDetails {
 
 export interface Message {
   id: string;
+  /** Historical copy owned by a branch; source-run actions remain unavailable. */
+  inheritedFromBranch?: true;
   /** Local configured welcome, distinct from generated assistant output. */
   introduction?: import('./expertContact').ExpertIdentity;
   /** First human contact receipt, used only for local onboarding recovery. */
@@ -642,6 +646,8 @@ export interface ToolCallForContext {
   name: string;
   input: Record<string, unknown>;
   result: string;
+  isError?: boolean;
+  fullResultRef?: ToolResultFileRef;
   resultContent?: ToolResultContent[];  // Preserve images (screenshots) for LLM vision
 }
 
@@ -649,9 +655,19 @@ export interface ToolCallForContext {
 
 export type ConversationStatus = 'idle' | 'running' | 'completed' | 'error';
 
+export interface ConversationBranchOrigin {
+  version: 1;
+  sourceConversationId: string;
+  sourceMessageId: string;
+  sourceTitle: string;
+  inheritedThroughMessageId: string;
+}
 
 export interface Conversation {
   id: string;
+  branchOrigin?: ConversationBranchOrigin;
+  /** Cleared after the branch's initial navigation has completed. */
+  branchInitialOpenPending?: true;
   title: string;
   messages: Message[];
   createdAt: number;
@@ -746,6 +762,12 @@ export interface ToolResultOutputRef {
   basename?: string;
   /** Snapshot size in bytes, used for fixed-size downgrade UI and send placeholder. */
   sizeBytes?: number;
+}
+
+export interface ToolResultFileRef {
+  relPath: string;
+  legacy?: true;
+  missing?: true;
 }
 
 // Rich content blocks for tool results (images, text)

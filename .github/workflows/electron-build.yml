@@ -560,6 +560,40 @@ jobs:
           cargo test --manifest-path electron/native-helper/Cargo.toml --bin tauri-transition-reader
           cargo test --manifest-path electron/native-helper/Cargo.toml --test stdin_eof
 
+      - name: Windows conversation branch acceptance
+        id: windows_branch_acceptance
+        continue-on-error: true
+        shell: pwsh
+        env:
+          CI: true
+        run: |
+          $temporaryDirectory = Join-Path $PWD '.agent/windows-branch-temp'
+          $evidenceDirectory = Join-Path $PWD '.agent/windows-branch-acceptance'
+          New-Item -ItemType Directory -Force $temporaryDirectory, $evidenceDirectory | Out-Null
+          $env:TEMP = $temporaryDirectory
+          $env:TMP = $temporaryDirectory
+          $env:TMPDIR = $temporaryDirectory
+          node -p 'JSON.stringify({platform:process.platform,arch:process.arch,node:process.version})' |
+            Tee-Object -FilePath "$evidenceDirectory/environment.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:branch-native 2>&1 | Tee-Object -FilePath "$evidenceDirectory/native.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:sandbox-launcher 2>&1 | Tee-Object -FilePath "$evidenceDirectory/launcher.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:e2e:electron -- tests/e2e/smoke.spec.ts tests/e2e/conversation-branching.spec.ts tests/e2e/conversation-branch-history.spec.ts 2>&1 |
+            Tee-Object -FilePath "$evidenceDirectory/electron.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Windows conversation branch evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-conversation-branch-acceptance
+          path: |
+            .agent/windows-branch-acceptance/
+            test-results/
+          retention-days: 7
+
       - name: Require all Windows gates
         if: ${{ always() && !cancelled() }}
         shell: bash
@@ -569,6 +603,7 @@ jobs:
           HOST_SECURITY_OUTCOME: ${{ steps.windows_host_security_gates.outcome }}
           ACTIVE_WINDOW_OUTCOME: ${{ steps.windows_active_window_probe.outcome }}
           NATIVE_HELPER_OUTCOME: ${{ steps.windows_native_helper_gates.outcome }}
+          BRANCH_ACCEPTANCE_OUTCOME: ${{ steps.windows_branch_acceptance.outcome }}
         run: |
           failures=()
           for gate in \
@@ -576,7 +611,8 @@ jobs:
             "electron-migration:$ELECTRON_MIGRATION_OUTCOME" \
             "host-security:$HOST_SECURITY_OUTCOME" \
             "active-window:$ACTIVE_WINDOW_OUTCOME" \
-            "native-helper:$NATIVE_HELPER_OUTCOME"; do
+            "native-helper:$NATIVE_HELPER_OUTCOME" \
+            "conversation-branch:$BRANCH_ACCEPTANCE_OUTCOME"; do
             if [[ "${gate#*:}" != "success" ]]; then
               failures+=("$gate")
             fi

@@ -243,6 +243,7 @@ test('branches from failed, tool-only, legacy and turn-limit histories through t
   if (await page.getByRole('button', { name: '显示侧栏', exact: true }).isVisible()) await page.getByRole('button', { name: '显示侧栏', exact: true }).click();
   for (const [index, kind] of cases.entries()) {
     await page.getByRole('button', { name: new RegExp(`^Source ${kind}`) }).first().click();
+    await expect(page.getByText(`QUESTION-${kind}`, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     const branch = page.getByRole('button', { name: '分支到新聊天', exact: true });
     await expect(branch).toHaveCount(1, { timeout: READY_TIMEOUT });
     await branch.focus();

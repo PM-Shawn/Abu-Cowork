@@ -7,6 +7,19 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.60.2 · 2026-10-29
+
+### Improvements
+
+- **Choose where Abu is installed on Windows.** First-time installation offers a directory picker; updates keep the registered installation directory.
+- **Recover from a failed Windows update.** Updates prepare and validate the application before replacing the installation. If an update fails, the installer offers details and retry; continuing with the previous version is available after recovery succeeds.
+
+### Fixes
+
+- **Scroll through providers and models in settings.** The dialog's scroll lock now recognizes lists opened inside it through a portal. Both lists can scroll to their last choice, and closing a list returns focus to its control.
+
+Full Changelog: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.60.1...v0.60.2
+
 ## v0.60.1 · 2026-10-28
 
 ### ✨ Improvements

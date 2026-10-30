@@ -43,3 +43,12 @@ test('an update error cancels the current wait without affecting a later retry',
   app.emit('will-quit');
   await retry.wait;
 });
+
+test('the installation error reaches the restart caller', async () => {
+  const app = new EventEmitter();
+  const request = createApplicationExitWait(app, () => {});
+  const failure = new Error('installation permission denied');
+  const rejected = assert.rejects(request.wait, error => error === failure);
+  request.fail(failure);
+  await rejected;
+});

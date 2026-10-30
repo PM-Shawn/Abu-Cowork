@@ -16,6 +16,7 @@ import { cn } from '@/lib/utils';
 import { APP_VERSION } from '@/utils/version';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp } from '@/core/updates/checker';
 import { getUpdateProgressPresentation } from '@/core/updates/progress';
+import { updateErrorMessage } from '@/core/updates/errorMessage';
 import { getHelpDocsUrl, OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
 
 type IconGlyph = ComponentProps<typeof Icon>['icon'];
@@ -50,6 +51,9 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const updateChecking = useSettingsStore((s) => s.updateChecking);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
   const updateInstalling = useSettingsStore((s) => s.updateInstalling);
+  const updateRestarting = useSettingsStore((s) => s.updateRestarting);
+  const updateRestartError = useSettingsStore((s) => s.updateRestartError);
+  const updateDownloadError = useSettingsStore((s) => s.updateDownloadError);
   const updaterUnsupported = useSettingsStore((s) => s.updaterUnsupported);
 
   const [open, setOpen] = useState(false);
@@ -90,16 +94,16 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
   const handleDownload = useCallback(async () => {
     try {
       await downloadAndInstallUpdate();
-    } catch {
-      // download error is reflected in the About section; keep the menu quiet
+    } catch (error) {
+      console.error('Failed to download update:', error);
     }
   }, []);
 
   const handleRestart = useCallback(async () => {
     try {
       await restartApp();
-    } catch {
-      /* no-op */
+    } catch (error) {
+      console.error('Failed to restart:', error);
     }
   }, []);
 
@@ -150,14 +154,16 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
     disabled?: boolean;
     accent?: boolean;
     version?: string;
-  } = updateInstalling
-    ? { icon: AppIcons.restart, label: t.updates.restartToInstall, onClick: handleRestart, accent: true }
+  } = updateRestarting
+    ? { label: t.updates.preparingRestart, disabled: true, accent: true }
+    : updateInstalling
+    ? { icon: AppIcons.restart, label: updateRestartError ? t.updates.retry : t.updates.restartToInstall, onClick: handleRestart, accent: true }
     : downloadProgress
       ? { label: downloadLabel, disabled: true, accent: true }
       : updateInfo
         ? {
             icon: AppIcons.download,
-            label: t.updates.downloadUpdate,
+            label: updateDownloadError ? t.updates.retry : t.updates.downloadUpdate,
             onClick: handleDownload,
             accent: true,
             version: `v${updateInfo.version}`,
@@ -317,6 +323,11 @@ export default function AccountMenu({ onEditProfile }: { onEditProfile: () => vo
           icon={updateRow.icon}
           shortcut={updateRow.version}
           disabled={updateRow.disabled}
+          description={updateRestartError
+            ? `${t.updates.restartFailed}: ${updateErrorMessage(updateRestartError, t.updates)}`
+            : updateDownloadError
+              ? `${t.updates.downloadFailed}: ${updateErrorMessage(updateDownloadError, t.updates)}`
+              : undefined}
           onSelect={(event) => {
             event.preventDefault();
             updateRow.onClick?.();

@@ -30,3 +30,20 @@ test('exit closes process admission and cancellation restores it', async () => {
   owner.resume();
   owner.assertAdmission();
 });
+
+test('a child that does not close rejects with its identity and can be retried', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const owner = createOwnedChildProcesses({ timeoutMs: 100 });
+  let finish;
+  let stops = 0;
+  owner.trackCompletion(new Promise(resolve => { finish = resolve; }), () => { stops++; }, 'terminal 123');
+  const failed = assert.rejects(owner.shutdown(), /ABU_EXIT_CHILD_TIMEOUT: terminal 123/);
+  context.mock.timers.tick(100);
+  await failed;
+  owner.resume();
+  owner.assertAdmission();
+  const retried = owner.shutdown();
+  finish();
+  await retried;
+  assert.equal(stops, 2);
+});

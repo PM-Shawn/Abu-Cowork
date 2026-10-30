@@ -85,6 +85,7 @@ files:
   - "node_modules/universalify/**/*"
   - "node_modules/js-yaml/**/*"
   - "node_modules/yaml/**/*"
+  - "node_modules/zod/**/*"
   - "node_modules/argparse/**/*"
   - "node_modules/lazy-val/**/*"
   - "node_modules/lodash.escaperegexp/**/*"

@@ -13,6 +13,7 @@ use std::time::UNIX_EPOCH;
 const MAX_TARGETS: usize = 10_000;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MEDIA_CHUNK_BYTES: u64 = 1024 * 1024;
+const MAX_STREAM_WRITE_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_SESSIONS: usize = 128;
 const MAX_IMAGE_WORK_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -459,9 +460,118 @@ struct Session {
     id: u64, cancelled: Arc<AtomicBool>, targets: Vec<Target>, observations: HashMap<String, Observation>,
     entries: HashMap<String, Entry>, created: HashMap<PathBuf, String>, serial: u64,
     searches: HashMap<String, regex::Regex>, search_bytes: usize,
+    stream_writes: HashMap<String, u64>,
 }
 
 impl Session {
+    fn branch_entry(&mut self, params: &Value) -> Result<Value, HelperError> {
+        let name = text(params, "name")?;
+        if name.is_empty() || name.len() > 255 || name.contains("..")
+            || !name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)) {
+            return Err(refused());
+        }
+        let parent = self.observation(text(params, "reference")?)?;
+        if parent.target.purpose != "write" || parent.target.follow || !parent.resolved.is_dir
+            || parent.resolved.is_symlink { return Err(refused()); }
+        let directory = parent.resolved.file.as_ref().ok_or_else(refused)?;
+        if text(params, "action")? == "branch-move" {
+            let destination = self.observation(text(params, "destination")?)?;
+            if destination.target.purpose != "write" || destination.target.follow || !destination.resolved.is_dir
+                || destination.resolved.is_symlink { return Err(refused()); }
+            platform::move_directory(directory, name, destination.resolved.file.as_ref().ok_or_else(refused)?,
+                text(params, "identity")?).map_err(|error| io_error(error).after_dispatch())?;
+            destination.validate(&self.cancelled).map_err(HelperError::after_dispatch)?;
+        } else {
+            remove_branch_entry(directory, name, &self.cancelled, 0)?;
+        }
+        parent.validate(&self.cancelled).map_err(HelperError::after_dispatch)?;
+        Ok(Value::Null)
+    }
+
+    /// Main-process branch copies use retained directory handles for every creation.
+    fn write_chunk(&mut self, reference: &str, params: &Value) -> Result<Value, HelperError> {
+        let offset = params.get("offset").and_then(Value::as_u64).ok_or_else(refused)?;
+        let bytes = params.get("bytes").and_then(Value::as_array).filter(|bytes| bytes.len() <= 1024 * 1024)
+            .ok_or_else(refused)?.iter().map(|byte| byte.as_u64().filter(|byte| *byte <= 255)
+                .map(|byte| byte as u8).ok_or_else(refused)).collect::<Result<Vec<_>, _>>()?;
+        let end = offset.checked_add(bytes.len() as u64).filter(|end| *end <= MAX_STREAM_WRITE_BYTES).ok_or_else(refused)?;
+        if let Some(written) = self.stream_writes.get(reference) {
+            if *written != offset { return Err(refused()); }
+        } else {
+            let observation = self.observation(reference)?;
+            if offset != 0 || observation.resolved.file.is_some() || observation.target.purpose != "write"
+                || observation.target.follow { return Err(refused()); }
+            self.create_missing(reference, true)?;
+        }
+        let observation = self.observation(reference)?;
+        if !observation.resolved.is_file || observation.resolved.is_symlink { return Err(refused()); }
+        let file = observation.resolved.file.as_ref().ok_or_else(refused)?;
+        let mut writer = file.try_clone().map_err(io_error)?;
+        if writer.metadata().map_err(io_error)?.len() != offset { return Err(refused()); }
+        writer.seek(SeekFrom::Start(offset)).map_err(io_error)?;
+        check(&self.cancelled)?;
+        writer.write_all(&bytes).map_err(|error| io_error(error).after_dispatch())?;
+        observation.validate(&self.cancelled).map_err(HelperError::after_dispatch)?;
+        self.stream_writes.insert(reference.to_owned(), end);
+        Ok(json!({ "written": end }))
+    }
+
+    fn finish_write(&mut self, reference: &str, params: &Value) -> Result<Value, HelperError> {
+        let size = params.get("size").and_then(Value::as_u64).ok_or_else(refused)?;
+        if self.stream_writes.get(reference) != Some(&size) { return Err(refused()); }
+        let observation = self.observation(reference)?;
+        let file = observation.resolved.file.as_ref().ok_or_else(refused)?;
+        if file.metadata().map_err(io_error)?.len() != size { return Err(refused()); }
+        check(&self.cancelled)?;
+        file.sync_all().map_err(|error| io_error(error).after_dispatch())?;
+        observation.validate(&self.cancelled).map_err(HelperError::after_dispatch)?;
+        self.stream_writes.remove(reference);
+        Ok(Value::Null)
+    }
+
+    /// Copies between retained handles without sending file contents over RPC.
+    fn copy_file(&mut self, reference: &str, params: &Value) -> Result<Value, HelperError> {
+        let source_reference = text(params, "sourceReference")?;
+        let size = params.get("size").and_then(Value::as_u64)
+            .filter(|size| *size <= MAX_STREAM_WRITE_BYTES).ok_or_else(refused)?;
+        let source = self.observation(source_reference)?;
+        if source.target.purpose != "read" || source.target.follow || !source.resolved.is_file
+            || source.resolved.is_symlink { return Err(refused()); }
+        let mut reader = source.resolved.file.as_ref().ok_or_else(refused)?.try_clone().map_err(io_error)?;
+        let before = reader.metadata().map_err(io_error)?;
+        let modified = before.modified().map_err(io_error)?;
+        if before.len() != size { return Err(refused()); }
+        let destination = self.observation(reference)?;
+        if destination.target.purpose != "write" || destination.target.follow
+            || destination.resolved.file.is_some() { return Err(refused()); }
+        reader.seek(SeekFrom::Start(0)).map_err(io_error)?;
+        self.create_missing(reference, true)?;
+        let destination = self.observation(reference)?;
+        let mut writer = destination.resolved.file.as_ref().ok_or_else(refused)?.try_clone().map_err(io_error)?;
+        let mut copy = || -> Result<Value, HelperError> {
+            let mut copied = 0u64;
+            let mut buffer = [0u8; 64 * 1024];
+            while copied < size {
+                check(&self.cancelled)?;
+                let limit = (size - copied).min(buffer.len() as u64) as usize;
+                let count = reader.read(&mut buffer[..limit]).map_err(io_error)?;
+                if count == 0 { return Err(refused()); }
+                writer.write_all(&buffer[..count]).map_err(io_error)?;
+                copied += count as u64;
+            }
+            let after = reader.metadata().map_err(io_error)?;
+            if after.len() != size || after.modified().map_err(io_error)? != modified { return Err(refused()); }
+            self.observation(source_reference)?;
+            destination.validate(&self.cancelled)?;
+            check(&self.cancelled)?;
+            writer.sync_all().map_err(io_error)?;
+            if writer.metadata().map_err(io_error)?.len() != size { return Err(refused()); }
+            destination.validate(&self.cancelled)?;
+            Ok(json!({ "written": copied }))
+        };
+        copy().map_err(HelperError::after_dispatch)
+    }
+
     fn process_image(&mut self, params: &Value) -> Result<Value, HelperError> {
         let reference = text(params, "reference")?;
         let operation = text(params, "operation")?;
@@ -705,6 +815,7 @@ impl Session {
     fn run(&mut self, params: &Value) -> Result<Value, HelperError> {
         check(&self.cancelled)?;
         let action = text(params, "action")?;
+        if action == "branch-move" || action == "branch-remove" { return self.branch_entry(params); }
         if action == "image-process" { return self.process_image(params); }
         if action == "observe" {
             let target = Target::parse(params)?;
@@ -765,6 +876,9 @@ impl Session {
             self.search_bytes = total;
             return Ok(json!({ "searchable": true, "matches": matches, "bytesRead": bytes.len() }));
         }
+        if action == "write-chunk" { return self.write_chunk(reference, params); }
+        if action == "finish-write" { return self.finish_write(reference, params); }
+        if action == "copy-file" { return self.copy_file(reference, params); }
         if action == "write" {
             let bytes = params.get("bytes").and_then(Value::as_array).filter(|bytes| bytes.len() <= MAX_BYTES)
                 .ok_or_else(refused)?.iter().map(|byte| byte.as_u64().filter(|byte| *byte <= 255)
@@ -816,6 +930,22 @@ impl Session {
     }
 }
 
+fn remove_branch_entry(parent: &File, name: &str, cancelled: &AtomicBool, depth: usize) -> Result<(), HelperError> {
+    check(cancelled)?;
+    if depth > 128 { return Err(refused()); }
+    let entry = platform::relative(parent, name, Access::Attributes, false, None).map_err(io_error)?;
+    let metadata = entry.metadata().map_err(io_error)?;
+    let directory = metadata.is_dir() && !metadata.file_type().is_symlink();
+    if directory {
+        for child in platform::names(&entry, &|| check(cancelled).map_err(|_| io::Error::other("File session cancelled"))).map_err(io_error)? {
+            remove_branch_entry(&entry, &child, cancelled, depth + 1)?;
+        }
+    }
+    check(cancelled)?;
+    drop(entry);
+    platform::remove_entry(parent, name, directory).map_err(|error| io_error(error).after_dispatch())
+}
+
 pub(crate) fn handle(params: &Value) -> Result<Value, HelperError> {
     let id = session_id(params)?;
     let action = text(params, "action")?;
@@ -835,7 +965,7 @@ pub(crate) fn handle(params: &Value) -> Result<Value, HelperError> {
         let targets = params.get("targets").and_then(Value::as_array).ok_or_else(refused)?
             .iter().map(Target::parse).collect::<Result<Vec<_>, _>>()?;
         sessions.insert(id, Session { id, cancelled, targets, observations: HashMap::new(), entries: HashMap::new(),
-            created: HashMap::new(), serial: 0, searches: HashMap::new(), search_bytes: 0 });
+            created: HashMap::new(), serial: 0, searches: HashMap::new(), search_bytes: 0, stream_writes: HashMap::new() });
         return Ok(json!({ "session": id.to_string() }));
     }
     sessions.get_mut(&id).ok_or_else(refused)?.run(params)

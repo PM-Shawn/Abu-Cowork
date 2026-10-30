@@ -10,12 +10,11 @@
 import { estimateTokens } from './tokenEstimator';
 import { charsOmittedMarker } from './truncation';
 import { TOOL_NAMES } from '../tools/toolNames';
+import { SPILL_NOTE_ENDING } from '../session/toolResultFileReference';
 
 export const SPILL_THRESHOLD_TOKENS = 12_500;
 const PREVIEW_HEAD_TOKENS = 2_500;
 const PREVIEW_TAIL_TOKENS = 1_000;
-
-const SPILL_NOTE_ENDING = 'Read the part you need with read_file using offset and limit, or search it with search_files.]';
 
 /** The last line `boundToolResult` writes: where the rest is, for the model. */
 export function isSpillNoteLine(line: string): boolean {

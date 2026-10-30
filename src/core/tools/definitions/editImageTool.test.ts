@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MediaJobRecord } from '@/types/media';
 import { editImageTool } from './editImageTool';
+import { useChatStore } from '@/stores/chatStore';
+import { acceptMediaJobRecord, detachImageEdits, refreshMediaJobs, useMediaJobStore } from '@/core/media/mediaJobs';
 
 function record(generationState: MediaJobRecord['job']['generationState'], error?: string): MediaJobRecord {
   return {
@@ -20,7 +22,28 @@ function record(generationState: MediaJobRecord['job']['generationState'], error
 }
 
 describe('image edit tool result', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    useChatStore.setState({ conversations: {} });
+    useMediaJobStore.setState({ records: {} });
+  });
+
+  it('keeps inherited requests out of refresh, detach and late job events', async () => {
+    const saved = record('completed');
+    const mediaOperation = vi.fn();
+    vi.stubGlobal('__ABU_SHELL__', { mediaOperation });
+    useChatStore.setState({ conversations: { 'conversation-1': {
+      id: 'conversation-1', title: 'Branch', createdAt: 1, updatedAt: 1, status: 'idle', messages: [{
+        id: saved.request.messageId, role: 'user', content: saved.request.prompt, timestamp: 1,
+        inheritedFromBranch: true, imageEditRequest: saved.request,
+      }],
+    } } });
+    await refreshMediaJobs('conversation-1');
+    await detachImageEdits('conversation-1');
+    acceptMediaJobRecord(saved);
+    expect(mediaOperation).not.toHaveBeenCalled();
+    expect(useMediaJobStore.getState().records).toEqual({});
+  });
 
   it.each([
     ['failed', 'Image service returned HTTP 401'],

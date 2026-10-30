@@ -13,6 +13,7 @@ import type { Message, MessageContent, ToolCall, ToolCallForContext, ToolResultC
 import type { LedgerLine } from './messageLedger';
 import { boundMessageToolResultContentForDisk } from './durableToolResultContent';
 import { parseMessageMedia } from '@/types/media';
+import { readToolResultFileReference } from './toolResultFileReference';
 
 /** What a tool result's image snapshot contributes to an `outputRef`. */
 export interface ToolResultImageSnapshotRef {
@@ -77,6 +78,11 @@ function cloneToolResultContentForDisk(
   });
 }
 
+function fileReferenceForDisk(call: ToolCall | ToolCallForContext, convId: string | undefined) {
+  const reference = call.fullResultRef ?? (call.result && convId ? readToolResultFileReference(call.result, convId) : undefined);
+  return reference ? { fullResultRef: { ...reference } } : {};
+}
+
 function cloneToolCallsForDisk(
   convId: string | undefined,
   calls: ToolCall[] | undefined,
@@ -85,6 +91,7 @@ function cloneToolCallsForDisk(
 ): ToolCall[] | undefined {
   return calls?.map((call) => ({
     ...call,
+    ...fileReferenceForDisk(call, convId),
     ...(call.resultContent
       ? { resultContent: cloneToolResultContentForDisk(convId, call.id, call.resultContent, allowToolResultDehydration, find) }
       : {}),
@@ -99,6 +106,7 @@ function cloneContextToolCallsForDisk(
 ): ToolCallForContext[] | undefined {
   return calls?.map((call) => ({
     ...call,
+    ...fileReferenceForDisk(call, convId),
     ...(call.resultContent
       ? { resultContent: cloneToolResultContentForDisk(convId, call.id, call.resultContent, allowToolResultDehydration, find) }
       : {}),

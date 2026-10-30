@@ -12,6 +12,13 @@ function makeMessage(overrides: Partial<Message> & Pick<Message, 'role' | 'conte
 
 describe('messageNormalizer', () => {
   describe('normalizeMessages', () => {
+    it('keeps a missing inherited PDF visible to the model without an empty document payload', () => {
+      const turns = normalizeMessages([makeMessage({ role: 'user', inheritedFromBranch: true, content: [
+        { type: 'document', name: 'report.pdf', source: { type: 'base64', media_type: 'application/pdf', data: '' } },
+      ] })]);
+      expect(turns[0]).toEqual({ kind: 'user', content: [{ type: 'text', text: '[An attached document (report.pdf) could not be loaded.]' }] });
+    });
+
     it('converts simple user + assistant messages', () => {
       const messages: Message[] = [
         makeMessage({ role: 'user', content: 'Hello' }),

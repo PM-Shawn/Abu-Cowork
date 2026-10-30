@@ -43,13 +43,14 @@ test('image editing preserves layers, uses the bottom toolbar and keeps one rati
     const preview = page.locator('[role="tabpanel"]:not([hidden])');
     await expect(preview.getByRole('button', { name: '宽高比', exact: true })).toBeVisible();
     await expect(preview.getByTestId('image-preview')).toBeVisible();
-    const { toolbar, area } = await preview.getByRole('button', { name: '宽高比', exact: true }).evaluate(element => ({
-      toolbar: element.getBoundingClientRect().toJSON(),
-      area: element.closest('[data-testid="image-preview"]')!.getBoundingClientRect().toJSON(),
-    }));
-    expect(toolbar.y).toBeGreaterThan(area.y + area.height / 2);
+    await expect.poll(() => preview.getByRole('button', { name: '宽高比', exact: true }).evaluate(element => {
+      const toolbar = element.getBoundingClientRect();
+      const area = element.closest('[data-testid="image-preview"]')!.getBoundingClientRect();
+      return area.height > 0 && toolbar.y > area.y + area.height / 2;
+    })).toBe(true);
     expect((await card.boundingBox())!.height).toBe(bounds!.height);
     await composer.fill('保留咖啡包装');
+    const toolbar = await preview.getByRole('button', { name: '宽高比', exact: true }).boundingBox();
     await preview.getByRole('button', { name: '宽高比', exact: true }).click();
     const ratio = page.getByRole('menuitem', { name: '1:1', exact: true });
     const menu = await page.getByRole('menu').boundingBox();
@@ -142,6 +143,8 @@ test('image editing preserves layers, uses the bottom toolbar and keeps one rati
     await preview.getByRole('button', { name: '批注', exact: true }).click();
     await expect(preview.getByRole('button', { name: '批注', exact: true })).toHaveAttribute('aria-pressed', 'true');
     const overhead = preview.getByRole('img', { name: 'coffee-overhead.png', exact: true });
+    await expect(overhead.locator('..')).toHaveClass(/cursor-crosshair/);
+    await expect.poll(() => overhead.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBe(600);
     await overhead.click({ position: { x: 35, y: 35 } });
     await expect(firstComment).toBeFocused();
     await firstComment.fill('保留俯视构图');

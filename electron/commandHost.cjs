@@ -43,8 +43,7 @@ const {
 } = require('./runtimeResolver.cjs');
 const { runtimeState } = require('./runtimeObservability.cjs');
 
-// ── Seatbelt (SBPL) profile generation — line-for-line port of
-// src-tauri/src/sandbox.rs's generate_seatbelt_profile() ──
+// ── Seatbelt (SBPL) profile generation ──
 
 /**
  * Sensitive paths under $HOME that should never be readable.
@@ -98,9 +97,8 @@ function resolveTemporaryDirectory() {
 
 /**
  * Generate a Seatbelt Profile Language (SBPL) configuration string.
- * Whitelist model — `(deny default)` base with explicit allows. Port of
- * sandbox.rs's `generate_seatbelt_profile` — every line below corresponds to
- * the same-order `profile.push_str(...)` call in the Rust source.
+ * Uses a `(deny default)` base with explicit allowed paths, including the
+ * host's configured temporary directory after canonical path validation.
  *
  * @param {string | null | undefined} cwd
  * @param {string[]} extraWritablePaths

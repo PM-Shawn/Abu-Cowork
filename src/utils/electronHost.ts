@@ -13,6 +13,7 @@ interface AbuShellBridge {
   inspectPathNameComparison?: (path: string, followFinalSymlink?: boolean) => Promise<ElectronPathNameComparison>;
   fileOperation?: (action: string, request: Record<string, unknown>) => Promise<unknown>;
   mediaOperation?: (action: string, request: Record<string, unknown>) => Promise<unknown>;
+  conversationBranch?: (action: string, request: unknown) => Promise<unknown>;
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
   authorizeUserAttachment?: (file: File, request: ElectronUserAttachmentAuthorizeRequest) => Promise<ElectronUserAttachmentToken>;
@@ -335,6 +336,12 @@ export async function invokeElectronFileOperation<T>(action: string, request: Re
 export async function invokeElectronMedia<T>(action: string, request: Record<string, unknown>): Promise<T> {
   const invoke = getRuntime().__ABU_SHELL__?.mediaOperation;
   if (!invoke) throw new Error('Media access is unavailable');
+  return await invoke(action, request) as T;
+}
+
+export async function invokeElectronConversationBranch<T>(action: string, request: unknown = {}): Promise<T> {
+  const invoke = getRuntime().__ABU_SHELL__?.conversationBranch;
+  if (!invoke) throw new Error('Conversation branching is unavailable');
   return await invoke(action, request) as T;
 }
 

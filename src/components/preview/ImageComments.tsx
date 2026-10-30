@@ -8,9 +8,10 @@ import { TextArea } from '@/components/ds/text-area';
 import { useI18n } from '@/i18n';
 import type { ImageComment } from '@/types/media';
 
-function CommentInput({ comment, label, onChange, onClose, onDelete }: {
+function CommentInput({ comment, label, open, onChange, onClose, onDelete }: {
   comment: ImageComment;
   label: string;
+  open: boolean;
   onChange: (text: string) => void;
   onClose: () => void;
   onDelete: () => void;
@@ -19,10 +20,10 @@ function CommentInput({ comment, label, onChange, onClose, onDelete }: {
   const field = useRef<HTMLTextAreaElement>(null);
   useLayoutEffect(() => {
     const element = field.current;
-    if (!element) return;
+    if (!open || !element) return;
     element.focus({ preventScroll: true });
     element.setSelectionRange(element.value.length, element.value.length);
-  }, []);
+  }, [open]);
   return <>
     <TextArea ref={field} aria-label={label} rows={2} value={comment.text}
       placeholder={t.media.commentPlaceholder} onChange={event => onChange(event.target.value)}
@@ -82,7 +83,7 @@ export function ImageComments({ comments, editor, width, height, zoom, rotation,
     {selected && <Popover open={editor?.open} onOpenChange={open => open ? onOpen(selected.id) : onClose(selected.id)}
       trigger={marker(selected)} label={label(selected)} side="right" align="start"
       className="pointer-events-auto p-2" contentProps={{ 'data-testid': 'image-comment-editor' }}>
-      <CommentInput key={selected.id} comment={selected} label={label(selected)}
+      <CommentInput key={selected.id} comment={selected} label={label(selected)} open={editor?.open === true}
         onChange={text => onChange(selected.id, text)} onClose={() => onClose(selected.id)}
         onDelete={() => { onFocusUnplaced(); onDelete(selected.id); }} />
     </Popover>}

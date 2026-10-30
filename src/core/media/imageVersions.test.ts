@@ -21,6 +21,21 @@ const messages: Message[] = [
 ];
 
 describe('image versions', () => {
+  it('connects successive inherited edits through artifact identity when capture paths differ', () => {
+    const nextSource = { originalPath: '/child/outputs/capture-2.png', captureId: 'capture-2', contentDigest: 'b'.repeat(64) };
+    const nextRequest = { ...request, id: 'request-2', messageId: 'message-3', sourceArtifactId: result.id,
+      sourceCaptureId: 'capture-2', sourceDigest: 'b'.repeat(64), attachmentRefs: [{ ...request.attachmentRefs[0], fileRef: nextSource }] };
+    const nextResult = { ...result, id: 'result-2', messageId: 'message-4', editRequestId: nextRequest.id,
+      parentArtifactId: result.id, fileRef: { originalPath: '/child/outputs/result-2.png', contentDigest: 'c'.repeat(64) } };
+    const inherited: Message[] = [...messages,
+      { id: nextRequest.messageId, role: 'user', content: nextRequest.prompt, timestamp: 3, imageEditRequest: nextRequest },
+      { id: nextResult.messageId, role: 'assistant', content: '', timestamp: 4, mediaArtifacts: [nextResult] },
+    ].map(message => ({ ...message, inheritedFromBranch: true }));
+    const versions = imageVersions(inherited, nextResult.fileRef);
+    expect(versions.versions).toEqual([source, result.fileRef, nextSource, nextResult.fileRef]);
+    expect(versions.parent).toEqual(nextSource);
+  });
+
   it('retains different captures of the same path and the current unsent version', () => {
     const current = { ...source, captureId: 'capture-2', contentDigest: 'c'.repeat(64) };
     expect(imageVersions(messages, current).versions).toEqual([source, result.fileRef, current]);

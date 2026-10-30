@@ -687,7 +687,7 @@ interface ChatState {
   // scrolls to and briefly highlights the first message in `convId` whose text
   // contains `query`. Ephemeral one-shot, consumed by ChatView then cleared.
   // NOT persisted.
-  pendingSearchJump: { convId: string; query: string } | null;
+  pendingSearchJump: { convId: string; query: string; messageId?: string } | null;
   // Pending references injected from a doc preview selection toolbar. Ephemeral
   // one-shot buffer (mirrors pendingInput): ChatInput drains it into local
   // state then clears. NOT persisted.
@@ -723,6 +723,7 @@ interface ChatActions {
   createConversation: (workspacePath?: string | null, options?: { scheduledTaskId?: string; triggerId?: string; teamId?: string; imChannelId?: string; imPlatform?: string; projectId?: string; skipActivate?: boolean }) => string;
   startNewConversation: () => void;
   switchConversation: (id: string) => Promise<void>;
+  completeBranchInitialOpen: (id: string) => void;
   setConversationWorkspace: (convId: string, path: string | null) => void;
   setConversationProject: (convId: string, projectId: string | undefined) => void;
   setConversationModel: (
@@ -883,7 +884,7 @@ interface ChatActions {
   removeActiveAgent: (convId: string, agentName: string) => void;
   setCurrentUsage: (usage: TokenUsage | null) => void;
   setPendingInput: (text: string | null, options?: { startsTask?: boolean }) => void;
-  setPendingSearchJump: (v: { convId: string; query: string } | null) => void;
+  setPendingSearchJump: (v: { convId: string; query: string; messageId?: string } | null) => void;
   appendPendingInput: (text: string | null) => void;
   requestComposerFocus: () => void;
   addPendingReference: (ref: ChatReference) => void;
@@ -1121,6 +1122,16 @@ export const useChatStore = create<ChatStore>()(
           if (meta?.workspacePath) ws.setWorkspace(meta.workspacePath);
           else ws.clearWorkspace();
         }
+      },
+
+      completeBranchInitialOpen: (id) => {
+        set(state => {
+          const conversation = state.conversations[id];
+          const meta = state.conversationIndex[id];
+          if (conversation) delete conversation.branchInitialOpenPending;
+          if (meta) delete meta.branchInitialOpenPending;
+        });
+        persistConversationIndexEntry(id);
       },
 
       setConversationWorkspace: (convId, path) => {
@@ -1981,6 +1992,7 @@ export const useChatStore = create<ChatStore>()(
           const msg = state.conversations[convId]?.messages.find((m) => m.id === messageId);
           if (msg) {
             // Preserve non-text blocks (images, documents) when content is multimodal
+            delete msg.inheritedFromBranch;
             if (Array.isArray(msg.content)) {
               const nonTextBlocks = msg.content.filter((c) => c.type !== 'text');
               if (nonTextBlocks.length > 0) {
@@ -2740,11 +2752,18 @@ export const useChatStore = create<ChatStore>()(
           } else {
             conv.enabledMCPServers = [...current, serverName];
           }
+          const meta = state.conversationIndex[convId];
+          if (meta) {
+            if (conv.enabledMCPServers) meta.enabledMCPServers = [...conv.enabledMCPServers];
+            else delete meta.enabledMCPServers;
+          }
         });
+        persistConversationIndexEntry(convId);
       },
 
       renameMCPServerReferences: (oldName, newName) => {
         if (!oldName || !newName || oldName === newName) return;
+        const affected = Object.values(get().conversationIndex).filter(meta => meta.enabledMCPServers?.includes(oldName)).map(meta => meta.id);
         set((state) => {
           for (const conv of Object.values(state.conversations)) {
             if (!conv.enabledMCPServers?.includes(oldName)) continue;
@@ -2752,7 +2771,12 @@ export const useChatStore = create<ChatStore>()(
               conv.enabledMCPServers.map((name) => name === oldName ? newName : name),
             ));
           }
+          for (const id of affected) {
+            const meta = state.conversationIndex[id];
+            meta.enabledMCPServers = Array.from(new Set(meta.enabledMCPServers!.map(name => name === oldName ? newName : name)));
+          }
         });
+        for (const id of affected) persistConversationIndexEntry(id);
       },
 
       setContextUsage: (convId, usage) => {
@@ -2909,6 +2933,9 @@ export const useChatStore = create<ChatStore>()(
             ...(imported.projectId !== undefined ? { projectId: imported.projectId } : {}),
             readOnly: imported.readOnly,
             importedFrom: imported.importedFrom,
+            ...(imported.branchOrigin ? { branchOrigin: imported.branchOrigin } : {}),
+            ...(imported.branchInitialOpenPending ? { branchInitialOpenPending: true as const } : {}),
+            ...(imported.enabledMCPServers ? { enabledMCPServers: [...imported.enabledMCPServers] } : {}),
             ...(keptPermissionMode ? { permissionMode: keptPermissionMode } : {}),
           };
 
@@ -2987,6 +3014,9 @@ export const useChatStore = create<ChatStore>()(
             delete state.loadFailures[convId];
             state.conversations[convId] = {
               id: meta.id,
+              ...(meta.branchOrigin ? { branchOrigin: meta.branchOrigin } : {}),
+              ...(meta.branchInitialOpenPending ? { branchInitialOpenPending: true as const } : {}),
+              ...(meta.enabledMCPServers ? { enabledMCPServers: [...meta.enabledMCPServers] } : {}),
               title: meta.title,
               createdAt: meta.createdAt,
               updatedAt: meta.updatedAt,
@@ -3089,7 +3119,7 @@ export const useChatStore = create<ChatStore>()(
     })),
     {
       name: 'abu-chat',
-      version: 17,
+      version: 18,
       migrate: (persisted, version) => {
         const state = persisted as Record<string, unknown>;
         // v1 → v2: added executionSteps on Message (optional field, no-op migration)
@@ -3176,6 +3206,8 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         }
+        // v17 → v18: optional branch origin, initial navigation and conversation MCP selection.
+        if (version < 18) { /* Existing conversations retain their ordinary history. */ }
         return state;
       },
       partialize: (state) => ({

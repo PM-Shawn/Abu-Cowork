@@ -26,7 +26,7 @@ function inside(root, candidate) {
   return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
 }
 
-function createMediaHost({ dataRoot, getConversation, onChange }) {
+function createMediaHost({ dataRoot, getConversation, onChange, assertCapacity = createMediaStorageBudget(dataRoot) }) {
   const paths = createConversationPaths(dataRoot);
   const deleted = new Set();
   const owners = new WeakMap();
@@ -82,8 +82,28 @@ function createMediaHost({ dataRoot, getConversation, onChange }) {
   function resolveFile(conversationId, input) {
     const reference = mediaFileRefSchema.parse(input);
     if (!path.isAbsolute(reference.originalPath)) throw new Error('Media file requires an absolute path');
-    if (reference.captureId) return captures.get(conversationId, reference);
     const ownedMessages = messages(conversationId);
+    const inherited = ownedMessages.filter(message => message.inheritedFromBranch).flatMap(message => [
+      ...(message.imageEditRequest?.attachmentRefs ?? []).map(attachment => attachment.fileRef),
+      ...(message.mediaArtifacts ?? []).map(artifact => artifact.fileRef),
+    ]).find(fileRef => isDeepStrictEqual(fileRef, reference)
+      || (!reference.captureId && !reference.contentDigest && fileRef.originalPath === reference.originalPath));
+    if (inherited) {
+      const outputs = paths.outputsDir(conversationId);
+      if (!inside(outputs, reference.originalPath) || fs.realpathSync(outputs) !== path.resolve(outputs)) {
+        throw new Error('Inherited media is outside its conversation');
+      }
+      const manifest = JSON.parse(readText(path.join(outputs, 'manifest.json')));
+      if (manifest.version !== 1 || !manifest.entries || typeof manifest.entries !== 'object') throw new Error('Image history is unavailable');
+      const entry = Object.values(manifest.entries).find(item => item.inheritedFromBranch
+        && path.resolve(outputs, item.snapshotRelPath) === path.resolve(reference.originalPath));
+      if (!entry || entry.missing) throw new Error('Inherited media is unavailable');
+      if (!inside(outputs, fs.realpathSync(reference.originalPath))) throw new Error('Inherited media is outside its conversation');
+      const mimeType = mediaMimeType(reference.originalPath);
+      if (!mimeType) throw new Error('Unsupported media file');
+      return { path: reference.originalPath, mimeType, contentDigest: inherited.contentDigest, allowedRoot: outputs };
+    }
+    if (reference.captureId) return captures.get(conversationId, reference);
     const artifact = ownedMessages.flatMap(message => message.mediaArtifacts ?? [])
       .find(item => isDeepStrictEqual(item.fileRef, reference)
         || (!reference.contentDigest && path.resolve(item.fileRef.originalPath) === path.resolve(reference.originalPath)));
@@ -129,13 +149,12 @@ function createMediaHost({ dataRoot, getConversation, onChange }) {
   }
 
   const protocol = createMediaProtocol({ resolveFile, assertConversation });
-  const assertCapacity = createMediaStorageBudget(dataRoot);
   const captures = createMediaCaptureStore({ root: path.join(dataRoot, 'media', 'captures'), assertConversation, assertCapacity });
   const scope = `local:${createHash('sha256').update(dataRoot).digest('hex')}`;
   const edits = createImageEditHost({ root: path.join(dataRoot, 'media'), scope, captures, assertConversation, assertCapacity, onChange });
 
   function hasMessage(request) {
-    return messages(request.conversationId).some(message => message.id === request.messageId && message.role === 'user'
+    return messages(request.conversationId).some(message => message.id === request.messageId && message.role === 'user' && !message.inheritedFromBranch
       && isDeepStrictEqual(message.imageEditRequest, request));
   }
 
@@ -219,6 +238,9 @@ function createMediaHost({ dataRoot, getConversation, onChange }) {
       if (action === 'detach-edit') return edits.jobs.detach(request.conversationId, request.requestId);
       if (action === 'retry-save') return edits.retrySave(request.conversationId, request.requestId);
       if (action === 'execute-edit') {
+        if (messages(request.conversationId).some(message => message.inheritedFromBranch && message.imageEditRequest?.id === request.requestId)) {
+          throw new Error('Inherited image edits are historical records');
+        }
         const record = edits.jobs.get(request.conversationId, request.requestId);
         const userMessage = messages(request.conversationId).find(message => message.id === record.request.messageId && message.role === 'user');
         if (!userMessage || !isDeepStrictEqual(userMessage.imageEditRequest, record.request)) throw new Error('Image request is not present in this conversation');
@@ -229,7 +251,7 @@ function createMediaHost({ dataRoot, getConversation, onChange }) {
         const generation = owner.generation;
         const file = resolveFile(request.conversationId, request.fileRef);
         if (!file.mimeType.startsWith('image/')) throw new Error('Image editing requires an image');
-        if (request.fileRef.captureId && file.attachment.kind === 'source') {
+        if (request.fileRef.captureId && file.attachment?.kind === 'source') {
           const preparation = Symbol();
           preparations.set(preparation, { conversationId: request.conversationId, fileRef: request.fileRef });
           try {

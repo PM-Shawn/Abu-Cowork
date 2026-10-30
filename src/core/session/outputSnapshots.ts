@@ -46,7 +46,8 @@ import { openAuthorizedFileOperation } from '../tools/authorizedFileOperation';
 import { FileOperationDenied, runFileOperationStage, type FileOperationGuard } from '../tools/fileOperation';
 import type { ToolResultImage } from '../tools/toolResultContent';
 import { createLogger } from '../logging/logger';
-import { applyRecord, foldLog, type ManifestLogRecord } from './outputManifestRecords';
+import { foldLog } from './outputManifestRecords';
+import { applyOutputManifestRecord as applyRecord, type ManifestLogRecord } from './outputManifest';
 
 const logger = createLogger('outputSnapshots');
 
@@ -118,6 +119,11 @@ export interface SnapshotEntry {
   refKind: string;
   /** Reason snapshotRelPath is empty. Only set when not snapshotted. */
   skipReason?: SnapshotSkipReason;
+  /** A branch owns this historical copy for the lifetime of its conversation. */
+  inheritedFromBranch?: true;
+  /** The original path belonged to an ancestor conversation's managed output directory. */
+  inheritedManagedPath?: true;
+  missing?: true;
 }
 
 export interface OutputManifest {
@@ -396,6 +402,7 @@ async function removeUnreferencedCopy(convId: string, outputsDir: string, relPat
  * neither counts and neither is evicted.
  */
 function evictableRelPath(entry: SnapshotEntry): string | null {
+  if (entry.inheritedFromBranch) return null;
   if (!entry.snapshotRelPath) return null;
   // A size that is not a byte count would turn every total into NaN.
   if (!Number.isFinite(entry.size) || entry.size < 0) return null;
@@ -961,6 +968,20 @@ export async function resolveFileSource(
   // 0. Expand `~/...` if present — AI sometimes emits home-relative paths in narrative text.
   const expandedPath = await expandTilde(originalPath);
 
+  if (convId && expandedPath) {
+    const outputsDir = normalizePath(await getOutputsDir(convId));
+    const normalized = normalizePath(expandedPath);
+    if (normalized.startsWith(`${outputsDir}/`)) {
+      return resolveOutputRefSource(convId, normalized.slice(outputsDir.length + 1));
+    }
+    const entry = (await loadManifest(convId)).entries[normalized];
+    if (entry?.inheritedManagedPath) {
+      return entry.missing || !entry.snapshotRelPath
+        ? { status: 'missing', basename: entry.basename, originalPath }
+        : resolveOutputRefSource(convId, entry.snapshotRelPath);
+    }
+  }
+
   // 1. Live original takes priority — even if a snapshot exists, the user's
   //    in-place edits should be reflected.
   if (expandedPath && isAbsolutePath(expandedPath)) {
@@ -1001,6 +1022,7 @@ export async function resolveFileSource(
     // 3a. Exact path match (the common case — toolCall input.path matches the lookup)
     const exactEntry = manifest.entries[normalizePath(expandedPath)];
     if (exactEntry) {
+      if (exactEntry.missing) return { status: 'missing', basename: exactEntry.basename, originalPath };
       if (exactEntry.snapshotRelPath) {
         const dir = await getOutputsDir(convId);
         const full = joinPath(dir, exactEntry.snapshotRelPath);
@@ -1016,7 +1038,7 @@ export async function resolveFileSource(
     //      lookup path lacks directory info but a manifest entry exists for the same filename.
     if (basename) {
       const basenameMatch = Object.values(manifest.entries).find(
-        (e) => e.basename === basename && e.snapshotRelPath,
+        (e) => e.basename === basename && e.snapshotRelPath && !e.missing,
       );
       if (basenameMatch) {
         const dir = await getOutputsDir(convId);
@@ -1049,6 +1071,9 @@ export async function resolveOutputRefSource(
   }
 
   try {
+    const manifest = await loadManifest(convId);
+    const entry = Object.values(manifest.entries).find(value => value.snapshotRelPath === normalizedRelPath);
+    if (entry?.missing) return { status: 'missing', basename: entry.basename, originalPath: relPath };
     const outputsDir = await getOutputsDir(convId);
     const fullPath = joinPath(outputsDir, normalizedRelPath);
     const normalizedFullPath = normalizePath(fullPath);

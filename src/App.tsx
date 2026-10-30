@@ -691,6 +691,8 @@ function App() {
       const conversationStorage = await import('@/core/session/conversationStorage').catch(() => null);
       if (conversationStorage) {
         await conversationStorage.initConversationStorage().catch(() => {});
+        const { recoverConversationBranches } = await import('@/core/session/conversationBranch');
+        await recoverConversationBranches();
         // Reconcile the SQLite conversation catalog against JSONL on disk
         // (message-storage P0): first run does the full scan-build migration,
         // later runs do incremental repair. Fire-and-forget — catalog is a

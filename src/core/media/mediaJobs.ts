@@ -23,7 +23,7 @@ export function acceptMediaJobRecord(input: MediaJobRecord): void {
   const conversation = chat.conversations[record.request.conversationId];
   if (!conversation) return;
   const message = conversation.messages.find(item => item.id === record.request.messageId && item.role === 'user');
-  if (!message?.imageEditRequest) return;
+  if (!message?.imageEditRequest || message.inheritedFromBranch) return;
   if (JSON.stringify(imageEditRequestSchema.parse(message.imageEditRequest)) !== JSON.stringify(record.request)) throw new Error('Image request ownership does not match');
   const previous = useMediaJobStore.getState().records[record.request.id];
   if (previous && previous.job.sequence > record.job.sequence) return;
@@ -40,7 +40,7 @@ export function acceptMediaJobRecord(input: MediaJobRecord): void {
 export async function detachImageEdits(conversationId: string): Promise<void> {
   const conversation = useChatStore.getState().conversations[conversationId];
   if (!conversation) return;
-  await Promise.all(conversation.messages.flatMap(message => message.imageEditRequest ? [
+  await Promise.all(conversation.messages.flatMap(message => message.imageEditRequest && !message.inheritedFromBranch ? [
     invokeElectronMedia<MediaJobRecord>('detach-edit', { conversationId, requestId: message.imageEditRequest.id }).then(acceptMediaJobRecord),
   ] : []));
 }
@@ -52,7 +52,7 @@ export async function retryImageSave(conversationId: string, requestId: string):
 export async function refreshMediaJobs(conversationId: string): Promise<void> {
   const conversation = useChatStore.getState().conversations[conversationId];
   if (!conversation) return;
-  await Promise.all(conversation.messages.flatMap(message => message.imageEditRequest ? [
+  await Promise.all(conversation.messages.flatMap(message => message.imageEditRequest && !message.inheritedFromBranch ? [
     invokeElectronMedia<MediaJobRecord>('get-edit', { conversationId, requestId: message.imageEditRequest.id }).then(acceptMediaJobRecord),
   ] : []));
 }

@@ -59,6 +59,8 @@ const { FILE_OPERATION_CHANNEL, createFileOperationHost } = require('./fileOpera
 const { MEDIA_CHANNEL, createMediaHost } = require('./mediaHost.cjs');
 const { waitForMediaFullscreen } = require('./mediaFullscreen.cjs');
 const { MEDIA_SCHEME } = require('./mediaProtocol.cjs');
+const { createMediaStorageBudget } = require('./mediaStorageBudget.cjs');
+const { CHANNEL: CONVERSATION_BRANCH_CHANNEL, createConversationBranchHost } = require('./conversationBranchHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
 const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
 const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
@@ -1862,7 +1864,11 @@ function registerTauriHost(app, options = {}) {
   });
 
   const fileOperations = createFileOperationHost({ app, trashItem: filePath => require('electron').shell.trashItem(filePath) });
+  // Media recovery uses catalog ownership after the saved history has rebuilt it.
+  catalogDispatch(app, 'catalog_reconcile', { conversationsRoot: path.join(abuAppDataDir(app), 'conversations') });
+  const mediaStorageBudget = createMediaStorageBudget(abuAppDataDir(app));
   const mediaHost = createMediaHost({
+    assertCapacity: mediaStorageBudget,
     dataRoot: abuAppDataDir(app),
     getConversation: conversationId => catalogDispatch(app, 'catalog_get_conversation', { convId: conversationId }),
     onChange: record => emitEvent('media-job-changed', record),
@@ -1875,6 +1881,11 @@ function registerTauriHost(app, options = {}) {
     assertTrustedMainIpcSender(event);
     if (payload.action === 'wait-fullscreen') return waitForMediaFullscreen(BrowserWindow.fromWebContents(event.sender));
     return mediaHost.dispatch(event.sender, payload.action, payload.request);
+  });
+  const conversationBranches = createConversationBranchHost({ appDataDir: abuAppDataDir(app), assertCapacity: mediaStorageBudget });
+  ipcMain.handle(CONVERSATION_BRANCH_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return conversationBranches(payload.action, payload.request);
   });
   ipcMain.handle(FILE_OPERATION_CHANNEL, async (e, payload = {}) => {
     assertTrustedMainIpcSender(e);

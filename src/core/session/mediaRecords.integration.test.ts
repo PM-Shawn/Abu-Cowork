@@ -4,6 +4,9 @@ import type { ImageEditRequest, MediaArtifact } from '@/types/media';
 import { imageEditRequestSchema, mediaArtifactSchema } from '@/types/media';
 import { projectLedger } from '@/core/session/ledgerReader';
 import { serializeLedgerPut, stripForDisk } from '@/core/session/ledgerLineSerializer';
+import { buildConversationBranchHistory, getConversationBranchEligibility } from './conversationBranchHistory';
+import { normalizeMessages } from '@/core/llm/messageNormalizer';
+import { sanitizeLoadedLedgerMessages } from './loadedMessageSanitizer';
 
 const digest = 'a'.repeat(64);
 const artifact: MediaArtifact = {
@@ -29,6 +32,50 @@ const options = { findToolResultImageSnapshot: () => null };
 const message: Message = { id: 'message-1', role: 'user', content: request.prompt, timestamp: 1, imageEditRequest: request };
 
 describe('media message records', () => {
+  it('branches an image-only reply with child-owned history and no executable edit instruction', () => {
+    const result: Message = {
+      id: 'result-message', role: 'assistant', content: '', timestamp: 2,
+      mediaArtifacts: [{ ...artifact, id: 'result-image', messageId: 'result-message', editRequestId: request.id, parentArtifactId: request.sourceArtifactId }],
+    };
+    const parent = [{ ...message, runState: 'completed' as const }, result];
+    expect(getConversationBranchEligibility(parent, result.id, true).eligible).toBe(true);
+    let sequence = 0;
+    const child = buildConversationBranchHistory({
+      sourceConversationId: 'conversation-1', childConversationId: 'child', sourceTitle: 'Images',
+      messages: parent, targetMessageId: result.id, accessAllowed: true, createId: kind => `child-${kind}-${++sequence}`,
+    });
+    const ledgerText = child.messages.map(value => serializeLedgerPut('child', value, undefined, options)).join('');
+    const restored = projectLedger({ ledgerText }).messages;
+    expect(restored).toHaveLength(2);
+    expect(sanitizeLoadedLedgerMessages(restored, { text: { errorEmptyBody: '' } })).toHaveLength(2);
+    expect(restored[0].imageEditRequest).toMatchObject({ conversationId: 'child', messageId: restored[0].id });
+    expect(restored[1].mediaArtifacts?.[0]).toMatchObject({
+      conversationId: 'child', messageId: restored[1].id, editRequestId: restored[0].imageEditRequest!.id,
+      parentArtifactId: restored[0].imageEditRequest!.sourceArtifactId,
+    });
+    expect(restored[0].imageEditRequest!.id).not.toBe(request.id);
+    expect(JSON.stringify(normalizeMessages(restored))).not.toContain('Call edit_image');
+    expect(message.imageEditRequest).toEqual(request);
+  });
+
+  it.each([true, false])('keeps tool request references consistent when their inputs share identity: %s', shared => {
+    const input = { request_id: request.id };
+    const tool = { id: 'edit-tool', name: 'edit_image', input, result: 'Completed' };
+    const reply: Message = { id: 'reply', role: 'assistant', content: 'Ready', timestamp: 2,
+      toolCalls: [tool], toolCallsForContext: [{ ...tool, input: shared ? input : { ...input } }],
+    };
+    let sequence = 0;
+    const child = buildConversationBranchHistory({
+      sourceConversationId: 'conversation-1', childConversationId: 'child', sourceTitle: 'Images',
+      messages: [{ ...message, runState: 'completed' }, reply], targetMessageId: reply.id,
+      accessAllowed: true, createId: kind => `child-${kind}-${++sequence}`,
+    });
+    const requestId = child.messages[0].imageEditRequest!.id;
+    expect(child.messages[1].toolCalls![0].input.request_id).toBe(requestId);
+    expect(child.messages[1].toolCallsForContext![0].input.request_id).toBe(requestId);
+    expect(input.request_id).toBe(request.id);
+  });
+
   it('replays an edit with all layers and its immutable source', () => {
     const ledgerText = serializeLedgerPut('conversation-1', message, undefined, options);
     expect(projectLedger({ ledgerText }).messages[0].imageEditRequest).toEqual(request);

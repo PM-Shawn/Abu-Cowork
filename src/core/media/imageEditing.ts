@@ -57,4 +57,3 @@ export async function activateImageEditing({ composerKey, conversationId, scope,
   writeComposerDraft(composerKey, { ...composer, text: entry.draft.prompt });
   return true;
 }
-

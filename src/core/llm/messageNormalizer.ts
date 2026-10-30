@@ -232,7 +232,9 @@ function convertUserContent(
         blocks.push({ type: 'text', text: '[An image was attached but could not be loaded.]' });
       }
     } else if (c.type === 'document') {
-      blocks.push({ type: 'document', mediaType: c.source.media_type, data: c.source.data });
+      blocks.push(c.source.data
+        ? { type: 'document', mediaType: c.source.media_type, data: c.source.data }
+        : { type: 'text', text: `[An attached document (${c.name ?? 'PDF'}) could not be loaded.]` });
     }
   }
 
@@ -295,7 +297,7 @@ export function normalizeMessages(
 
     if (msg.role === 'user') {
       const content = convertUserContent(msg.content, supportsVision);
-      if (msg.imageEditRequest) content.push({ type: 'text', text: `The user submitted an image edit. Call edit_image with request_id ${JSON.stringify(msg.imageEditRequest.id)}. The application has already frozen the source image and all editing instructions for this request.` });
+      if (msg.imageEditRequest && !msg.inheritedFromBranch) content.push({ type: 'text', text: `The user submitted an image edit. Call edit_image with request_id ${JSON.stringify(msg.imageEditRequest.id)}. The application has already frozen the source image and all editing instructions for this request.` });
       if (content.length > 0) {
         turns.push({ kind: 'user', content });
       }

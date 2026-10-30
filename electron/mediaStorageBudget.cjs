@@ -23,20 +23,30 @@ function createMediaStorageBudget(dataRoot) {
     const hash = createHash('sha256').update(conversationId).digest('hex');
     const media = path.join(dataRoot, 'media');
     const conversations = path.join(dataRoot, 'conversations');
-    const current = storedBytes(path.join(media, 'captures', hash)) + storedBytes(path.join(media, 'results', hash))
-      + storedBytes(path.join(conversations, conversationId, 'outputs'));
+    const branches = path.join(dataRoot, 'conversation-branches');
     const reserved = [...reservations.values()];
-    const conversationReserved = reserved.filter(item => item.conversationId === conversationId).reduce((total, item) => total + item.bytes, 0);
+    const outputBytes = (base, id) => storedBytes(path.join(base, id, 'outputs')) + storedBytes(path.join(base, id, 'results'));
+    const allocatedOutputs = id => Math.max(outputBytes(conversations, id) + outputBytes(branches, id),
+      reserved.filter(item => item.conversationId === id && item.branch).reduce((total, item) => total + item.bytes, 0));
+    const imageReservations = reserved.filter(item => !item.branch);
+    const current = storedBytes(path.join(media, 'captures', hash)) + storedBytes(path.join(media, 'results', hash))
+      + allocatedOutputs(conversationId);
+    const conversationReserved = imageReservations.filter(item => item.conversationId === conversationId).reduce((total, item) => total + item.bytes, 0);
     if (current + conversationReserved + additionalBytes > CONVERSATION_BYTES) throw new Error('Conversation media storage capacity has been reached');
-    const allOutputs = fs.existsSync(conversations) ? fs.readdirSync(conversations, { withFileTypes: true })
-      .filter(entry => entry.isDirectory()).reduce((total, entry) => total + storedBytes(path.join(conversations, entry.name, 'outputs')), 0) : 0;
-    const all = storedBytes(path.join(media, 'captures')) + storedBytes(path.join(media, 'results')) + allOutputs;
-    if (all + reserved.reduce((total, item) => total + item.bytes, 0) + additionalBytes > TOTAL_BYTES) throw new Error('Media storage capacity has been reached');
+    const ids = new Set(reserved.filter(item => item.branch).map(item => item.conversationId));
+    for (const directory of [conversations, branches]) {
+      if (fs.existsSync(directory)) for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+        if (entry.isDirectory()) ids.add(entry.name);
+      }
+    }
+    const all = storedBytes(path.join(media, 'captures')) + storedBytes(path.join(media, 'results'))
+      + [...ids].reduce((total, id) => total + allocatedOutputs(id), 0);
+    if (all + imageReservations.reduce((total, item) => total + item.bytes, 0) + additionalBytes > TOTAL_BYTES) throw new Error('Media storage capacity has been reached');
   };
-  assertCapacity.reserve = (conversationId, bytes) => {
+  assertCapacity.reserve = (conversationId, bytes, { branch = false } = {}) => {
     assertCapacity(conversationId, bytes);
     const key = Symbol();
-    const reservation = { conversationId, bytes };
+    const reservation = { conversationId, bytes, branch };
     reservations.set(key, reservation);
     return {
       consume(amount) {

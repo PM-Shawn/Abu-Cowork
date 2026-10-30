@@ -99,10 +99,10 @@ const TEST_BINDING: EnterpriseBinding = {
 };
 
 describe('chatStore', () => {
-  it('writes version 17 and migrates the activity time of existing index entries', async () => {
+  it('writes version 18 and migrates the activity time of existing index entries', async () => {
     const options = useChatStore.persist.getOptions();
-    expect(options.version).toBe(17);
-    expect(JSON.parse(localStorage.getItem('abu-chat')!).version).toBe(17);
+    expect(options.version).toBe(18);
+    expect(JSON.parse(localStorage.getItem('abu-chat')!).version).toBe(18);
     const migrated = await options.migrate!({
       conversationIndex: {
         previous: { id: 'previous', title: 'Previous', createdAt: 1, updatedAt: 30, messageCount: 2 },

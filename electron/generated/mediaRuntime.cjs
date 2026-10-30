@@ -49132,6 +49132,22 @@ var zhCN = {
     close: "关闭"
   },
   chat: {
+    branch: {
+      action: "分支到新聊天",
+      creating: "正在创建新聊天…",
+      incomplete: "这轮仍在进行，结束或停止后可以分支",
+      title: "{title} · 分支",
+      source: "分支自《{title}》",
+      boundary: "已保留截至这条回复的聊天记录",
+      currentFiles: "文件使用当前内容",
+      sourceDeleted: "原聊天已删除",
+      sourceUnavailable: "原回复已不可用",
+      sourceInaccessible: "无法访问原聊天，请检查访问权限",
+      failed: "无法创建新聊天",
+      saveFailed: "无法保存新聊天，请检查可用空间和访问权限",
+      selectionUnavailable: "所选回复已不可用，请重新选择",
+      historyUnavailable: "无法读取所选回复之前的完整聊天记录"
+    },
     inputPlaceholder: "想让阿布帮你做点什么？",
     inputPlaceholderBusy: "阿布在努力中～",
     inputPlaceholderWithSkill: "输入参数...",
@@ -53681,6 +53697,22 @@ var enUS = {
     close: "Close"
   },
   chat: {
+    branch: {
+      action: "Branch into a new chat",
+      creating: "Creating a new chat…",
+      incomplete: "This turn is running. You can branch after it finishes or you stop it.",
+      title: "{title} · Branch",
+      source: "Branched from “{title}”",
+      boundary: "Chat history up to this reply is included",
+      currentFiles: "Files use their current content",
+      sourceDeleted: "The original chat was deleted",
+      sourceUnavailable: "The original reply is unavailable",
+      sourceInaccessible: "Cannot access the original chat. Check your access permissions.",
+      failed: "Could not create a new chat",
+      saveFailed: "Could not save the new chat. Check available space and access permissions.",
+      selectionUnavailable: "The selected reply is unavailable. Choose a reply again.",
+      historyUnavailable: "Could not read the complete chat history up to the selected reply."
+    },
     inputPlaceholder: "What can Abu help you with?",
     inputPlaceholderBusy: "Abu is working...",
     inputPlaceholderWithSkill: "Enter parameters...",
@@ -58300,8 +58332,7 @@ function createLogger(module2) {
   };
 }
 
-// src/core/session/outputManifestRecords.ts
-var logger = createLogger("outputSnapshots");
+// src/core/session/outputManifest.ts
 function isLogRecord(value) {
   if (typeof value !== "object" || value === null) return false;
   const record2 = value;
@@ -58312,7 +58343,7 @@ function isLogRecord(value) {
   const entry = record2.entry;
   return typeof entry.originalPath === "string" && typeof entry.snapshotRelPath === "string" && typeof entry.snapshottedAt === "number";
 }
-function applyRecord(entries, record2) {
+function applyOutputManifestRecord(entries, record2) {
   if (record2.op === "set") {
     entries[record2.entry.originalPath] = record2.entry;
     return;
@@ -58321,25 +58352,36 @@ function applyRecord(entries, record2) {
     delete entries[record2.originalPath];
   }
 }
-function foldLog(convId, text, entries) {
+function readOutputManifestRecords(text, onInvalid) {
+  const records = [];
   for (const line of text.split("\n")) {
     if (line.trim() === "") continue;
     let record2;
-    try {
+    if (onInvalid) {
+      try {
+        record2 = JSON.parse(line);
+      } catch (error62) {
+        onInvalid(error62 instanceof Error ? error62.name : "unknown");
+        continue;
+      }
+    } else {
       record2 = JSON.parse(line);
-    } catch (error62) {
-      logger.warn("manifest log line skipped", {
-        convId,
-        errorKind: error62 instanceof Error ? error62.name : "unknown"
-      });
-      continue;
     }
     if (!isLogRecord(record2)) {
-      logger.warn("manifest log line skipped", { convId, errorKind: "not-a-record" });
+      if (!onInvalid) throw new Error("Unreadable output manifest record");
+      onInvalid("not-a-record");
       continue;
     }
-    applyRecord(entries, record2);
+    records.push(record2);
   }
+  return records;
+}
+
+// src/core/session/outputManifestRecords.ts
+var logger = createLogger("outputSnapshots");
+function foldLog(convId, text, entries) {
+  const records = readOutputManifestRecords(text, (errorKind) => logger.warn("manifest log line skipped", { convId, errorKind }));
+  for (const record2 of records) applyOutputManifestRecord(entries, record2);
 }
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {

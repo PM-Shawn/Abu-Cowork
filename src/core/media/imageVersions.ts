@@ -15,8 +15,11 @@ export function imageVersions(messages: Message[], current: MediaFileRef) {
     for (const artifact of artifacts) {
       const request = requests.find(item => item.id === artifact.editRequestId);
       const source = request?.attachmentRefs.find(item => item.kind === 'source');
-      if (!source || (!paths.has(source.fileRef.originalPath) && !paths.has(artifact.fileRef.originalPath))) continue;
-      for (const value of [source.fileRef.originalPath, artifact.fileRef.originalPath]) {
+      const parent = artifacts.find(item => item.id === request?.sourceArtifactId);
+      if (!source) continue;
+      const relatedPaths = [source.fileRef.originalPath, artifact.fileRef.originalPath, ...(parent ? [parent.fileRef.originalPath] : [])];
+      if (!relatedPaths.some(value => paths.has(value))) continue;
+      for (const value of relatedPaths) {
         if (!paths.has(value)) { paths.add(value); changed = true; }
       }
     }

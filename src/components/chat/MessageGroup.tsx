@@ -1443,7 +1443,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               );
             })}
 
-            {conversationId && mcpAppSteps.map((step) => (
+            {conversationId && mcpAppSteps.map((step) => assistantMsgs.find(message => message.id === step.messageId)?.inheritedFromBranch
+              ? <MarkdownRenderer key={`mcp-history-${step.toolCall.id}`} content={step.toolCall.result ?? ''} /> : (
               <McpAppBlock
                 key={`mcp-app-${step.toolCall.id}`}
                 toolCallId={step.toolCall.id}
@@ -1461,7 +1462,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               />
             ))}
 
-            {appPreviewCallId !== undefined && allToolCalls.some((tc) => tc.id === appPreviewCallId) && (
+            {appPreviewCallId !== undefined && allToolCalls.some((tc) => tc.id === appPreviewCallId)
+              && !assistantMsgs.some(message => message.inheritedFromBranch && message.toolCalls?.some(call => call.id === appPreviewCallId)) && (
               <AppDraftCard key={`app-draft-${appPreviewCallId}`} conversationId={conversationId} toolCallId={appPreviewCallId} />
             )}
 
@@ -1488,7 +1490,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             {/* File attachments - show when this group's execution is done.
                 Previous groups always show; last group waits for global status
                 to ensure intermediate scripts are properly filtered out. */}
-            {messages.flatMap(message => message.imageEditRequest ? [<ImageEditStatus key={message.id} request={message.imageEditRequest} />] : [])}
+            {messages.flatMap(message => message.imageEditRequest && !message.inheritedFromBranch ? [<ImageEditStatus key={message.id} request={message.imageEditRequest} />] : [])}
             {messages.some(message => message.mediaArtifacts?.length) && <div className="mt-2 flex flex-wrap gap-3">
               {messages.flatMap(message => message.mediaArtifacts ?? []).map(artifact => artifact.kind === 'video'
                 ? <VideoPreview key={artifact.id} filePath={artifact.fileRef.originalPath} conversationId={conversationId} inline />
@@ -1555,7 +1557,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             )}
 
             {/* Actions - use lastAssistantMsg for regenerate/delete */}
-            {!isStreaming && activeConv?.status !== 'running' && lastAssistantMsg && (
+            {!isStreaming && (!isLastGroupProp || activeConv?.status !== 'running') && lastAssistantMsg && (
               <div className="mt-2">
                 <MessageBubble message={lastAssistantMsg} hideAvatar={true} actionsOnly={true} />
               </div>

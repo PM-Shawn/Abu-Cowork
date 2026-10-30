@@ -746,6 +746,7 @@ test('preload exposes only narrow file, media, diagnostics, and receive-only sid
     'appPage',
     'authorizeUserAttachment',
     'canonicalizePathForPolicy',
+    'conversationBranch',
     'deepLinkScheme',
     'fileOperation',
     'getPathForFile',
@@ -786,6 +787,16 @@ test('preload exposes only narrow file, media, diagnostics, and receive-only sid
     payload: {
       action: 'get-edit',
       request: { conversationId: 'conversation-1', requestId: 'request-1' },
+    },
+  });
+  await shellBridge.conversationBranch('lookup', {
+    sourceConversationId: 'source', targetMessageId: 'answer', childConversationId: 'child',
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked.pop())), {
+    channel: 'abu:conversation-branch',
+    payload: {
+      action: 'lookup',
+      request: { sourceConversationId: 'source', targetMessageId: 'answer', childConversationId: 'child' },
     },
   });
   // Voice input: the renderer names an action, never a URL or a permission.

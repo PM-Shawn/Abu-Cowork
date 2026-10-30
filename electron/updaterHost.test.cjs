@@ -18,6 +18,97 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { resolveUpdaterGate } = require('./updaterHost.cjs');
+const { EventEmitter } = require('node:events');
+const { createMacUpdateReadiness } = require('./macUpdateReadiness.cjs');
+
+test('Mac preparation waits for native staging after the download and reuses a prepared version', async () => {
+  const native = new EventEmitter();
+  const updater = new EventEmitter();
+  updater.downloadUpdate = async () => [];
+  const readiness = createMacUpdateReadiness(native);
+  let completed = false;
+  const pending = readiness.download(updater, '1.0.0').then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(completed, false);
+  native.emit('update-downloaded');
+  await pending;
+  await readiness.download(updater, '1.0.0');
+  completed = false;
+  const next = readiness.download(updater, '1.0.1').then(() => { completed = true; });
+  await Promise.resolve();
+  assert.equal(completed, false);
+  native.emit('update-downloaded');
+  await next;
+  assert.equal(native.listenerCount('update-downloaded'), 1);
+  assert.equal(updater.listenerCount('error'), 0);
+});
+
+test('Mac preparation accepts a native event emitted before download resolves', async () => {
+  const native = new EventEmitter();
+  const updater = new EventEmitter();
+  updater.downloadUpdate = async () => { native.emit('update-downloaded'); return []; };
+  await createMacUpdateReadiness(native).download(updater, '1.0.0');
+});
+
+test('Mac preparation timeout removes request listeners and a late ready event permits retry', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const native = new EventEmitter();
+  const updater = new EventEmitter();
+  updater.downloadUpdate = async () => [];
+  const readiness = createMacUpdateReadiness(native, 100);
+  const pending = readiness.download(updater, '1.0.0');
+  const rejected = assert.rejects(pending, /ABU_UPDATE_PREPARATION_TIMEOUT/);
+  await Promise.resolve();
+  context.mock.timers.tick(100);
+  await rejected;
+  assert.equal(native.listenerCount('update-downloaded'), 1);
+  assert.equal(updater.listenerCount('error'), 0);
+  native.emit('update-downloaded');
+  await readiness.download(updater, '1.0.0');
+});
+
+test('Mac preparation propagates a native error while download is pending and cleans up', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const native = new EventEmitter();
+  const updater = new EventEmitter();
+  let finish;
+  updater.downloadUpdate = () => new Promise(resolve => { finish = resolve; });
+  const readiness = createMacUpdateReadiness(native, 100);
+  const pending = readiness.download(updater, '1.0.0');
+  const rejected = assert.rejects(pending, /signature rejected/);
+  native.emit('error', new Error('signature rejected'));
+  await rejected;
+  finish([]);
+  await Promise.resolve();
+  context.mock.timers.tick(100);
+  assert.equal(native.listenerCount('error'), 1);
+  assert.equal(updater.listenerCount('error'), 0);
+});
+
+test('Mac handoff is bounded when the native downloader never requests its ZIP, including retry', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const native = new EventEmitter();
+  const updater = new EventEmitter();
+  let finish;
+  const download = new Promise(resolve => { finish = resolve; });
+  let started = false;
+  updater.downloadUpdate = () => {
+    if (!started) { started = true; updater.emit('update-downloaded'); }
+    return download;
+  };
+  const readiness = createMacUpdateReadiness(native, 100);
+  let handoffs = 0;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const rejected = assert.rejects(readiness.download(updater, '1.0.0', () => { handoffs++; }), /ABU_UPDATE_PREPARATION_TIMEOUT/);
+    context.mock.timers.tick(100);
+    await rejected;
+    assert.equal(updater.listenerCount('update-downloaded'), 0);
+  }
+  assert.equal(handoffs, 2);
+  native.emit('update-downloaded');
+  finish([]);
+  await readiness.download(updater, '1.0.0');
+});
 
 test('gate: packaged build without the official marker stays unarmed', () => {
   assert.deepEqual(

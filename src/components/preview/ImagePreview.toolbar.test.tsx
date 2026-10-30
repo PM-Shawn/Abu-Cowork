@@ -64,12 +64,14 @@ describe('ImagePreview toolbar', () => {
     expect(toolbarButton(t.imageCopy).closest('[title]')).toBeNull();
   });
 
-  it('floats the toolbar on the raised surface', () => {
+  it('places the toolbar on the raised surface below the image stage', () => {
     render(<ImagePreview src={SRC} alt="photo" />);
-    const toolbar = toolbarButton(getI18n().panel.imageZoomOut).parentElement;
+    const toolbar = toolbarButton(getI18n().panel.imageZoomOut).closest('.bg-raised');
     expect(toolbar).toHaveClass('bg-raised');
     expect(toolbar).toHaveClass('shadow-float');
     expect(toolbar).toHaveClass('rounded-panel');
+    const stage = screen.getByRole('img', { name: 'photo' }).parentElement!;
+    expect(stage.nextElementSibling).toContainElement(toolbar as HTMLElement);
   });
 
   it('disables zooming out at the smallest size and zooming in at the largest', () => {

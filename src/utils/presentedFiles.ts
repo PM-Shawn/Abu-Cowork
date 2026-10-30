@@ -1,9 +1,8 @@
 import type { ToolCall } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
-import { parsePresentedFilesInput, parsePresentedResult } from '@/core/tools/definitions/presentTools';
+import { parsePresentedFilesInput, parsePresentedResult, isToolResultError, mediaToolAnnouncedPath } from '@/core/media/presentedFileRecords';
 import { isToolResultNotRun } from '@/core/agent/toolResultMarkers';
 import { normalizeSeparators } from '@/utils/pathUtils';
-import { isToolResultError, mediaToolAnnouncedPath } from '@/utils/workflowExtractor';
 
 export interface PresentedFile {
   /** Absolute path with `/` separators. */

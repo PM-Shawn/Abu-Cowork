@@ -30,6 +30,12 @@ import { isPluginOwnedAgent } from '@/utils/agentSource';
 import { isImageFile } from '@/components/chat/FileAttachment';
 import { noteComposerDraft, noteComposerKey } from '@/components/chat/composerActivity';
 import { focusComposerFromWindow } from '@/components/chat/composerFocus';
+import { useImageEditStore } from '@/stores/imageEditStore';
+import { usePreviewStore } from '@/stores/previewStore';
+import { detachImageEdits } from '@/core/media/mediaJobs';
+import { ImageEditReference } from './ImageEditReference';
+import { canSendImageDraft } from '@/core/media/imageDraft';
+import type { ImageEditDraft } from '@/types/media';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
 import { enqueueUserInput } from '@/core/agent/userInputQueue';
@@ -164,6 +170,7 @@ interface ChatInputProps {
     images?: ImageAttachment[],
     workspacePath?: string | null,
     onAccepted?: () => void,
+    imageEditDraft?: ImageEditDraft,
   ) => void | Promise<boolean | void>;
   disabled?: boolean;
   /** Custom placeholder from scenario guide (welcome variant only) */
@@ -745,6 +752,10 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const [editorHistoryKey, setEditorHistoryKey] = useState(draftKey);
   const [text, setText] = useState(initialDraft.text);
+  const imageEditEntry = useImageEditStore(state => state.entries[state.active[draftKey]]);
+  useEffect(() => {
+    if (imageEditEntry && imageEditEntry.draft.prompt !== text) useImageEditStore.getState().setPrompt(imageEditEntry.key, text);
+  }, [text, imageEditEntry]);
   const [images, setImages] = useState<ImageAttachment[]>(initialDraft.images);
   const [files, setFiles] = useState<FileAttachmentItem[]>(initialDraft.files);
   const [references, setReferences] = useState<ChatReference[]>(initialDraft.references);
@@ -1356,6 +1367,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const handleStop = useCallback(() => {
     if (activeConvId) {
+      void detachImageEdits(activeConvId);
       cancelStreaming(activeConvId, { source: 'chat-input-stop-button' });
     }
   }, [activeConvId, cancelStreaming]);
@@ -1752,6 +1764,42 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
   const handleSend = () => {
     const trimmed = text.trim();
+    if (imageEditEntry) {
+      if (disabled || !canSendImageDraft({ ...imageEditEntry.draft, prompt: text })) return;
+      if (images.length || files.length || references.length || selectedSkill || selectedAgent) {
+        useToastStore.getState().addToast({ type: 'info', title: t.media.editUnavailable, message: t.media.otherAttachments });
+        return;
+      }
+      if (getComposerDraftRuntimeState(draftKey).pendingAdmissions > 0) {
+        useToastStore.getState().addToast({ type: 'info', title: t.chat.attachmentAdmissionPending });
+        return;
+      }
+      const finish = tryBeginComposerDraftSend(draftKey);
+      if (!finish) return;
+      const draft = structuredClone({ ...imageEditEntry.draft, prompt: text });
+      const composerAtSend = structuredClone(currentDraftRef.current);
+      const sendingKey = imageEditEntry.key;
+      void Promise.resolve(onSend(text, undefined, undefined, () => {
+        finish();
+        const current = useImageEditStore.getState();
+        const visible = currentDraftKeyRef.current === draftKey;
+        const composerNow = visible ? currentDraftRef.current : readComposerDraft(draftKey);
+        const latest = current.entries[sendingKey];
+        if (current.active[draftKey] === sendingKey && latest
+          && JSON.stringify({ ...latest.draft, prompt: composerNow.text }) === JSON.stringify(draft)
+          && JSON.stringify(composerNow) === JSON.stringify(composerAtSend)) {
+          usePreviewStore.getState().retainImageSource(draft.conversationId, imageEditEntry.originalPath, draft.source.fileRef);
+          void current.cancel(draftKey).then(undefined, error => {
+            useToastStore.getState().addToast({ type: 'error', title: t.media.editUnavailable, message: String(error) });
+          });
+          if (visible) resetInput();
+          else clearComposerDraft(draftKey);
+        }
+      }, draft)).then(undefined, error => {
+        useToastStore.getState().addToast({ type: 'error', title: t.media.editUnavailable, message: error instanceof Error ? error.message : String(error) });
+      }).finally(finish);
+      return;
+    }
     if ((!trimmed && !selectedSkill && !selectedAgent && images.length === 0 && files.length === 0 && references.length === 0) || disabled) return;
 
     if (isAdmissionPendingForDraft || getComposerDraftRuntimeState(draftKey).pendingAdmissions > 0) {
@@ -2131,7 +2179,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
   );
 
   const hasAttachments = images.length > 0 || files.length > 0 || references.length > 0;
-  const hasContent = text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;
+  const hasContent = imageEditEntry ? canSendImageDraft({ ...imageEditEntry.draft, prompt: text }) : text.trim().length > 0 || selectedSkill !== null || selectedAgent !== null || hasAttachments;
 
   // Send-button tooltip. With no standing hint in the composer, this is the
   // only place the shortcuts are written down, so it has to track both the
@@ -2208,6 +2256,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           )}
         >
           {/* Attachment Strip (images + file badges) */}
+          {imageEditEntry && <ImageEditReference entry={imageEditEntry} />}
           {hasAttachments && (
             <AttachmentStrip
               images={images}

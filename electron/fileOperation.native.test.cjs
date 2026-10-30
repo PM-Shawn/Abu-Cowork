@@ -49,6 +49,33 @@ function target(file, purpose = 'read', followFinalSymlink = true) {
   return { path: file, inputPath: file, purpose, followFinalSymlink };
 }
 
+test('media ranges read only requested bytes from a file above the whole-file limit', async t => {
+  const { root, open } = await fixture(t);
+  const file = path.join(root, 'large-video.bin');
+  const handle = await fs.open(file, 'wx');
+  const size = 201 * 1024 * 1024;
+  try {
+    await handle.truncate(size);
+    await handle.write(Buffer.from('ending'), 0, 6, size - 6);
+  } finally {
+    await handle.close();
+  }
+  const call = await open([target(file)]);
+  const observed = await call('observe', target(file));
+  const info = await call('media-info', { reference: observed.reference });
+  assert.equal(info.size, size);
+  const request = { reference: observed.reference, expectedSize: info.size, expectedModifiedNs: info.modifiedNs };
+  const tail = await call('read-media-range', { ...request, offset: size - 6, length: 6 });
+  assert.equal(Buffer.from(tail.base64, 'base64').toString(), 'ending');
+  await assert.rejects(call('read-media-range', { ...request, offset: 0, length: 1024 * 1024 + 1 }));
+  await assert.rejects(call('read-media-range', { ...request, offset: size - 1, length: 2 }));
+  await assert.rejects(call('read-media-range', { ...request, offset: -1, length: 1 }));
+  await fs.writeFile(file, 'changed');
+  await assert.rejects(call('read-media-range', { ...request, offset: 0, length: 1 }));
+  await call('release');
+  await assert.rejects(call('media-info', { reference: observed.reference }));
+});
+
 async function imageFixture(t, outputPurpose = 'write') {
   const setup = await fixture(t);
   const input = path.join(setup.root, 'input.png');

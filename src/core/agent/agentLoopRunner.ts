@@ -3389,7 +3389,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   {
     const runningConv = entryConversation;
     const hasAttachments = Boolean(options?.images?.length);
-    const stageable = userMessage.trim().length > 0 && !hasAttachments;
+    const stageable = (userMessage.trim().length > 0 || Boolean(options?.imageEditRequest)) && !hasAttachments;
     const getBusyError = (): string => hasAttachments
       ? getI18n().chat.attachmentDuringRun
       : getI18n().chat.conversationBusy;
@@ -3407,7 +3407,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
             messageTaken: false,
           };
         }
-        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+        if (options?.imageEditRequest) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask, options.imageEditRequest);
+          options.onMessageTaken?.(options.imageEditRequest.messageId);
+        } else if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
           enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
         } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
@@ -3429,7 +3432,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         // A live IN-PROCESS run for this conversation — stage into ITS
         // queue via the same real function the in-process guard itself
         // calls (userInputQueue.ts, unchanged).
-        if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
+        if (options?.imageEditRequest) {
+          enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask, options.imageEditRequest);
+          options.onMessageTaken?.(options.imageEditRequest.messageId);
+        } else if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
           enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask);
         } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
@@ -3576,7 +3582,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
   ensureHandlersRegistered();
 
   const runId = ownedLoopId;
-  const clientMessageId = `msg-${runId}`;
+  const clientMessageId = options?.imageEditRequest?.messageId ?? `msg-${runId}`;
   logger.debug('agent-loop path selected', { path: 'sidecar', runId, conversationId });
   const runtimeStartedAt = Date.now();
   startRuntimeRun(runId, 'sidecar', 'local_message_persisting', conversationId);
@@ -3593,6 +3599,7 @@ async function runSingleAgentLoopDispatchedWithOwnership(
     runState: 'pending',
     role: 'user',
     content: userMessage,
+    ...(options?.imageEditRequest ? { imageEditRequest: options.imageEditRequest } : {}),
     timestamp: runtimeStartedAt,
     loopId: runId,
     // Goal mode: an automatic round opens with an internal row, rendered as a
@@ -4539,6 +4546,7 @@ async function runDispatchedTurns(
         // they ARE is human-typed, so the handoff run is user-initiated.
         { initiatedBy: 'user', teamConfirmationRetryId: queuedInput.teamConfirmationRetryId,
           continuesTeamTask: queuedInput.continuesTeamTask,
+          ...(queuedInput.imageEditRequest ? { imageEditRequest: queuedInput.imageEditRequest } : {}),
           operationOwner: options?.operationOwner,
           onAbortControllerReady: options?.onAbortControllerReady },
       );

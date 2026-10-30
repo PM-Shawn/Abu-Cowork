@@ -3169,6 +3169,48 @@ export interface TranslationDict {
   };
 
   // Panels
+  media: {
+    compareOriginal: string;
+    originalImage: string;
+    newResult: string;
+    previousImage: string;
+    nextImage: string;
+    allImages: string;
+    collapseImages: string;
+    editImage: string;
+    editUnavailable: string;
+    serviceUnavailable: string;
+    instructionsUnsupported: string;
+    otherAttachments: string;
+    editing: string;
+    editFailed: string;
+    saveFailed: string;
+    resultUnknown: string;
+    stoppedWaiting: string;
+    editInstructions: string;
+    comments: string;
+    comment: string;
+    commentPlaceholder: string;
+    markup: string;
+    region: string;
+    pen: string;
+    arrow: string;
+    rectangle: string;
+    text: string;
+    color: string;
+    eraser: string;
+    brushSize: string;
+    undo: string;
+    redo: string;
+    clear: string;
+    ratio: string;
+    ratioPrompt: string;
+    videoUnavailable: string;
+    videoReadFailed: string;
+    videoDecodeFailed: string;
+    videoFormatUnsupported: string;
+    openInApp: string;
+  };
   panel: {
     preview: string;
     /** Title of the tab that compares the one file a turn changed; `{name}` is the file name. */

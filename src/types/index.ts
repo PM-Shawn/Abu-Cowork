@@ -468,6 +468,8 @@ export interface UpstreamErrorDetails {
 
 export interface Message {
   id: string;
+  mediaArtifacts?: import('./media').MediaArtifact[];
+  imageEditRequest?: import('./media').ImageEditRequest;
   /** Local configured welcome, distinct from generated assistant output. */
   introduction?: import('./expertContact').ExpertIdentity;
   /** First human contact receipt, used only for local onboarding recovery. */

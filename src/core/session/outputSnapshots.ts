@@ -46,6 +46,7 @@ import { openAuthorizedFileOperation } from '../tools/authorizedFileOperation';
 import { FileOperationDenied, runFileOperationStage, type FileOperationGuard } from '../tools/fileOperation';
 import type { ToolResultImage } from '../tools/toolResultContent';
 import { createLogger } from '../logging/logger';
+import { applyRecord, foldLog, type ManifestLogRecord } from './outputManifestRecords';
 
 const logger = createLogger('outputSnapshots');
 
@@ -135,15 +136,6 @@ interface SnapshotMeta {
   refId: string;
   refKind: string;
 }
-
-/**
- * One line of manifest-log.jsonl. `remove` names the entry it evicts by its
- * `snapshottedAt`, so it never cancels a newer copy of the same path that the
- * other process recorded in the meantime.
- */
-type ManifestLogRecord =
-  | { op: 'set'; entry: SnapshotEntry }
-  | { op: 'remove'; originalPath: string; snapshottedAt: number; captureId?: string };
 
 interface CachedManifest {
   manifest: OutputManifest;
@@ -290,58 +282,8 @@ async function readLegacyManifest(dir: string, convId: string): Promise<OutputMa
   return manifest;
 }
 
-function isLogRecord(value: unknown): value is ManifestLogRecord {
-  if (typeof value !== 'object' || value === null) return false;
-  const record = value as Record<string, unknown>;
-  if (record.op === 'remove') {
-    return typeof record.originalPath === 'string' && typeof record.snapshottedAt === 'number';
-  }
-  if (record.op !== 'set' || typeof record.entry !== 'object' || record.entry === null) return false;
-  const entry = record.entry as Record<string, unknown>;
-  return typeof entry.originalPath === 'string'
-    && typeof entry.snapshotRelPath === 'string'
-    && typeof entry.snapshottedAt === 'number';
-}
-
-function applyRecord(entries: Record<string, SnapshotEntry>, record: ManifestLogRecord): void {
-  if (record.op === 'set') {
-    entries[record.entry.originalPath] = record.entry;
-    return;
-  }
-  if (entries[record.originalPath]?.snapshottedAt === record.snapshottedAt
-    && (record.captureId === undefined || entries[record.originalPath]?.captureId === record.captureId)) {
-    delete entries[record.originalPath];
-  }
-}
-
 function utf8Bytes(text: string): number {
   return new TextEncoder().encode(text).byteLength;
-}
-
-/**
- * Fold the log onto the base. A line that is not a record is skipped: a
- * process that dies inside an append can leave part of a line, and every
- * append starts with a newline so that part never joins the next record.
- */
-function foldLog(convId: string, text: string, entries: Record<string, SnapshotEntry>): void {
-  for (const line of text.split('\n')) {
-    if (line.trim() === '') continue;
-    let record: unknown;
-    try {
-      record = JSON.parse(line);
-    } catch (error) {
-      logger.warn('manifest log line skipped', {
-        convId,
-        errorKind: error instanceof Error ? error.name : 'unknown',
-      });
-      continue;
-    }
-    if (!isLogRecord(record)) {
-      logger.warn('manifest log line skipped', { convId, errorKind: 'not-a-record' });
-      continue;
-    }
-    applyRecord(entries, record);
-  }
 }
 
 async function logBytesOnDisk(dir: string): Promise<number> {

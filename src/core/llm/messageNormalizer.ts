@@ -295,6 +295,7 @@ export function normalizeMessages(
 
     if (msg.role === 'user') {
       const content = convertUserContent(msg.content, supportsVision);
+      if (msg.imageEditRequest) content.push({ type: 'text', text: `The user submitted an image edit. Call edit_image with request_id ${JSON.stringify(msg.imageEditRequest.id)}. The application has already frozen the source image and all editing instructions for this request.` });
       if (content.length > 0) {
         turns.push({ kind: 'user', content });
       }

@@ -664,7 +664,7 @@ test('resources cannot be released by another IPC sender', () => {
   );
 });
 
-test('preload exposes only narrow file, diagnostics, and receive-only sidecar bridges', async () => {
+test('preload exposes only narrow file, media, diagnostics, and receive-only sidecar bridges', async () => {
   const exposed = new Map();
   const sent = [];
   const invoked = [];
@@ -753,6 +753,7 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     'getSidecarBridgeSnapshot',
     'inspectPathNameComparison',
     'mainSupervisesSidecar',
+    'mediaOperation',
     'microphone',
     'persistDelegatedMedia',
     'pluginAuthor',
@@ -777,6 +778,14 @@ test('preload exposes only narrow file, diagnostics, and receive-only sidecar br
     payload: {
       action: 'read',
       request: { session: 'file-session', reference: 'file-reference' },
+    },
+  });
+  await shellBridge.mediaOperation('get-edit', { conversationId: 'conversation-1', requestId: 'request-1' });
+  assert.deepEqual(JSON.parse(JSON.stringify(invoked.pop())), {
+    channel: 'abu:media',
+    payload: {
+      action: 'get-edit',
+      request: { conversationId: 'conversation-1', requestId: 'request-1' },
     },
   });
   // Voice input: the renderer names an action, never a URL or a permission.

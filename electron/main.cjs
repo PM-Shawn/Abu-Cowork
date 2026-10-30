@@ -24,7 +24,10 @@
  */
 'use strict';
 
-const { app, BrowserWindow, dialog, Menu, nativeTheme, session, systemPreferences } = require('electron');
+const { app, BrowserWindow, dialog, Menu, nativeTheme, session, protocol, systemPreferences } = require('electron');
+const { MEDIA_SCHEME } = require('./mediaProtocol.cjs');
+const { trackMediaFullscreen } = require('./mediaFullscreen.cjs');
+protocol.registerSchemesAsPrivileged([{ scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } }]);
 const path = require('node:path');
 const fs = require('node:fs');
 const {
@@ -258,6 +261,7 @@ async function createWindow(transitionWindow = null) {
       ],
     },
   });
+  trackMediaFullscreen(win);
   if (process.platform === 'win32') {
     // Keep the main window protected until session exclusion is confirmed.
     win.setContentProtection?.(true);

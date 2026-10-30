@@ -127,12 +127,16 @@ describe('ImagePreviewCard', () => {
     }
   });
 
-  it('reveals the file with the folder icon the file chip uses', async () => {
-    const { container } = render(<Group tick={0}><ImagePreviewCard filePath="/workspace/chart.png" /></Group>);
+  it('offers editing and saving through the thumbnail action overlay', async () => {
+    render(<Group tick={0}><ImagePreviewCard filePath="/workspace/chart.png" /></Group>);
     await screen.findByRole('img', { name: 'chart.png' });
-    const reveal = screen.getByRole('button', { name: 'Show in File Manager' });
-    expect(reveal.querySelector('svg.lucide-folder-open')).not.toBeNull();
-    expect(container.querySelector('svg.lucide-external-link')).toBeNull();
+    const edit = screen.getByRole('button', { name: 'Edit image' });
+    const save = screen.getByRole('button', { name: 'Save as…' });
+    expect(edit.parentElement).toBe(save.parentElement);
+    expect(edit.parentElement).toHaveClass('opacity-0', 'group-hover/card:opacity-100', 'group-focus-within/card:opacity-100');
+    fireEvent.click(save);
+    const { save: saveDialog } = await import('@tauri-apps/plugin-dialog');
+    expect(saveDialog).toHaveBeenCalledWith({ defaultPath: 'chart.png' });
   });
 });
 

@@ -1,6 +1,7 @@
 import { isRunByDefault } from '@/utils/runByDefault';
+import { isVideoFile } from '@/core/media/mediaTypes';
 
-export type RendererType = 'markdown' | 'code' | 'image' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
+export type RendererType = 'markdown' | 'code' | 'image' | 'video' | 'text' | 'html' | 'pdf' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'unsupported';
 
 /** Workbook formats the spreadsheet preview reads. */
 export const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'fods'];
@@ -8,6 +9,7 @@ export const SPREADSHEET_EXTENSIONS = ['xlsx', 'xls', 'xlsm', 'xlsb', 'ods', 'fo
 /** How the preview shows a file, from its name. */
 export function getRendererType(filePath: string): RendererType {
   if (filePath.startsWith('data:image/')) return 'image';
+  if (isVideoFile(filePath)) return 'video';
   const ext = filePath.split('.').pop()?.toLowerCase() || '';
   if (ext === 'md') return 'markdown';
   if (ext === 'html' || ext === 'htm') return 'html';

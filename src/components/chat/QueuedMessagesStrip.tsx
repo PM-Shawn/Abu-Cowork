@@ -17,6 +17,8 @@ import { runAgentLoopDispatched } from '@/core/agent/agentLoopRunner';
 import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { useI18n } from '@/i18n';
+import { discardPreparedImageEdit } from '@/core/media/mediaJobs';
+import { useToastStore } from '@/stores/toastStore';
 
 /**
  * Staging strip for follow-up messages: queued inputs sit at the composer's
@@ -46,6 +48,7 @@ function QueuedMessagesStrip({ conversationId }: { conversationId: string }) {
         const result = await runAgentLoopDispatched(conversationId, next.text, { initiatedBy: 'user',
           ...(next.teamConfirmationRetryId ? { teamConfirmationRetryId: next.teamConfirmationRetryId } : {}),
           ...(next.continuesTeamTask ? { continuesTeamTask: true } : {}),
+          ...(next.imageEditRequest ? { imageEditRequest: next.imageEditRequest } : {}),
         });
         if (result.reason === 'error' && !result.messageTaken) {
           restoreDequeuedUserInput(conversationId, next);
@@ -83,6 +86,9 @@ function QueuedMessagesStrip({ conversationId }: { conversationId: string }) {
             onClick={() => {
               if (qi.teamConfirmationRetryId) useTeamConfirmationStore.getState().revoke(qi.teamConfirmationRetryId);
               removeQueuedInput(conversationId, qi.id);
+              if (qi.imageEditRequest) void discardPreparedImageEdit(conversationId, qi.imageEditRequest.id).then(undefined, error => {
+                useToastStore.getState().addToast({ type: 'error', title: t.media.editUnavailable, message: String(error) });
+              });
             }}
           />
         </div>

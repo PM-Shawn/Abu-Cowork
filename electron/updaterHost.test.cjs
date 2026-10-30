@@ -110,6 +110,84 @@ test('Mac handoff is bounded when the native downloader never requests its ZIP, 
   await readiness.download(updater, '1.0.0');
 });
 
+for (const firstCompletion of ['native', 'download']) {
+  test(`Mac retry keeps versions separate when ${firstCompletion} completes first`, async context => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const native = new EventEmitter();
+    const updater = new EventEmitter();
+    let finish;
+    let calls = 0;
+    updater.downloadUpdate = () => {
+      calls++;
+      updater.emit('update-downloaded');
+      return new Promise(resolve => { finish = resolve; });
+    };
+    const readiness = createMacUpdateReadiness(native, 100);
+    const expired = assert.rejects(readiness.download(updater, '1.0.0'), /ABU_UPDATE_PREPARATION_TIMEOUT/);
+    context.mock.timers.tick(100);
+    await expired;
+    await assert.rejects(readiness.download(updater, '2.0.0'), /ABU_UPDATE_PREPARATION_TIMEOUT/);
+    if (firstCompletion === 'native') native.emit('update-downloaded');
+    else { finish(['1.zip']); await Promise.resolve(); }
+    await assert.rejects(readiness.download(updater, '2.0.0'), /ABU_UPDATE_PREPARATION_TIMEOUT/);
+    assert.equal(calls, 1);
+    if (firstCompletion === 'native') { finish(['1.zip']); await Promise.resolve(); }
+    else native.emit('update-downloaded');
+    const next = readiness.download(updater, '2.0.0');
+    assert.equal(calls, 2);
+    native.emit('update-downloaded');
+    finish(['2.zip']);
+    await next;
+  });
+}
+
+test('a native failure clears its handoff so retry can download before its preparation deadline starts', async context => {
+  context.mock.timers.enable({ apis: ['setTimeout'] });
+  const native = new EventEmitter();
+  const updater = new EventEmitter();
+  let finish;
+  updater.downloadUpdate = () => new Promise(resolve => { finish = resolve; });
+  const readiness = createMacUpdateReadiness(native, 100);
+  const failed = assert.rejects(readiness.download(updater, '1.0.0'), /signature rejected/);
+  updater.emit('update-downloaded');
+  native.emit('error', new Error('signature rejected'));
+  finish([]);
+  await failed;
+  let settled = false;
+  const retry = readiness.download(updater, '2.0.0').then(() => { settled = true; });
+  context.mock.timers.tick(200);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  updater.emit('update-downloaded');
+  native.emit('update-downloaded');
+  finish(['2.zip']);
+  await retry;
+});
+
+test('a download failure before native handoff permits a later version after an earlier successful update', async () => {
+  const native = new EventEmitter();
+  const updater = new EventEmitter();
+  const readiness = createMacUpdateReadiness(native);
+  updater.downloadUpdate = () => {
+    updater.emit('update-downloaded');
+    native.emit('update-downloaded');
+    return Promise.resolve(['1.zip']);
+  };
+  await readiness.download(updater, '1.0.0');
+  updater.downloadUpdate = () => {
+    const error = new Error('network failed before handoff');
+    updater.emit('error', error);
+    return Promise.reject(error);
+  };
+  await assert.rejects(readiness.download(updater, '2.0.0'), /network failed before handoff/);
+  updater.downloadUpdate = () => {
+    updater.emit('update-downloaded');
+    native.emit('update-downloaded');
+    return Promise.resolve(['3.zip']);
+  };
+  await readiness.download(updater, '3.0.0');
+});
+
 test('gate: packaged build without the official marker stays unarmed', () => {
   assert.deepEqual(
     resolveUpdaterGate({ isPackaged: true }, {}, { isOfficial: () => false }),

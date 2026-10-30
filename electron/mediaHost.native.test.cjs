@@ -9,6 +9,7 @@ const sharp = require('sharp');
 const { createMediaHost } = require('./mediaHost.cjs');
 const { killNativeHelper } = require('./nativeHelperManager.cjs');
 const { createHash } = require('node:crypto');
+const { _internal: catalog, branchPending } = require('./catalogDb.cjs');
 
 test.after(() => killNativeHelper('media-host-tests-finished'));
 
@@ -142,6 +143,65 @@ test('restart completes media cleanup for a conversation already marked deleted'
   assert.equal(fs.existsSync(captured), false);
   await assert.rejects(reopened.dispatch(f.sender, 'get-edit', { conversationId: f.conversationId, requestId: record.request.id }), /unavailable/);
 });
+
+test('restart preserves prepared image work when its conversation history cannot be read', async t => {
+  const f = await fixture(t);
+  const record = await prepareEdit(f, 'edit-unreadable');
+  const reference = record.request.attachmentRefs[0].fileRef;
+  const captured = f.host.resolveFile(f.conversationId, reference).path;
+  const ledger = path.join(f.root, 'conversations', f.conversationId, 'messages.jsonl');
+  fs.mkdirSync(ledger);
+  f.sender.removeAllListeners();
+  const reopened = createMediaHost({ dataRoot: f.root, getConversation: id => id === f.conversationId ? { missing: false } : null });
+  assert.ok(fs.existsSync(captured));
+  assert.equal((await reopened.dispatch(f.sender, 'get-edit', { conversationId: f.conversationId, requestId: record.request.id })).job.generationState, 'prepared');
+});
+
+test('catalog preserves an inaccessible conversation with or without index metadata',
+  { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+    const f = await fixture(t);
+    const root = path.join(f.root, 'conversations');
+    const directory = path.join(root, f.conversationId);
+    const existing = new Map([[f.conversationId, { bytes: 5, mtime: 1, missing: false, title: 'Saved title' }]]);
+    fs.chmodSync(directory, 0o000);
+    try {
+      for (const includeIndex of [true, false]) {
+        fs.writeFileSync(path.join(root, 'index.json'), JSON.stringify({ version: 1, entries: includeIndex
+          ? { [f.conversationId]: { title: 'Saved title' } } : {} }));
+        const result = catalog.reconcileScanCore(root, existing, new Set());
+        assert.deepEqual(result.markMissingIds, []);
+        assert.equal(result.upserts.length, 0);
+        const rebuilt = catalog.reconcileScanCore(root, new Map(), new Set());
+        assert.deepEqual(rebuilt.markMissingIds, []);
+        assert.equal(rebuilt.upserts[0][0].conv_id, f.conversationId);
+        assert.equal(rebuilt.upserts[0][0].missing, false);
+      }
+    } finally {
+      fs.chmodSync(directory, 0o700);
+    }
+  });
+
+test('restart preserves image work until an inaccessible conversation can be read again',
+  { skip: process.platform === 'win32' || process.getuid?.() === 0 }, async t => {
+    const f = await fixture(t);
+    const record = await prepareEdit(f, 'edit-inaccessible');
+    persistRequest(f, record);
+    const captured = f.host.resolveFile(f.conversationId, record.request.attachmentRefs[0].fileRef).path;
+    const root = path.join(f.root, 'conversations');
+    const directory = path.join(root, f.conversationId);
+    f.sender.removeAllListeners();
+    fs.chmodSync(directory, 0o000);
+    try {
+      createMediaHost({ dataRoot: f.root,
+        getConversation: id => branchPending(root, id) ? null : { missing: false } });
+      assert.ok(fs.existsSync(captured));
+    } finally {
+      fs.chmodSync(directory, 0o700);
+    }
+    const reopened = createMediaHost({ dataRoot: f.root, getConversation: () => ({ missing: false }) });
+    assert.equal((await reopened.dispatch(f.sender, 'get-edit', { conversationId: f.conversationId, requestId: record.request.id })).job.generationState, 'prepared');
+    assert.ok(fs.existsSync(captured));
+  });
 
 test('saved copies remain usable after the source is removed and preserve its permission identity', async t => {
   const f = await fixture(t);

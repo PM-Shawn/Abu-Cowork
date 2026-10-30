@@ -178,18 +178,44 @@ function createMediaHost({ dataRoot, getConversation, onChange, assertCapacity =
   }
 
   const saved = edits.jobs.list();
+  const inaccessible = new Set();
   for (const record of saved) {
     const conversationId = record.request.conversationId;
     const row = getConversation(conversationId);
-    if (!row || row.missing || !fs.existsSync(paths.conversationDir(conversationId))) {
+    let directoryExists = false;
+    try {
+      fs.lstatSync(paths.conversationDir(conversationId));
+      directoryExists = true;
+    } catch (error) {
+      if (['EACCES', 'EPERM'].includes(error.code)) {
+        inaccessible.add(conversationId);
+        continue;
+      }
+      if (error.code !== 'ENOENT') throw error;
+    }
+    if (!row && directoryExists) {
+      inaccessible.add(conversationId);
+      continue;
+    }
+    if (!row || row.missing || !directoryExists) {
       deleted.add(conversationId);
       edits.forget(conversationId);
       captures.forget(conversationId);
       continue;
     }
-    if (record.job.generationState === 'prepared' && !hasMessage(record.request)) edits.discardPrepared(record.request.conversationId, record.request.id);
+    if (record.job.generationState === 'prepared') {
+      let recorded;
+      try {
+        recorded = hasMessage(record.request);
+      } catch (error) {
+        if (!['EACCES', 'EPERM', 'EISDIR'].includes(error.code)) throw error;
+        inaccessible.add(conversationId);
+        continue;
+      }
+      if (!recorded) edits.discardPrepared(record.request.conversationId, record.request.id);
+    }
   }
-  captures.reconcile(edits.jobs.list());
+  captures.reconcile(edits.jobs.list().filter(record => !inaccessible.has(record.request.conversationId)), inaccessible);
   return {
     protocol,
     scope,

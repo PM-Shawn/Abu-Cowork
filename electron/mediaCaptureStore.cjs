@@ -84,8 +84,9 @@ function createMediaCaptureStore({ root, assertConversation, assertCapacity }) {
   }
 
   return {
-    reconcile(records) {
+    reconcile(records, inaccessible = new Set()) {
       const retained = new Set();
+      const inaccessibleFolders = new Set([...inaccessible].map(id => createHash('sha256').update(id).digest('hex')));
       for (const { request } of records) {
         for (const attachment of request.attachmentRefs) {
           ownedCapture(request.conversationId, attachment.fileRef);
@@ -96,6 +97,7 @@ function createMediaCaptureStore({ root, assertConversation, assertCapacity }) {
       }
       if (!fs.existsSync(root)) return;
       for (const folder of fs.readdirSync(root)) {
+        if (inaccessibleFolders.has(folder)) continue;
         for (const name of fs.readdirSync(path.join(root, folder))) {
           if (!/^[a-f0-9-]{36}\.(png|json|keep)$/.test(name)) throw new Error('Image capture file is invalid');
           const captureId = name.slice(0, name.lastIndexOf('.'));

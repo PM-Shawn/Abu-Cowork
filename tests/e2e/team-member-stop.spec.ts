@@ -114,7 +114,7 @@ test('a stopped batch member reads as stopped in its own tab while the batch kee
     // so until the guide is dismissed the message field is found by its mark and not by its role.
     await expect(page.locator('[data-chat-composer]').first()).toBeVisible({ timeout: 45_000 });
     await dismissFirstRunOverlays(page);
-    await page.evaluate(({ name, members }) => {
+    await page.addInitScript(({ name, members }) => {
       const previous = JSON.parse(localStorage.getItem('abu-team') ?? '{}');
       localStorage.setItem('abu-team', JSON.stringify({
         ...previous,

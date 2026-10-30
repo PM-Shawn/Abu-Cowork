@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ElectronApplication } from 'playwright';
 import { conversationBranchPrefix } from '../../src/core/session/conversationBranchProtocol';
+import { projectLedger } from '../../src/core/session/ledgerReader';
 import { createMaxTurnsNoticeMessage } from '../../src/core/agent/maxTurnsNotice';
 import type { Message } from '../../src/types';
 import { closeAbuElectron, configureLocalMockProvider, createElectronDataRoot, launchAbuElectron, removeElectronDataRoot, type ElectronDataRoot } from './electronHelpers';
@@ -16,6 +17,105 @@ test.afterEach(async () => {
   if (llm) await llm.close();
   if (dataRoot) removeElectronDataRoot(dataRoot);
   app = undefined; dataRoot = undefined; llm = undefined;
+});
+
+test('keeps saved tool images through two branches, continuation and restart', async () => {
+  test.setTimeout(180_000);
+  llm = await startOpenAiMock([{ kind: 'complete', responseText: 'IMAGE-BRANCH-CONTINUED' }]);
+  dataRoot = createElectronDataRoot();
+  app = (await launchAbuElectron(dataRoot)).app;
+  let page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await waitForApp(page);
+  await page.keyboard.press('Escape');
+  await configureLocalMockProvider(page, llm.baseUrl, { supportsImages: true });
+  const appData = await page.evaluate(async () => await window.__TAURI_INTERNALS__.invoke('plugin:path|resolve_directory', { directory: 14 }) as string);
+  const model = await page.evaluate(() => JSON.parse(localStorage.getItem('abu-settings')!).state.activeModel);
+  const imageData = await page.evaluate(() => {
+    const canvas = document.createElement('canvas');
+    canvas.width = 32; canvas.height = 32;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Canvas encoder unavailable');
+    context.fillStyle = '#fa8c16';
+    context.fillRect(0, 0, 32, 32);
+    return canvas.toDataURL('image/png').split(',')[1];
+  });
+  await closeAbuElectron(app);
+  app = undefined;
+  const root = path.join(appData, 'conversations');
+  const sourceId = 'image-branch-source';
+  const imagePath = path.join(root, sourceId, 'outputs/files/image.png');
+  const bytes = Buffer.from(imageData, 'base64');
+  fs.mkdirSync(path.dirname(imagePath), { recursive: true });
+  fs.writeFileSync(imagePath, bytes);
+  const image = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: '' },
+    outputRef: { relPath: 'files/image.png', basename: 'image.png', sizeBytes: bytes.length } };
+  const call = { id: 'image-call', name: 'read_file', input: { path: imagePath }, result: 'Saved image', resultContent: [image] };
+  const messages: Message[] = [
+    { id: 'image-question', role: 'user', content: 'IMAGE-BRANCH-QUESTION', timestamp: 1, runState: 'completed' },
+    { id: 'image-answer', role: 'assistant', content: 'IMAGE-BRANCH-REPLY', timestamp: 2, streamEnded: true,
+      toolCalls: [call], toolCallsForContext: [call] },
+  ];
+  const sourceBytes = messages.map(message => JSON.stringify(message) + '\n').join('');
+  fs.writeFileSync(path.join(root, sourceId, 'messages.jsonl'), sourceBytes);
+  fs.writeFileSync(path.join(root, sourceId, 'outputs/manifest.json'), JSON.stringify({ version: 1, entries: {
+    'tool-result://image-call': { originalPath: 'tool-result://image-call', basename: 'image.png', snapshotRelPath: 'files/image.png',
+      size: bytes.length, originalMtime: 1, snapshottedAt: 1, source: 'tool-output', refId: 'image-call', refKind: 'result-image' },
+  } }));
+  fs.writeFileSync(path.join(root, 'index.json'), JSON.stringify({ version: 1, entries: {
+    [sourceId]: { id: sourceId, title: 'Image branch source', createdAt: 1, updatedAt: 2, messageCount: 2, model },
+  } }));
+  app = (await launchAbuElectron(dataRoot)).app;
+  page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await waitForApp(page);
+  const sidebar = page.getByRole('button', { name: '显示侧栏', exact: true });
+  if (await sidebar.isVisible()) await sidebar.click();
+  await page.locator(`[data-conversation-row="${sourceId}"]`).click();
+  let parentId = sourceId;
+  const ancestors = [sourceId];
+  function assertSavedImage(id: string): void {
+    const loaded = projectLedger({ ledgerText: fs.readFileSync(path.join(root, id, 'messages.jsonl'), 'utf8') }).messages;
+    const answer = loaded.find(message => message.content === 'IMAGE-BRANCH-REPLY');
+    expect(answer).toBeDefined();
+    for (const projection of [answer!.toolCalls, answer!.toolCallsForContext]) {
+      const block = projection?.[0].resultContent?.[0];
+      expect(block?.type).toBe('image');
+      if (block?.type !== 'image' || !block.outputRef) throw new Error('Saved tool image reference missing');
+      expect(block.source.data).toBe('');
+      expect(fs.readFileSync(path.join(root, id, 'outputs', block.outputRef.relPath))).toEqual(bytes);
+    }
+  }
+  for (let generation = 0; generation < 2; generation += 1) {
+    await page.getByRole('button', { name: '分支到新聊天', exact: true }).click();
+    await expect(page.getByTestId('branch-origin')).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toBeFocused();
+    const index = JSON.parse(fs.readFileSync(path.join(root, 'index.json'), 'utf8'));
+    const childId = Object.keys(index.entries).find(id => index.entries[id].branchOrigin?.sourceConversationId === parentId);
+    if (!childId) throw new Error('Created image branch missing');
+    assertSavedImage(childId);
+    expect(fs.readFileSync(path.join(root, sourceId, 'messages.jsonl'), 'utf8')).toBe(sourceBytes);
+    parentId = childId;
+    if (generation === 0) ancestors.push(childId);
+  }
+  await page.getByPlaceholder(CHAT_PLACEHOLDER).fill('Describe the inherited image.');
+  await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+  await expect(page.getByText('IMAGE-BRANCH-CONTINUED', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  expect(JSON.stringify(taskRequests(llm)[0].body)).toContain(`data:image/png;base64,${imageData}`);
+  for (const id of ancestors) {
+    const row = page.locator(`[data-conversation-row="${id}"]`);
+    await row.click({ button: 'right' });
+    await page.getByRole('menuitem', { name: '删除会话', exact: true }).click();
+    await expect(row).toHaveCount(0);
+    await expect.poll(() => fs.existsSync(path.join(root, id))).toBe(false);
+  }
+  await closeAbuElectron(app);
+  app = undefined;
+  app = (await launchAbuElectron(dataRoot)).app;
+  page = await app.firstWindow({ timeout: READY_TIMEOUT });
+  await waitForApp(page);
+  await page.locator(`[data-conversation-row="${parentId}"]`).click();
+  await expect(page.getByText('IMAGE-BRANCH-CONTINUED', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(page.getByText('原聊天已删除', { exact: true })).toBeVisible();
+  assertSavedImage(parentId);
 });
 
 test('branches from the last action icon, continues independently, and survives source deletion and restart', async () => {

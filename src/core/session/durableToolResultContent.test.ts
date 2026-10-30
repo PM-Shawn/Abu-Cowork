@@ -156,6 +156,45 @@ describe('durable tool-result storage budget', () => {
     expect(jsonBytes(bounded)).toBeLessThanOrEqual(2_048);
   });
 
+  it.each(['', 'YQ=='])('retains a saved image reference with data %j', data => {
+    const call = imageCall('saved-image', data);
+    const image = call.resultContent![0];
+    if (image.type !== 'image') throw new Error('Expected image fixture');
+    image.outputRef = { relPath: 'inherited/1/photo.png', basename: 'photo.png', sizeBytes: 1 };
+    const original = structuredClone(call);
+    const bounded = boundToolCallRichContent([call], { maxBytes: 2_048, maxImages: 1 })!;
+    expect(bounded).toEqual([original]);
+    expect(call).toEqual(original);
+  });
+
+  it.each([
+    { relPath: '' },
+    { relPath: 3 },
+    { relPath: 'x'.repeat(4097) },
+    { relPath: 'photo.png', sizeBytes: -1 },
+    { relPath: 'photo.png', sizeBytes: 1.5 },
+    { relPath: 'photo.png', basename: 7 },
+  ])('omits malformed saved image metadata %j', outputRef => {
+    const call = imageCall('invalid-reference', '');
+    Object.assign(call.resultContent![0], { outputRef });
+    const bounded = boundToolCallRichContent([call], { maxBytes: 2_048, maxImages: 1 })!;
+    expect(bounded[0].resultContent).toBeUndefined();
+    expect(bounded[0].result).toContain(__testing.OMITTED_NOTE);
+  });
+
+  it('counts reference metadata and saved images within the storage limits', () => {
+    const call = imageCall('large-reference', '');
+    Object.assign(call.resultContent![0], { outputRef: { relPath: 'photo.png', basename: 'x'.repeat(500) } });
+    for (const limits of [
+      { maxBytes: 1_024, maxImages: 0 },
+      { maxBytes: 1_024, maxImages: 1, maxBlockBytes: 128 },
+    ]) {
+      const bounded = boundToolCallRichContent([call], limits)!;
+      expect(bounded[0].resultContent).toBeUndefined();
+      expect(jsonBytes(bounded)).toBeLessThanOrEqual(limits.maxBytes);
+    }
+  });
+
   it('bounds result text, tool input, block bytes, and JSON escaping together', () => {
     const call = imageCall('hostile', 'YQ==', true);
     call.input = { payload: 'i'.repeat(1_000_000) };

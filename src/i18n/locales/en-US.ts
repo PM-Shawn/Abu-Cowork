@@ -268,7 +268,7 @@ const enUS: TranslationDict = {
       sourceUnavailable: 'The original reply is unavailable',
       sourceInaccessible: 'Cannot access the original chat. Check your access permissions.',
       failed: 'Could not create a new chat',
-      saveFailed: 'Could not save the new chat. Check available space and access permissions.',
+      saveFailed: 'Could not create the new chat. Please try again.',
       selectionUnavailable: 'The selected reply is unavailable. Choose a reply again.',
       historyUnavailable: 'Could not read the complete chat history up to the selected reply.',
     },

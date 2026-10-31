@@ -200,10 +200,6 @@ describe('multimodal delegation route × runtime matrix', () => {
     state.modelCallCount = 0;
     vi.mocked(resolveFileSource).mockReset();
     vi.mocked(readFile).mockReset();
-    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
-      callback(0);
-      return 0;
-    });
     // The direct tool tests invoke definitions themselves. The model-emitted
     // path resolves its tool through the real registry, so register the app
     // roster instead of replacing executeToolBatch or the tool definition.

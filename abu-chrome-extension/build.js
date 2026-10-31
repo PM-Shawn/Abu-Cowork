@@ -55,7 +55,7 @@ if (isWatch) {
   await esbuild.build(buildOptions);
   // Record what these artifacts were built from, so `npm run verify` can tell
   // a rebuilt bundle from a stale one (see scripts/check-browser-artifacts.mjs).
-  const { recordSourceDigest } = await import('../scripts/check-browser-artifacts.mjs');
-  recordSourceDigest('abu-chrome-extension/dist/content.js');
+  const { recordExtensionDigests } = await import('../scripts/check-browser-artifacts.mjs');
+  recordExtensionDigests('abu-chrome-extension/dist');
   console.log(`Build complete → dist/ (v${version})`);
 }

@@ -225,7 +225,7 @@ jobs:
             exit 1
           fi
           echo "OK: Chrome extension bundle matches source"
-          node --input-type=module -e "import { recordSourceDigest } from './scripts/check-browser-artifacts.mjs'; recordSourceDigest('src-tauri/browser-extension/content.js');"
+          node --input-type=module -e "import { recordExtensionDigests } from './scripts/check-browser-artifacts.mjs'; recordExtensionDigests('src-tauri/browser-extension');"
           npm run check:browser-artifacts
 
   # Facade carrying the required check context `check`. Branch protection on

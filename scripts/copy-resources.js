@@ -53,14 +53,15 @@ for (const name of resources) {
 const extensionSrc = resolve(root, 'abu-chrome-extension', 'dist');
 const extensionDest = resolve(dest, 'browser-extension');
 if (existsSync(extensionSrc)) {
+  const { assertExtensionDigests, recordExtensionDigests } = await import('./check-browser-artifacts.mjs');
+  assertExtensionDigests('abu-chrome-extension/dist');
   if (existsSync(extensionDest)) {
     rmSync(extensionDest, { recursive: true });
   }
   cpSync(extensionSrc, extensionDest, { recursive: true });
   // Stamp the copy too: CI diffs it against a fresh build, so a source edit
   // that skipped this step has to fail locally, not two pushes later.
-  const { recordSourceDigest } = await import('./check-browser-artifacts.mjs');
-  recordSourceDigest('src-tauri/browser-extension/content.js');
+  recordExtensionDigests('src-tauri/browser-extension');
   console.log('[copy-resources] Copied abu-chrome-extension/dist/ → src-tauri/browser-extension/');
 } else {
   console.warn('[copy-resources] Warning: abu-chrome-extension/dist/ not found, skipping (run extension build first)');

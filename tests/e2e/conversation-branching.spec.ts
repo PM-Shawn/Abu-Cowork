@@ -177,7 +177,7 @@ test('branches from the last action icon, continues independently, and survives 
   expect(childId).not.toBe('branch-source');
   expect(fs.readFileSync(path.join(root, 'branch-source/messages.jsonl'), 'utf8')).toBe(sourceBytes);
   expect(fs.readFileSync(path.join(root, childId, 'results/branch-1.txt'), 'utf8')).toBe('INDEPENDENT-FULL-RESULT');
-  await page.getByRole('button', { name: '分支自《Branch source》', exact: true }).click();
+  await page.getByRole('button', { name: '从聊天中继续', exact: true }).click();
   await expect(composer).toHaveValue('UNSENT-SOURCE-DRAFT');
   await expect(page.getByText('BRANCH-REPLY', { exact: true })).toBeInViewport();
   await expect(page.getByText('LATER-ANSWER-EXCLUDED', { exact: true })).toBeVisible();
@@ -193,7 +193,7 @@ test('branches from the last action icon, continues independently, and survives 
   const branchAgain = completedTurn.getByRole('button', { name: '分支到新聊天', exact: true });
   await branchAgain.focus();
   await branchAgain.press('Enter');
-  await expect(page.getByRole('button', { name: '分支自《Branch source · 分支》', exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+  await expect(page.getByRole('button', { name: '从聊天中继续', exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
   await expect(composer).toBeEmpty();
   expect(taskRequests(llm)).toHaveLength(1);
   const grandchildRow = page.locator('[data-conversation-row]').filter({ hasText: 'Branch source · 分支 · 分支' });
@@ -350,7 +350,7 @@ test('branches from failed, tool-only, legacy and turn-limit histories through t
     await expect(branch).toHaveCount(1, { timeout: READY_TIMEOUT });
     await branch.focus();
     await branch.press('Enter');
-    await expect(page.getByRole('button', { name: `分支自《Source ${kind}》`, exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByRole('button', { name: '从聊天中继续', exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     const composer = page.getByPlaceholder(CHAT_PLACEHOLDER);
     await expect(composer).toBeFocused();
     expect(taskRequests(llm)).toHaveLength(index);

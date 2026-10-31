@@ -246,6 +246,16 @@ for (const format of ['mp4', 'webm']) test(`${format} native video controls play
     await expect(page.getByTestId('chat-message-list').getByText('当前播放器不支持这个视频格式，可以用本地应用打开。', { exact: true })).toBeVisible();
     await expect.poll(() => first.evaluate(video => (video as HTMLVideoElement).duration)).toBeCloseTo(8, 1);
     await expect.poll(() => first.evaluate(video => (video as HTMLVideoElement).readyState)).toBeGreaterThanOrEqual(2);
+    await composer.hover();
+    await expect(first).not.toHaveAttribute('controls', '');
+    await first.hover();
+    await expect(first).toHaveAttribute('controls', '');
+    await composer.hover();
+    await expect(first).not.toHaveAttribute('controls', '');
+    await first.focus();
+    await expect(first).toHaveAttribute('controls', '');
+    await composer.focus();
+    await expect(first).not.toHaveAttribute('controls', '');
     await first.press('Space');
     await expect.poll(() => first.evaluate(video => (video as HTMLVideoElement).paused)).toBe(false);
     await expect.poll(() => first.evaluate(video => (video as HTMLVideoElement).currentTime)).toBeGreaterThan(0);

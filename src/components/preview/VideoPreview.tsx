@@ -29,6 +29,8 @@ export default function VideoPreview({ conversationId, filePath, active = true, 
   const media = useMediaFile(conversationId, filePath, revision);
   const [failure, setFailure] = useState<{ url: string; code: number }>();
   const [fullscreenPending, setFullscreenPending] = useState(false);
+  const [pointerInside, setPointerInside] = useState(false);
+  const [focusInside, setFocusInside] = useState(false);
   const fileName = getBaseName(filePath);
   const failed = media?.error || (media?.grant && failure?.url === media.grant.url);
   const failureLabel = media?.error ? t.media.videoReadFailed : failure?.code === 3 ? t.media.videoDecodeFailed
@@ -80,7 +82,13 @@ export default function VideoPreview({ conversationId, filePath, active = true, 
   };
 
   return (
-    <div className={cn('group/media relative flex min-w-0 items-center justify-center overflow-hidden rounded-panel bg-surface', inline ? 'w-full max-w-2xl' : 'h-full w-full')}>
+    <div
+      className={cn('group/media relative flex min-w-0 items-center justify-center overflow-hidden rounded-panel bg-surface', inline ? 'w-full max-w-2xl' : 'h-full w-full')}
+      onPointerEnter={() => setPointerInside(true)}
+      onPointerLeave={() => setPointerInside(false)}
+      onFocus={() => setFocusInside(true)}
+      onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) setFocusInside(false); }}
+    >
       {failed ? (
         <div className="flex flex-col items-center gap-3 p-6">
           <InlineMessage tone="warning">{failureLabel}</InlineMessage>
@@ -94,7 +102,8 @@ export default function VideoPreview({ conversationId, filePath, active = true, 
           ref={video}
           src={media.grant.url}
           aria-label={fileName}
-          controls
+          controls={pointerInside || focusInside}
+          tabIndex={0}
           controlsList="nofullscreen"
           playsInline
           preload="metadata"

@@ -1681,7 +1681,7 @@ export default function ChatView({
           className="flex flex-col w-full max-w-4xl mx-auto px-6 md:px-10 pt-5 pb-16 overflow-hidden"
         >
           {activeConv.branchOrigin && messageGroups.length === 0 &&
-            <ConversationBranchOrigin origin={activeConv.branchOrigin} workspacePath={activeConv.workspacePath} />}
+            <ConversationBranchOrigin origin={activeConv.branchOrigin} />}
           {scrollParentEl && <ChatMessageList
             // Remount per conversation: the list computes its first rows at
             // `initialLocation` and scrolls there before the first paint, so a
@@ -1744,7 +1744,7 @@ export default function ChatView({
             )}
             itemContent={(index, group) => <>
               {index === 0 && activeConv.branchOrigin && !branchBoundaryId &&
-                <ConversationBranchOrigin origin={activeConv.branchOrigin} workspacePath={activeConv.workspacePath} />}
+                <ConversationBranchOrigin origin={activeConv.branchOrigin} />}
               {
               group.length === 1 && isCompactBoundary(group[0]) ? (
                 <CompactDivider
@@ -1796,7 +1796,7 @@ export default function ChatView({
                 />
               )}
               {activeConv.branchOrigin && group.some(message => message.id === branchBoundaryId) &&
-                <ConversationBranchOrigin origin={activeConv.branchOrigin} workspacePath={activeConv.workspacePath} />}
+                <ConversationBranchOrigin origin={activeConv.branchOrigin} />}
             </>}
           />}
 

@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { getI18n, format } from '@/i18n';
+import { getI18n } from '@/i18n';
 import type { Conversation, ConversationBranchOrigin } from '@/types';
 import { ConversationBranchOrigin as Origin } from './ConversationBranchOrigin';
 
@@ -24,9 +24,9 @@ afterEach(cleanup);
 
 describe('branch origin navigation', () => {
   it('opens the exact original reply when reply text appears more than once', async () => {
-    render(<Origin origin={origin} workspacePath="/work" />);
-    expect(screen.getByText(getI18n().chat.branch.currentFiles)).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: format(getI18n().chat.branch.source, { title: 'Parent' }) }));
+    render(<Origin origin={origin} />);
+    expect(screen.getByTestId('branch-origin').textContent).toBe(getI18n().chat.branch.source);
+    fireEvent.click(screen.getByRole('button', { name: getI18n().chat.branch.source }));
     await waitFor(() => expect(useChatStore.getState().activeConversationId).toBe('parent'));
     expect(useChatStore.getState().pendingSearchJump).toEqual({ convId: 'parent', query: '', messageId: 'exact-reply' });
   });
@@ -43,7 +43,7 @@ describe('branch origin navigation', () => {
     useChatStore.setState({ conversationIndex: {} });
     render(<Origin origin={origin} />);
     expect(screen.getByText(getI18n().chat.branch.sourceDeleted)).toBeTruthy();
-    expect(screen.getByText(getI18n().chat.branch.boundary)).toBeTruthy();
+    expect(screen.getByTestId('branch-origin').textContent).toBe(getI18n().chat.branch.sourceDeleted);
     expect(screen.queryByRole('button')).toBeNull();
     expect(useChatStore.getState().activeConversationId).toBe('child');
   });

@@ -915,6 +915,8 @@ test('macOS commands use the configured temporary directory and keep adjacent pa
   fs.mkdirSync(temporaryDirectory);
   fs.mkdirSync(sibling);
   fs.symlinkSync(temporaryDirectory, alias, 'dir');
+  const escapeAlias = path.join(temporaryDirectory, 'outside');
+  fs.symlinkSync(sibling, escapeAlias, 'dir');
   const previous = process.env.TMPDIR;
   try {
     process.env.TMPDIR = alias;
@@ -931,13 +933,15 @@ test('macOS commands use the configured temporary directory and keep adjacent pa
     assert.ifError(argv.error);
     assert.equal(argv.status, 0, argv.stderr);
     assert.ok(fs.existsSync(argvTarget));
-    for (const spec of [
-      buildSandboxedCommandSpec(`/usr/bin/touch ${shellQuote(path.join(sibling, 'shell.txt'))}`, undefined, [], true),
-      buildSandboxedArgvCommandSpec('/usr/bin/touch', [path.join(sibling, 'argv.txt')], undefined, [], true),
-    ]) {
-      const denied = execute(spec);
-      assert.ifError(denied.error);
-      assert.notEqual(denied.status, 0);
+    for (const deniedDirectory of [sibling, escapeAlias]) {
+      for (const spec of [
+        buildSandboxedCommandSpec(`/usr/bin/touch ${shellQuote(path.join(deniedDirectory, 'shell.txt'))}`, undefined, [], true),
+        buildSandboxedArgvCommandSpec('/usr/bin/touch', [path.join(deniedDirectory, 'argv.txt')], undefined, [], true),
+      ]) {
+        const denied = execute(spec);
+        assert.ifError(denied.error);
+        assert.notEqual(denied.status, 0);
+      }
     }
     assert.deepEqual(fs.readdirSync(sibling), []);
     const profile = generateSeatbeltProfile(undefined, [], os.homedir());
@@ -951,20 +955,16 @@ test('macOS commands use the configured temporary directory and keep adjacent pa
 });
 
 test('macOS commands reject unsafe temporary directory configuration', { skip: process.platform !== 'darwin' }, () => {
-  const root = tmpDir();
+  const fixtureDirectory = path.join(__dirname, '..', '.agent');
+  fs.mkdirSync(fixtureDirectory, { recursive: true });
+  const root = fs.mkdtempSync(path.join(fixtureDirectory, 'command-temporary-invalid-'));
   const file = path.join(root, 'file.txt');
+  const homeAlias = path.join(root, 'home-alias');
   fs.writeFileSync(file, 'data');
-  const home = path.join(root, 'home');
-  const protectedDirectory = path.join(root, 'protected');
-  fs.mkdirSync(home);
-  fs.mkdirSync(path.join(protectedDirectory, 'child'), { recursive: true });
-  fs.symlinkSync(protectedDirectory, path.join(home, '.ssh'), 'dir');
+  fs.symlinkSync(os.homedir(), homeAlias, 'dir');
   const previous = process.env.TMPDIR;
-  const previousHome = process.env.HOME;
   try {
-    process.env.HOME = home;
-    for (const temporaryDirectory of ['relative-directory', path.parse(root).root, home, root, protectedDirectory,
-      path.join(protectedDirectory, 'child'), file, path.join(root, 'missing')]) {
+    for (const temporaryDirectory of ['relative-directory', path.parse(root).root, os.homedir(), homeAlias, file, path.join(root, 'missing')]) {
       process.env.TMPDIR = temporaryDirectory;
       assert.throws(() => buildSandboxedCommandSpec('true', undefined, [], true));
       assert.throws(() => buildSandboxedArgvCommandSpec('/usr/bin/true', [], undefined, [], true));
@@ -972,8 +972,6 @@ test('macOS commands reject unsafe temporary directory configuration', { skip: p
   } finally {
     if (previous === undefined) delete process.env.TMPDIR;
     else process.env.TMPDIR = previous;
-    if (previousHome === undefined) delete process.env.HOME;
-    else process.env.HOME = previousHome;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

@@ -29,7 +29,7 @@
  */
 'use strict';
 
-const { ipcMain, nativeTheme, powerMonitor, screen, BrowserWindow, dialog } = require('electron');
+const { ipcMain, nativeTheme, powerMonitor, screen, BrowserWindow, dialog, session } = require('electron');
 const path = require('node:path');
 const os = require('node:os');
 const fs = require('node:fs');
@@ -56,6 +56,10 @@ const { createQuitPreparation } = require('./quitPreparation.cjs');
 const { createExitSaveController } = require('./exitSaveController.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy, inspectPathNameComparison } = require('./fsHost.cjs');
 const { FILE_OPERATION_CHANNEL, createFileOperationHost } = require('./fileOperationHost.cjs');
+const { MEDIA_CHANNEL, createMediaHost } = require('./mediaHost.cjs');
+const { waitForMediaFullscreen } = require('./mediaFullscreen.cjs');
+const { MEDIA_SCHEME } = require('./mediaProtocol.cjs');
+const { createMediaStorageBudget } = require('./mediaStorageBudget.cjs');
 const { CHANNEL: CONVERSATION_BRANCH_CHANNEL, createConversationBranchHost } = require('./conversationBranchHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
 const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
@@ -1641,6 +1645,7 @@ function registerTauriHost(app, options = {}) {
       // by node:sqlite (electron/catalogDb.cjs). Synchronous under the hood;
       // returning the value directly is fine since this handler is `async`.
       const catalogResult = catalogDispatch(app, cmd, a);
+      if (cmd === 'catalog_mark_missing') mediaHost.forget(a.convId);
       if (catalogResult !== CATALOG_MISS) return catalogResult;
       // Notice DB (slice F1b) — audit log + inbox queue, backed by
       // node:sqlite (electron/noticeDb.cjs).
@@ -1859,7 +1864,25 @@ function registerTauriHost(app, options = {}) {
   });
 
   const fileOperations = createFileOperationHost({ app, trashItem: filePath => require('electron').shell.trashItem(filePath) });
-  const conversationBranches = createConversationBranchHost({ appDataDir: abuAppDataDir(app) });
+  // Media recovery uses catalog ownership after the saved history has rebuilt it.
+  catalogDispatch(app, 'catalog_reconcile', { conversationsRoot: path.join(abuAppDataDir(app), 'conversations') });
+  const mediaStorageBudget = createMediaStorageBudget(abuAppDataDir(app));
+  const mediaHost = createMediaHost({
+    assertCapacity: mediaStorageBudget,
+    dataRoot: abuAppDataDir(app),
+    getConversation: conversationId => catalogDispatch(app, 'catalog_get_conversation', { convId: conversationId }),
+    onChange: record => emitEvent('media-job-changed', record),
+  });
+  session.defaultSession.protocol.handle(MEDIA_SCHEME, request => mediaHost.protocol.handle(request));
+  session.defaultSession.webRequest.onBeforeRequest({ urls: [`${MEDIA_SCHEME}://*/*`] }, (details, callback) => {
+    callback({ cancel: !mediaHost.protocol.permits(details) });
+  });
+  ipcMain.handle(MEDIA_CHANNEL, (event, payload) => {
+    assertTrustedMainIpcSender(event);
+    if (payload.action === 'wait-fullscreen') return waitForMediaFullscreen(BrowserWindow.fromWebContents(event.sender));
+    return mediaHost.dispatch(event.sender, payload.action, payload.request);
+  });
+  const conversationBranches = createConversationBranchHost({ appDataDir: abuAppDataDir(app), assertCapacity: mediaStorageBudget });
   ipcMain.handle(CONVERSATION_BRANCH_CHANNEL, async (e, payload = {}) => {
     assertTrustedMainIpcSender(e);
     return conversationBranches(payload.action, payload.request);

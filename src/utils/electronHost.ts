@@ -12,6 +12,7 @@ interface AbuShellBridge {
   canonicalizePathForPolicy?: (path: string, followFinalSymlink?: boolean) => Promise<string>;
   inspectPathNameComparison?: (path: string, followFinalSymlink?: boolean) => Promise<ElectronPathNameComparison>;
   fileOperation?: (action: string, request: Record<string, unknown>) => Promise<unknown>;
+  mediaOperation?: (action: string, request: Record<string, unknown>) => Promise<unknown>;
   conversationBranch?: (action: string, request: unknown) => Promise<unknown>;
   getPathForFile?: (file: File) => string;
   saveImageAttachment?: (request: ElectronImageSaveRequest) => Promise<ElectronImageSaveResult>;
@@ -329,6 +330,12 @@ export async function inspectElectronPathNameComparison(path: string, followFina
 export async function invokeElectronFileOperation<T>(action: string, request: Record<string, unknown>): Promise<T> {
   const invoke = getRuntime().__ABU_SHELL__?.fileOperation;
   if (!invoke) throw new Error('Controlled file access is unavailable');
+  return await invoke(action, request) as T;
+}
+
+export async function invokeElectronMedia<T>(action: string, request: Record<string, unknown>): Promise<T> {
+  const invoke = getRuntime().__ABU_SHELL__?.mediaOperation;
+  if (!invoke) throw new Error('Media access is unavailable');
   return await invoke(action, request) as T;
 }
 

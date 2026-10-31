@@ -12,6 +12,7 @@ import type { ComponentProps, ReactElement, ReactNode } from 'react';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import QueuedMessagesStrip from './QueuedMessagesStrip';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
+import type { ImageEditRequest } from '@/types/media';
 import {
   enqueueUserInput,
   clearInputQueue,
@@ -152,6 +153,22 @@ describe('QueuedMessagesStrip', () => {
       expect(screen.getByText('当前回复已停止，队列已暂停')).toBeInTheDocument();
     });
     expect(getQueuedInputs(CONV).map((item) => item.text)).toEqual(['第一条', '第二条']);
+  });
+
+  it('resumes an image edit with its captured source and instructions', async () => {
+    const request: ImageEditRequest = {
+      schemaVersion: 1, id: 'request-1', messageId: 'message-1', scope: 'local', conversationId: CONV,
+      sourceArtifactId: 'source-1', sourceCaptureId: 'capture-1', sourceDigest: 'a'.repeat(64), prompt: 'Make it green',
+      comments: [], markup: [], region: [],
+      attachmentRefs: [{ kind: 'source', fileRef: { originalPath: '/source.png', captureId: 'capture-1', contentDigest: 'a'.repeat(64) }, mimeType: 'image/png', width: 100, height: 100, byteLength: 100 }],
+      backendId: 'images', capabilityVersion: '1',
+    };
+    enqueueUserInput(CONV, request.prompt, false, undefined, undefined, request);
+    pauseUserInputQueue(CONV);
+    render(<QueuedMessagesStrip conversationId={CONV} />);
+    await userEvent.setup().click(screen.getByRole('button', { name: '继续队列' }));
+    expect(runAgentLoopDispatchedMock).toHaveBeenCalledWith(CONV, request.prompt, { initiatedBy: 'user', imageEditRequest: request });
+    expect(getQueuedInputs(CONV)).toHaveLength(0);
   });
 
   it('restores the oldest item at the front when resume is rejected', async () => {

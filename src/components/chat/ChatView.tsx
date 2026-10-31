@@ -8,7 +8,11 @@ import {
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
 import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, resolveWorkspaceRequestById, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
-import { useSettingsStore } from '@/stores/settingsStore';
+import { getDefaultImageBackend, useSettingsStore } from '@/stores/settingsStore';
+import type { ImageEditDraft, MediaJobRecord } from '@/types/media';
+import { invokeElectronMedia } from '@/utils/electronHost';
+import { imageEditCapabilities } from '@/core/media/imageEditCapabilities';
+import { discardPreparedImageEdit, refreshMediaJobs } from '@/core/media/mediaJobs';
 import { providerHasCredentials } from '@/utils/settingsSelectors';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { useWorkspaceStore } from '@/stores/workspaceStore';
@@ -232,6 +236,10 @@ export default function ChatView({
 }: ChatViewProps) {
   const activeConvId = useChatStore((s) => s.activeConversationId);
   const activeConv = useActiveConversation();
+  const imageRequestIds = activeConv?.messages.flatMap(message => message.imageEditRequest ? [message.imageEditRequest.id] : []).join(',') ?? '';
+  useEffect(() => {
+    if (activeConvId && imageRequestIds) void refreshMediaJobs(activeConvId);
+  }, [activeConvId, imageRequestIds]);
   const loadFailed = useChatStore((s) => (s.activeConversationId ? s.loadFailures[s.activeConversationId] === true : false));
   const pendingSearchJump = useChatStore((s) => s.pendingSearchJump);
   const sidebarCollapsed = useSettingsStore((s) => s.sidebarCollapsed);
@@ -867,12 +875,13 @@ export default function ChatView({
     images?: ImageAttachment[],
     workspacePath?: string | null,
     onAccepted?: () => void,
+    imageEditDraft?: ImageEditDraft,
   ) => {
     // Goal mode: /goal is handled here, before any dispatch — never sent to the
     // model. Every form but `/goal <objective>` ends here and needs no model;
     // that one creates the goal below and sends the objective as the first
     // message.
-    const goalCommand = parseGoalCommand(text);
+    const goalCommand = imageEditDraft ? null : parseGoalCommand(text);
     if (goalCommand && goalCommand.kind !== 'create') {
       const outcome = applyGoalCommand(activeConv?.id, goalCommand);
       useToastStore.getState().addToast({ type: outcome.ok ? 'success' : 'error', title: outcome.message });
@@ -883,8 +892,27 @@ export default function ChatView({
     // default). Returning false hands the text back to the composer — opening
     // settings used to swallow whatever the user had typed.
     if (!ensureConversationModelUsable(activeConv ?? undefined, t.chat)) return false;
+    let imageEdit: MediaJobRecord | undefined;
+    let imageAccepted = false;
+    try {
+    if (imageEditDraft) {
+      if (imageEditDraft.conversationId !== activeConv?.id) throw new Error('Image draft belongs to another conversation');
+      const backend = getDefaultImageBackend(useSettingsStore.getState());
+      const capability = imageEditCapabilities(backend);
+      if (!capability.whole || !backend?.apiKey) {
+        useToastStore.getState().addToast({ type: 'error', title: t.media.serviceUnavailable });
+        return false;
+      }
+      if ((imageEditDraft.comments.length && !capability.comments) || (imageEditDraft.markup.length && !capability.markup)
+        || (imageEditDraft.region.length && !capability.region)) {
+        useToastStore.getState().addToast({ type: 'error', title: t.media.instructionsUnsupported });
+        return false;
+      }
+      const id = crypto.randomUUID();
+      imageEdit = await invokeElectronMedia<MediaJobRecord>('prepare-edit', { draft: { ...imageEditDraft, id, messageId: `image-edit:${id}` }, backend });
+    }
 
-    if (text.trim() === '/compact') {
+    if (!imageEditDraft && text.trim() === '/compact') {
       const convId = activeConv?.id;
       const res = await compactConversationManually(convId ?? '');
       useToastStore.getState().addToast(
@@ -922,7 +950,7 @@ export default function ChatView({
     // A typed `@<team> …` that the composer did not turn into the team chip
     // (sent before the exact-name detection, pasted, …) still pins the
     // conversation to that team; the mention itself is not sent to the model.
-    const teamMention = matchTeamMention(text);
+    const teamMention = imageEditDraft ? null : matchTeamMention(text);
     // A conversation already pinned to another team is not silently re-pinned:
     // say so and send the text as typed (the chip is the way to switch).
     const shownTeamName = (teamId: string) => {
@@ -1005,7 +1033,8 @@ export default function ChatView({
     try {
       dispatch = await runAgentLoopDispatched(convId, sendText, {
         images,
-        onMessageTaken: () => onAccepted?.(),
+        ...(imageEdit ? { imageEditRequest: imageEdit.request } : {}),
+        onMessageTaken: () => { imageAccepted = true; onAccepted?.(); },
         // A human typed this — attended, even inside a scheduled/trigger
         // conversation (the browser gate offers dialogs on that basis).
         initiatedBy: 'user',
@@ -1054,6 +1083,9 @@ export default function ChatView({
       if (shouldRestoreComposerAfterDispatch(dispatch)) {
         return false;
       }
+    }
+    } finally {
+      if (imageEdit && !imageAccepted) await discardPreparedImageEdit(imageEdit.request.conversationId, imageEdit.request.id);
     }
   };
 

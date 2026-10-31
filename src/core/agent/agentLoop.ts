@@ -552,6 +552,7 @@ function deactivateAllSkills(conversationId: string, loopId: string): void {
 }
 
 export interface AgentLoopOptions {
+  imageEditRequest?: import('@/types/media').ImageEditRequest;
   /** Process-local authority owner captured at dispatch; omitted from wire options. */
   operationOwner?: import('../tools/operationAuthorization').ToolOperationOwner;
   /** Trusted UI selection for this specific retry turn; not accepted from the wire. */
@@ -872,7 +873,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     if (runningConv?.status === 'running' && getAbortRegistry().hasAbortController(conversationId)) {
       const interactive = isInteractiveDesktop(options, runningConv);
       const hasAttachments = Boolean(options?.images?.length);
-      const stageable = userMessage.trim().length > 0 && !hasAttachments;
+      const stageable = (userMessage.trim().length > 0 || Boolean(options?.imageEditRequest)) && !hasAttachments;
       if (interactive && stageable) {
         if (options?.requireNewRun) {
           return {
@@ -884,7 +885,10 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // The message lives in the cancellable queue strip until the current
         // run reaches a terminal state. The shell dispatcher then starts it as
         // an independent run with its own loopId.
-        enqueueUserInput(conversationId, userMessage);
+        if (options?.imageEditRequest) {
+          enqueueUserInput(conversationId, userMessage, false, undefined, undefined, options.imageEditRequest);
+          options.onMessageTaken?.(options.imageEditRequest.messageId);
+        } else enqueueUserInput(conversationId, userMessage);
         return { reason: 'enqueued' };
       }
       return {
@@ -989,11 +993,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // the user needs to configure a key before any skill/agent routing takes effect.
     if (!options?.prePersistedUserMessageId) {
       const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
-      const userMessageId = generateId();
+      const userMessageId = options?.imageEditRequest?.messageId ?? generateId();
       chatDelta.addMessage(conversationId, {
         id: userMessageId,
         role: 'user',
         content: userContent,
+        ...(options?.imageEditRequest ? { imageEditRequest: options.imageEditRequest } : {}),
         timestamp: Date.now(),
         loopId,
       });
@@ -1093,11 +1098,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     // same shape as the missing-API-key path above.
     if (!options?.prePersistedUserMessageId) {
       const userContent = await buildUserMessageContent(conversationId, userMessage, options?.images);
-      const userMessageId = generateId();
+      const userMessageId = options?.imageEditRequest?.messageId ?? generateId();
       chatDelta.addMessage(conversationId, {
         id: userMessageId,
         role: 'user',
         content: userContent,
+        ...(options?.imageEditRequest ? { imageEditRequest: options.imageEditRequest } : {}),
         timestamp: Date.now(),
         loopId,
       });
@@ -1263,12 +1269,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // Include skill info if a skill was triggered; build multimodal content if images are attached
   if (!options?.prePersistedUserMessageId) {
     const userContent = await buildUserMessageContent(conversationId, route.cleanInput, options?.images);
-    const userMessageId = generateId();
+    const userMessageId = options?.imageEditRequest?.messageId ?? generateId();
 
     chatDelta.addMessage(conversationId, {
       id: userMessageId,
       role: 'user',
       content: userContent,
+      ...(options?.imageEditRequest ? { imageEditRequest: options.imageEditRequest } : {}),
       timestamp: Date.now(),
       loopId,
       skill: route.type === 'skill' && route.skill ? {
@@ -1898,6 +1905,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         activeSkills: prefetchSkills(route.type === "skill" ? route.skill : undefined, activeSkillObjects),
         turnCount,
         hasGoal: conv?.goal !== undefined,
+        hasImageEdit: conv?.messages.some(message => message.imageEditRequest !== undefined) === true,
       };
 
       // What the roster was filtered by, carried to the execution boundary so

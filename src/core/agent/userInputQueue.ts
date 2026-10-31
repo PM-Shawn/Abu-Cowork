@@ -6,8 +6,11 @@
  * may still be consumed by the current loop at its next iteration.
  */
 
+import type { ImageEditRequest } from '@/types/media';
+
 /** Queued user input entry */
 export interface QueuedInput {
+  imageEditRequest?: ImageEditRequest;
   teamConfirmationRetryId?: string;
   /** Started from the confirmation strip: the run continues the current team task. */
   continuesTeamTask?: boolean;
@@ -49,19 +52,21 @@ export function enqueueUserInput(
   isSystem?: boolean,
   teamConfirmationRetryId?: string,
   continuesTeamTask?: boolean,
+  imageEditRequest?: ImageEditRequest,
 ): void {
-  if (!text.trim()) return;
+  if (!text.trim() && !imageEditRequest) return;
 
   const queue = inputQueues.get(conversationId) ?? [];
   inputQueues.set(conversationId, [
     ...queue,
     {
       id: `qi-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      text: text.trim(),
+      text: text.trim() || imageEditRequest!.comments.map(comment => comment.text).filter(Boolean).join('\n'),
       timestamp: Date.now(),
       isSystem,
       ...(teamConfirmationRetryId ? { teamConfirmationRetryId } : {}),
       ...(continuesTeamTask ? { continuesTeamTask } : {}),
+      ...(imageEditRequest ? { imageEditRequest: structuredClone(imageEditRequest) } : {}),
     },
   ]);
   notifyListeners();

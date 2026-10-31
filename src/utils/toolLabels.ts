@@ -96,6 +96,8 @@ export function getToolLabel(
   }
 
   switch (toolName) {
+    case TOOL_NAMES.EDIT_IMAGE:
+      return { label: dictionary(isZh).media.editImage };
     case TOOL_NAMES.READ_FILE:
     case 'read':
     case 'get_file_contents':

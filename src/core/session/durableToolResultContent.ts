@@ -1,4 +1,4 @@
-import type { Message, ToolCall, ToolResultContent } from '@/types';
+import type { Message, ToolCall, ToolResultContent, ToolResultOutputRef } from '@/types';
 import { fileChangeWithoutHunks } from '@/core/files/fileChangeBudget';
 
 /**
@@ -160,6 +160,13 @@ function isImageMediaType(value: string): boolean {
   return value.length <= 255 && /^image\/[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(value);
 }
 
+function isOutputReference(value: unknown): value is ToolResultOutputRef {
+  return isRecord(value)
+    && typeof value.relPath === 'string' && value.relPath.length > 0 && value.relPath.length <= 4096
+    && (value.basename === undefined || (typeof value.basename === 'string' && value.basename.length <= 4096))
+    && (value.sizeBytes === undefined || (typeof value.sizeBytes === 'number' && Number.isSafeInteger(value.sizeBytes) && value.sizeBytes >= 0));
+}
+
 function fitTextBlock(
   text: string,
   maxBytes: number,
@@ -239,6 +246,7 @@ function retainContent(
       else if (Object.keys(rawBlock).length === 2) candidate = rawBlock as ToolResultContent;
     } else if (rawBlock.type === 'image') {
       const source = rawBlock.source;
+      const reference = isOutputReference(rawBlock.outputRef) ? rawBlock.outputRef : undefined;
       if (
         !isRecord(source)
         || source.type !== 'base64'
@@ -246,7 +254,8 @@ function retainContent(
         || !isImageMediaType(source.media_type)
         || typeof source.data !== 'string'
         || source.data.length > maxBlockBytes
-        || !isBase64Like(source.data)
+        || (rawBlock.outputRef !== undefined && !reference)
+        || (source.data === '' ? !reference : !isBase64Like(source.data))
       ) {
         omitted = true;
         continue;
@@ -258,6 +267,11 @@ function retainContent(
           media_type: source.media_type,
           data: source.data,
         },
+        ...(reference ? { outputRef: {
+          relPath: reference.relPath,
+          ...(reference.basename !== undefined ? { basename: reference.basename } : {}),
+          ...(reference.sizeBytes !== undefined ? { sizeBytes: reference.sizeBytes } : {}),
+        } } : {}),
       };
       if (Object.keys(rawBlock).length === 2 && Object.keys(source).length === 3) {
         candidate = rawBlock as ToolResultContent;

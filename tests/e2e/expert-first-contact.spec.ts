@@ -48,7 +48,7 @@ for (const team of [false, true]) {
       // accessibility tree, so the message field is found by its mark and not by its role.
       await expect(page.locator('[data-chat-composer]').first()).toBeVisible({ timeout: 45_000 });
       await dismissFirstRunOverlays(page);
-      await page.evaluate(() => {
+      await page.addInitScript(() => {
         const previous = JSON.parse(localStorage.getItem('abu-team') ?? '{}');
         localStorage.setItem('abu-team', JSON.stringify({ ...previous, state: { ...previous.state, teams: [{ id: 't-first', name: 'E2E专家团', description: '整理目标并给出方案', intro: '这份方案是给谁用的？', leaderRoleId: 'builtin:产品经理', memberRoleIds: ['builtin:产品经理'], requirePlanApproval: false, createdAt: 1 }] } }));
       });

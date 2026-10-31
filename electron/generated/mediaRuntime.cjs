@@ -49144,7 +49144,7 @@ var zhCN = {
       sourceUnavailable: "原回复已不可用",
       sourceInaccessible: "无法访问原聊天，请检查访问权限",
       failed: "无法创建新聊天",
-      saveFailed: "无法保存新聊天，请检查可用空间和访问权限",
+      saveFailed: "暂时无法创建新聊天，请重试",
       selectionUnavailable: "所选回复已不可用，请重新选择",
       historyUnavailable: "无法读取所选回复之前的完整聊天记录"
     },
@@ -53709,7 +53709,7 @@ var enUS = {
       sourceUnavailable: "The original reply is unavailable",
       sourceInaccessible: "Cannot access the original chat. Check your access permissions.",
       failed: "Could not create a new chat",
-      saveFailed: "Could not save the new chat. Check available space and access permissions.",
+      saveFailed: "Could not create the new chat. Please try again.",
       selectionUnavailable: "The selected reply is unavailable. Choose a reply again.",
       historyUnavailable: "Could not read the complete chat history up to the selected reply."
     },

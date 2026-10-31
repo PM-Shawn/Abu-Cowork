@@ -268,7 +268,7 @@ const zhCN: TranslationDict = {
       sourceUnavailable: '原回复已不可用',
       sourceInaccessible: '无法访问原聊天，请检查访问权限',
       failed: '无法创建新聊天',
-      saveFailed: '无法保存新聊天，请检查可用空间和访问权限',
+      saveFailed: '暂时无法创建新聊天，请重试',
       selectionUnavailable: '所选回复已不可用，请重新选择',
       historyUnavailable: '无法读取所选回复之前的完整聊天记录',
     },

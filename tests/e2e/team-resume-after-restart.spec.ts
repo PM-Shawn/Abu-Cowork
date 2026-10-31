@@ -98,7 +98,7 @@ test('a team run the app was closed on waits for 继续, then continues as the u
 
   let page = await launch(dataRoot);
   await dismissFirstRunOverlays(page);
-  await page.evaluate(({ name }) => {
+  await page.addInitScript(({ name }) => {
     const previous = JSON.parse(localStorage.getItem('abu-team') ?? '{}');
     localStorage.setItem('abu-team', JSON.stringify({
       ...previous,

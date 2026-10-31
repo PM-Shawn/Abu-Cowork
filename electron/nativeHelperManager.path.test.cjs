@@ -148,7 +148,9 @@ test('native helper v2 request carries only stable task and target context', () 
 });
 
 test('native helper v2 uses bounded command-specific timeouts', () => {
+  assert.equal(resolveHelperCallTimeoutMs('hello'), 30_000);
   assert.equal(resolveHelperCallTimeoutMs('health'), 5_000);
+  assert.equal(resolveHelperCallTimeoutMs('ping'), 5_000);
   assert.equal(resolveHelperCallTimeoutMs('ax_snapshot'), 15_000);
   assert.equal(resolveHelperCallTimeoutMs('get_window_state'), 15_000);
   assert.equal(resolveHelperCallTimeoutMs('mouse_click'), 10_000);
@@ -294,7 +296,7 @@ test('native helper uses the Cargo .exe name in Windows packages', () => {
       packaged: true,
       resourcesPath: 'C:\\Abu\\resources',
     }),
-    path.join('C:\\Abu\\resources', 'native-helper', 'native-helper.exe'),
+    path.win32.join('C:\\Abu\\resources', 'native-helper', 'native-helper.exe'),
   );
 });
 

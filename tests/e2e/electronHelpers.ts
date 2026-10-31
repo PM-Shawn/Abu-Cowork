@@ -59,6 +59,8 @@ export interface LaunchOptions {
    * renderer's `listen()` need it.
    */
   recordMainProcess?: boolean;
+  /** Load a test lifecycle controller before the application's main module. */
+  mainProcessPreload?: string;
 }
 
 /** One window's first reveal, as tests/e2e/mainProcessRecorderCore.cjs saw it. */
@@ -169,6 +171,7 @@ export async function launchAbuElectron(
       // installed here sees every window the app ever creates. Playwright's own
       // loader is unshifted ahead of these args the same way.
       ...(options.recordMainProcess ? ['-r', MAIN_PROCESS_RECORDER] : []),
+      ...(options.mainProcessPreload ? ['-r', options.mainProcessPreload] : []),
       MAIN_ENTRY,
       `--user-data-dir=${dataRoot.userDataDir}`,
       '--lang=zh-CN',

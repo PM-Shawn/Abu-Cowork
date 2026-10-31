@@ -682,6 +682,9 @@ function isBase64Like(value) {
 function isImageMediaType(value) {
   return value.length <= 255 && /^image\/[A-Za-z0-9][A-Za-z0-9.+-]*$/.test(value);
 }
+function isOutputReference(value) {
+  return isRecord(value) && typeof value.relPath === "string" && value.relPath.length > 0 && value.relPath.length <= 4096 && (value.basename === void 0 || typeof value.basename === "string" && value.basename.length <= 4096) && (value.sizeBytes === void 0 || typeof value.sizeBytes === "number" && Number.isSafeInteger(value.sizeBytes) && value.sizeBytes >= 0);
+}
 function fitTextBlock(text, maxBytes) {
   const emptyBlock = { type: "text", text: "" };
   if (jsonUtf8ByteLength(emptyBlock) > maxBytes) return void 0;
@@ -739,7 +742,8 @@ function retainContent(rawContent, availableBytes, availableImages, availableBlo
       else if (Object.keys(rawBlock).length === 2) candidate = rawBlock;
     } else if (rawBlock.type === "image") {
       const source = rawBlock.source;
-      if (!isRecord(source) || source.type !== "base64" || typeof source.media_type !== "string" || !isImageMediaType(source.media_type) || typeof source.data !== "string" || source.data.length > maxBlockBytes || !isBase64Like(source.data)) {
+      const reference = isOutputReference(rawBlock.outputRef) ? rawBlock.outputRef : void 0;
+      if (!isRecord(source) || source.type !== "base64" || typeof source.media_type !== "string" || !isImageMediaType(source.media_type) || typeof source.data !== "string" || source.data.length > maxBlockBytes || rawBlock.outputRef !== void 0 && !reference || (source.data === "" ? !reference : !isBase64Like(source.data))) {
         omitted = true;
         continue;
       }
@@ -749,7 +753,12 @@ function retainContent(rawContent, availableBytes, availableImages, availableBlo
           type: "base64",
           media_type: source.media_type,
           data: source.data
-        }
+        },
+        ...reference ? { outputRef: {
+          relPath: reference.relPath,
+          ...reference.basename !== void 0 ? { basename: reference.basename } : {},
+          ...reference.sizeBytes !== void 0 ? { sizeBytes: reference.sizeBytes } : {}
+        } } : {}
       };
       if (Object.keys(rawBlock).length === 2 && Object.keys(source).length === 3) {
         candidate = rawBlock;

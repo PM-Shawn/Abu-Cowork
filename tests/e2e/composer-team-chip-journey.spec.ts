@@ -25,7 +25,7 @@ const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
 
 async function seedTeam(page: Page): Promise<void> {
-  await page.evaluate(() => {
+  await page.addInitScript(() => {
     const raw = window.localStorage.getItem('abu-settings');
     if (!raw) throw new Error('abu-settings was not initialized');
     const persisted = JSON.parse(raw) as { state: Record<string, unknown>; version: number };

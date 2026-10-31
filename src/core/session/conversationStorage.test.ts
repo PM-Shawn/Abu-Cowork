@@ -1522,6 +1522,27 @@ describe('conversationStorage', () => {
   });
 
   describe('buildMeta', () => {
+    it('persists branch provenance and initial navigation through an index reload', async () => {
+      const branchOrigin = {
+        version: 1 as const, sourceConversationId: 'parent', sourceMessageId: 'a1',
+        sourceTitle: 'Parent', inheritedThroughMessageId: 'child-a1',
+      };
+      const meta = storage.buildMeta({
+        id: 'branch', title: 'Branch', createdAt: 300, updatedAt: 300,
+        messages: [makeMsg({ id: 'child-a1', inheritedFromBranch: true })],
+        branchOrigin, branchInitialOpenPending: true,
+      });
+      await storage.updateIndexEntry(meta);
+      await storage.flushIndex();
+      vi.resetModules();
+      storage = await import('./conversationStorage');
+      const index = await storage.loadIndex();
+      expect(index.entries.branch).toMatchObject({ branchOrigin, branchInitialOpenPending: true, messageCount: 1 });
+      const ordinary = storage.buildMeta({ id: 'ordinary', title: 'T', createdAt: 1, updatedAt: 2, messages: [] });
+      expect(ordinary).not.toHaveProperty('branchOrigin');
+      expect(ordinary).not.toHaveProperty('branchInitialOpenPending');
+    });
+
     it('builds ConversationMeta from conversation object', () => {
       const meta = storage.buildMeta({
         id: 'c1',

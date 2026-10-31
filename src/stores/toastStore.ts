@@ -8,6 +8,8 @@ export interface ToastAction {
 
 export interface Toast {
   id: string;
+  /** Keeps distinct operations with equal text independently retryable. */
+  dedupeKey?: string;
   type: 'success' | 'error' | 'info' | 'warning';
   title: string;
   message?: string;
@@ -64,7 +66,7 @@ const monotonicNow = () => performance.now();
 
 const labels = (toast: Omit<Toast, 'id'>) => (toast.actions ?? []).map((action) => action.label).join('\u0000');
 // The same thing said again: adding it shows the one that is there, it does not add another.
-const equal = (a: Omit<Toast, 'id'>, b: Omit<Toast, 'id'>) => a.type === b.type && a.title === b.title && a.message === b.message && labels(a) === labels(b);
+const equal = (a: Omit<Toast, 'id'>, b: Omit<Toast, 'id'>) => a.dedupeKey === b.dedupeKey && a.type === b.type && a.title === b.title && a.message === b.message && labels(a) === labels(b);
 
 export const useToastStore = create<ToastStore>()(
   immer((set, get) => {

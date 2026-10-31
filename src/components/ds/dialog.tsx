@@ -368,112 +368,117 @@ export function Dialog({
       <DialogPrimitive.Root open={isOpen && admitted && (!held || aside)} onOpenChange={(next) => (next ? setOpen(true) : requestClose())}>
         {trigger && <DialogPrimitive.Trigger asChild>{trigger}</DialogPrimitive.Trigger>}
         <DialogPrimitive.Portal container={container}>
+          {/* Portal the content through the overlay so floating descendants share its scroll lock.
+              The portal keeps each window's DOM separate for focus, accessibility and motion. */}
           {/* eslint-disable-next-line no-restricted-syntax -- Dialog owns the app's only scrim */}
-          <DialogPrimitive.Overlay hidden={aside} data-ds-motion data-electron-no-drag className={cn('fixed inset-0 z-dialog bg-scrim', SCRIM_MOTION)} />
-          <DialogPrimitive.Content
-            {...contentProps}
-            {...settling.handlers}
-            {...heldKeys.handlers}
-            ref={holdContent}
-            hidden={aside}
-            data-ds-layer
-            data-ds-motion
-            data-electron-no-drag
-            role={role}
-            onEscapeKeyDown={(event) => { passEscapeWhileClosing(event); stay?.(event); }}
-            onInteractOutside={(event) => {
-              // A press on a notification (its Close, an action such as Undo) is not a press outside
-              // the dialog: the notification list is drawn over every dialog and is no part of the page behind.
-              const onNotification = event.target instanceof Element && event.target.closest('[data-ds-toasts]') !== null;
-              if (!dismissible || outsidePress === 'ignore' || onNotification) event.preventDefault();
-            }}
-            onKeyDown={tabFromBox}
-            onOpenAutoFocus={(event) => {
-              remember(returnTo);
-              const content = event.currentTarget;
-              if (!(content instanceof HTMLElement)) return;
-              // The close button is the only control (an enlarged image): focus goes to the box.
-              // On the button it would show the button's tooltip the moment the dialog opens.
-              // Tab still reaches the button.
-              if (hasOnlyCloseButton(content, descriptionRef.current)) {
-                event.preventDefault();
-                content.focus();
-                return;
-              }
-              const named = initialFocus?.(content) ?? null;
-              if (named) {
-                event.preventDefault();
-                named.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
-                return;
-              }
-              // A description that scrolls is the first Tab stop in the box: the dialog opens on
-              // the control after it (the cancelling button of a question), never on the text.
-              const description = descriptionRef.current;
-              if (description && firstTabbable(content, true) === description) {
-                event.preventDefault();
-                (firstTabbable(content, true, description) ?? content).focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
-                return;
-              }
-              // Radix's own choice, links aside as it does.
-              focusQuietlyAfterPointer(event, (box) => firstTabbable(box, true));
-            }}
-            onCloseAutoFocus={(event) => {
-              // The layer's handler first: it prevents the default when the registry
-              // closed this dialog to make room for another. Then the caller's choice.
-              onCloseAutoFocus(event);
-              callerCloseAutoFocus?.(event);
-              giveFocusBack(returnTo, event, trigger !== undefined, onFocusUnplaced);
-            }}
-            {...(description ? {} : { 'aria-describedby': undefined })}
-            className={cn(box, DIALOG_MOTION, DIALOG_CLOSING, SETTLING_BOX)}
-          >
-            <WhenGone run={settling.detach} />
-            <LayerScope id={id}>
-              <InDialogContext.Provider value>
-                {titleHidden ? (
-                  // Still the dialog's accessible name, for a dialog whose content says what it is (search).
-                  <VisuallyHidden.Root asChild>
-                    <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
-                  </VisuallyHidden.Root>
-                ) : (
-                  // With a close button the title stops short of the corner the button sits in.
-                  <DialogPrimitive.Title className={cn('text-title text-label', closeButton && 'pr-8')}>{title}</DialogPrimitive.Title>
-                )}
-                {description && (
-                  // A line break in the words is kept: a question names what it acts on on a line of its own.
-                  // Words longer than the dialog (a path, an address) break, and many lines scroll.
-                  <DialogPrimitive.Description
-                    ref={holdDescription}
-                    {...(scrollingDescriptionName === null ? {} : { tabIndex: 0, role: 'group', 'aria-labelledby': scrollingDescriptionName })}
-                    className={cn('mt-1 max-h-60 overflow-y-auto whitespace-pre-line break-words text-ui text-label-secondary', scrollingDescriptionName !== null && cn('rounded-control', FOCUS_RING))}
-                  >
-                    {description}
-                  </DialogPrimitive.Description>
-                )}
-                {/* With a hidden title the header is the top row: it stops short of the close button's corner. */}
-                {header && <div className={cn('shrink-0', !titleHidden && 'mt-4', titleHidden && closeButton && 'pr-8')}>{header}</div>}
-                {children && (page ? (
-                  <div className="min-h-0 flex-1 text-ui text-label">{children}</div>
-                ) : viewer ? (
-                  <div className="flex min-h-0 flex-1 flex-col text-ui text-label">{children}</div>
-                ) : (
-                  <div className={cn('flex min-h-0 flex-col', (!titleHidden || header) && 'mt-4')}>
-                    {/* The 4px of padding keeps focus rings from being cut off by the scroll box. */}
-                    <div className="-m-1 min-h-0 overflow-y-auto p-1 text-ui text-label">{children}</div>
-                  </div>
-                ))}
-                {footer && <div className="mt-6 flex shrink-0 justify-end gap-2">{footer}</div>}
-                {/* Last in the content, so the dialog opens with focus on its first control. */}
-                {closeButton && (
-                  <span data-ds-dialog-close className={cn('absolute right-3 flex', page || viewer ? 'top-2.5' : 'top-3')}>
-                    <DialogPrimitive.Close asChild>
-                      <IconButton icon={AppIcons.close} label={t.common.close} {...(closeButton === true ? {} : closeButton)} />
-                    </DialogPrimitive.Close>
-                  </span>
-                )}
-              </InDialogContext.Provider>
-            </LayerScope>
-          </DialogPrimitive.Content>
+          <DialogPrimitive.Overlay hidden={aside} data-ds-motion data-electron-no-drag className={cn('fixed inset-0 z-dialog bg-scrim', SCRIM_MOTION)}>
+            <DialogPrimitive.Portal container={container}>
+              <DialogPrimitive.Content
+                {...contentProps}
+                {...settling.handlers}
+                {...heldKeys.handlers}
+                ref={holdContent}
+                hidden={aside}
+                data-ds-layer
+                data-ds-motion
+                data-electron-no-drag
+                role={role}
+                onEscapeKeyDown={(event) => { passEscapeWhileClosing(event); stay?.(event); }}
+                onInteractOutside={(event) => {
+                  // A press on a notification (its Close, an action such as Undo) is not a press outside
+                  // the dialog: the notification list is drawn over every dialog and is no part of the page behind.
+                  const onNotification = event.target instanceof Element && event.target.closest('[data-ds-toasts]') !== null;
+                  if (!dismissible || outsidePress === 'ignore' || onNotification) event.preventDefault();
+                }}
+                onKeyDown={tabFromBox}
+                onOpenAutoFocus={(event) => {
+                  remember(returnTo);
+                  const content = event.currentTarget;
+                  if (!(content instanceof HTMLElement)) return;
+                  // The close button is the only control (an enlarged image): focus goes to the box.
+                  // On the button it would show the button's tooltip the moment the dialog opens.
+                  // Tab still reaches the button.
+                  if (hasOnlyCloseButton(content, descriptionRef.current)) {
+                    event.preventDefault();
+                    content.focus();
+                    return;
+                  }
+                  const named = initialFocus?.(content) ?? null;
+                  if (named) {
+                    event.preventDefault();
+                    named.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+                    return;
+                  }
+                  // A description that scrolls is the first Tab stop in the box: the dialog opens on
+                  // the control after it (the cancelling button of a question), never on the text.
+                  const description = descriptionRef.current;
+                  if (description && firstTabbable(content, true) === description) {
+                    event.preventDefault();
+                    (firstTabbable(content, true, description) ?? content).focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
+                    return;
+                  }
+                  // Radix's own choice, links aside as it does.
+                  focusQuietlyAfterPointer(event, (box) => firstTabbable(box, true));
+                }}
+                onCloseAutoFocus={(event) => {
+                  // The layer's handler first: it prevents the default when the registry
+                  // closed this dialog to make room for another. Then the caller's choice.
+                  onCloseAutoFocus(event);
+                  callerCloseAutoFocus?.(event);
+                  giveFocusBack(returnTo, event, trigger !== undefined, onFocusUnplaced);
+                }}
+                {...(description ? {} : { 'aria-describedby': undefined })}
+                className={cn(box, DIALOG_MOTION, DIALOG_CLOSING, SETTLING_BOX)}
+              >
+                <WhenGone run={settling.detach} />
+                <LayerScope id={id}>
+                  <InDialogContext.Provider value>
+                    {titleHidden ? (
+                      // Still the dialog's accessible name, for a dialog whose content says what it is (search).
+                      <VisuallyHidden.Root asChild>
+                        <DialogPrimitive.Title>{title}</DialogPrimitive.Title>
+                      </VisuallyHidden.Root>
+                    ) : (
+                      // With a close button the title stops short of the corner the button sits in.
+                      <DialogPrimitive.Title className={cn('text-title text-label', closeButton && 'pr-8')}>{title}</DialogPrimitive.Title>
+                    )}
+                    {description && (
+                      // A line break in the words is kept: a question names what it acts on on a line of its own.
+                      // Words longer than the dialog (a path, an address) break, and many lines scroll.
+                      <DialogPrimitive.Description
+                        ref={holdDescription}
+                        {...(scrollingDescriptionName === null ? {} : { tabIndex: 0, role: 'group', 'aria-labelledby': scrollingDescriptionName })}
+                        className={cn('mt-1 max-h-60 overflow-y-auto whitespace-pre-line break-words text-ui text-label-secondary', scrollingDescriptionName !== null && cn('rounded-control', FOCUS_RING))}
+                      >
+                        {description}
+                      </DialogPrimitive.Description>
+                    )}
+                    {/* With a hidden title the header is the top row: it stops short of the close button's corner. */}
+                    {header && <div className={cn('shrink-0', !titleHidden && 'mt-4', titleHidden && closeButton && 'pr-8')}>{header}</div>}
+                    {children && (page ? (
+                      <div className="min-h-0 flex-1 text-ui text-label">{children}</div>
+                    ) : viewer ? (
+                      <div className="flex min-h-0 flex-1 flex-col text-ui text-label">{children}</div>
+                    ) : (
+                      <div className={cn('flex min-h-0 flex-col', (!titleHidden || header) && 'mt-4')}>
+                        {/* The 4px of padding keeps focus rings from being cut off by the scroll box. */}
+                        <div className="-m-1 min-h-0 overflow-y-auto p-1 text-ui text-label">{children}</div>
+                      </div>
+                    ))}
+                    {footer && <div className="mt-6 flex shrink-0 justify-end gap-2">{footer}</div>}
+                    {/* Last in the content, so the dialog opens with focus on its first control. */}
+                    {closeButton && (
+                      <span data-ds-dialog-close className={cn('absolute right-3 flex', page || viewer ? 'top-2.5' : 'top-3')}>
+                        <DialogPrimitive.Close asChild>
+                          <IconButton icon={AppIcons.close} label={t.common.close} {...(closeButton === true ? {} : closeButton)} />
+                        </DialogPrimitive.Close>
+                      </span>
+                    )}
+                  </InDialogContext.Provider>
+                </LayerScope>
+              </DialogPrimitive.Content>
+            </DialogPrimitive.Portal>
+          </DialogPrimitive.Overlay>
         </DialogPrimitive.Portal>
       </DialogPrimitive.Root>
       <AlertDialogPrimitive.Root open={discardAsked} onOpenChange={(next) => { if (!next) keep(); }}>

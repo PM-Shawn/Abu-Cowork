@@ -49,7 +49,7 @@ vi.mock('@/stores/skillDraftsStore', () => ({
 
 vi.mock('@/stores/chatStore', () => ({
   useChatStore: (selector: (s: unknown) => unknown) =>
-    selector({ setToolCallNoticeCardAction: mockSetAction }),
+    selector({ conversations: {}, setToolCallNoticeCardAction: mockSetAction }),
 }));
 
 vi.mock('@/stores/toastStore', () => ({

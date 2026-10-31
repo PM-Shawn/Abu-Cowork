@@ -1440,7 +1440,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               );
             })}
 
-            {conversationId && mcpAppSteps.map((step) => (
+            {conversationId && mcpAppSteps.map((step) => assistantMsgs.find(message => message.id === step.messageId)?.inheritedFromBranch
+              ? <MarkdownRenderer key={`mcp-history-${step.toolCall.id}`} content={step.toolCall.result ?? ''} /> : (
               <McpAppBlock
                 key={`mcp-app-${step.toolCall.id}`}
                 toolCallId={step.toolCall.id}
@@ -1458,7 +1459,8 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
               />
             ))}
 
-            {appPreviewCallId !== undefined && allToolCalls.some((tc) => tc.id === appPreviewCallId) && (
+            {appPreviewCallId !== undefined && allToolCalls.some((tc) => tc.id === appPreviewCallId)
+              && !assistantMsgs.some(message => message.inheritedFromBranch && message.toolCalls?.some(call => call.id === appPreviewCallId)) && (
               <AppDraftCard key={`app-draft-${appPreviewCallId}`} conversationId={conversationId} toolCallId={appPreviewCallId} />
             )}
 
@@ -1542,7 +1544,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             )}
 
             {/* Actions - use lastAssistantMsg for regenerate/delete */}
-            {!isStreaming && activeConv?.status !== 'running' && lastAssistantMsg && (
+            {!isStreaming && (!isLastGroupProp || activeConv?.status !== 'running') && lastAssistantMsg && (
               <div className="mt-2">
                 <MessageBubble message={lastAssistantMsg} hideAvatar={true} actionsOnly={true} />
               </div>

@@ -1928,6 +1928,28 @@ async function waitForPidExit(pid, timeoutMs) {
   );
 }
 
+function verifyPackagedBranchHost(found, runtimeTrap) {
+  const probe = `
+    const path = require('node:path');
+    const { createRequire } = require('node:module');
+    const archive = process.argv[1];
+    const hostPath = path.join(archive, 'electron', 'conversationBranchHost.cjs');
+    const hostRequire = createRequire(hostPath);
+    const relative = path.relative(archive, hostRequire.resolve('zod'));
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) {
+      throw new Error('Conversation branch validation dependency is outside app.asar');
+    }
+    hostRequire(hostPath);
+  `;
+  const result = spawnSync(found.bin, ['-e', probe, path.resolve(found.resources, 'app.asar')], {
+    env: { ...cleanPackagedEnvironment(runtimeTrap), ELECTRON_RUN_AS_NODE: '1' },
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Packaged conversation branch Host failed to load: ${result.stderr}`);
+}
+
 function launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap, expectMigration = false) {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(appDataDir, { recursive: true });
@@ -2149,6 +2171,8 @@ async function main() {
   let app;
   let appProcess;
   try {
+    verifyPackagedBranchHost(found, runtimeTrap);
+    checks.packagedBranchHostLoads = true;
     app = await launchPackagedApp(
       found,
       userDataDir,

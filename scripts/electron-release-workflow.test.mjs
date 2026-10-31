@@ -393,6 +393,7 @@ test('Electron build uses native runners for all three release targets', () => {
     HOST_SECURITY_OUTCOME: '${{ steps.windows_host_security_gates.outcome }}',
     ACTIVE_WINDOW_OUTCOME: '${{ steps.windows_active_window_probe.outcome }}',
     NATIVE_HELPER_OUTCOME: '${{ steps.windows_native_helper_gates.outcome }}',
+    BRANCH_ACCEPTANCE_OUTCOME: '${{ steps.windows_branch_acceptance.outcome }}',
   });
   for (const gate of [
     'frontend:$FRONTEND_OUTCOME',
@@ -400,6 +401,7 @@ test('Electron build uses native runners for all three release targets', () => {
     'host-security:$HOST_SECURITY_OUTCOME',
     'active-window:$ACTIVE_WINDOW_OUTCOME',
     'native-helper:$NATIVE_HELPER_OUTCOME',
+    'conversation-branch:$BRANCH_ACCEPTANCE_OUTCOME',
   ]) {
     assert.match(requireWindowsGates.run, new RegExp(gate.replace('$', '\\$')));
   }
@@ -410,6 +412,7 @@ test('Electron build uses native runners for all three release targets', () => {
     HOST_SECURITY_OUTCOME: 'success',
     ACTIVE_WINDOW_OUTCOME: 'success',
     NATIVE_HELPER_OUTCOME: 'success',
+    BRANCH_ACCEPTANCE_OUTCOME: 'success',
   };
   assert.equal(runBash(requireWindowsGates.run, successfulOutcomes).status, 0);
   for (const [outcome, label] of [
@@ -418,6 +421,7 @@ test('Electron build uses native runners for all three release targets', () => {
     ['HOST_SECURITY_OUTCOME', 'host-security'],
     ['ACTIVE_WINDOW_OUTCOME', 'active-window'],
     ['NATIVE_HELPER_OUTCOME', 'native-helper'],
+    ['BRANCH_ACCEPTANCE_OUTCOME', 'conversation-branch'],
   ]) {
     const failedGate = runBash(requireWindowsGates.run, {
       ...successfulOutcomes,
@@ -427,6 +431,16 @@ test('Electron build uses native runners for all three release targets', () => {
     assert.match(failedGate.stderr, new RegExp(`${label}:failure`));
   }
   const windowsStepNames = build.jobs['build-windows'].steps.map((step) => step.name);
+  const branchAcceptance = build.jobs['build-windows'].steps.find(step => step.id === 'windows_branch_acceptance');
+  assert.equal(branchAcceptance.shell, 'pwsh');
+  assert.equal(branchAcceptance['continue-on-error'], true);
+  assert.match(branchAcceptance.run, /npm run test:branch-native/);
+  assert.match(branchAcceptance.run, /npm run build:sandbox-launcher/);
+  assert.match(branchAcceptance.run, /npm run test:e2e:electron -- tests\/e2e\/smoke\.spec\.ts tests\/e2e\/conversation-branching\.spec\.ts tests\/e2e\/conversation-branch-history\.spec\.ts/);
+  assert.ok(windowsStepNames.indexOf(branchAcceptance.name) < windowsStepNames.indexOf('Require all Windows gates'));
+  const branchEvidence = build.jobs['build-windows'].steps.find(step => step.name === 'Upload Windows conversation branch evidence');
+  assert.equal(branchEvidence.with['include-hidden-files'], true);
+  assert.match(branchEvidence.with.path, /\.agent\/windows-branch-acceptance\//);
   assert.ok(
     windowsStepNames.indexOf('Require all Windows gates') <
       windowsStepNames.indexOf('Resolve Windows candidate configuration')
@@ -901,6 +915,33 @@ test('normal Electron release leaves the frozen Tauri root pointer untouched', (
   assert.equal(surface.latest, before.latest);
   assert.equal(surface.release, 'published\n');
   assert.ok(surface.feeds.every((feed) => feed.includes('version: 0.34.0')));
+});
+
+test('Electron E2E uses supported macOS runners and requires every shard', () => {
+  const jobs = workflow('e2e.yml').jobs;
+  const shards = jobs['e2e-electron-shard'];
+  assert.equal(shards['runs-on'], 'macos-15');
+  assert.deepEqual(shards.strategy.matrix.shard, [1, 2, 3]);
+  assert.equal(shards.strategy['fail-fast'], false);
+  const displayIndex = shards.steps.findIndex((step) => step.name === 'Configure desktop display');
+  const testIndex = shards.steps.findIndex((step) => step.name === 'Run Electron E2E tests');
+  assert.ok(displayIndex >= 0 && displayIndex < testIndex);
+  assert.equal(shards.steps[displayIndex].shell, 'bash');
+  assert.match(shards.steps[displayIndex].run, /displayplacer "id:\$display_id res:1600x900 scaling:off origin:\(0,0\) degree:0"/);
+  assert.match(shards.steps[displayIndex].run, /grep -Fx 'Resolution: 1600x900'/);
+  assert.match(shards.steps[displayIndex].run, /grep -Fx 'Scaling: off'/);
+  assert.equal(shards.steps[displayIndex]['continue-on-error'], undefined);
+  assert.equal(shards.steps.find((step) => step.name === 'Run Electron E2E tests').run,
+    'npm run test:e2e:electron -- --shard=${{ matrix.shard }}/3');
+  assert.equal(jobs['e2e-electron'].needs, 'e2e-electron-shard');
+  assert.equal(jobs['e2e-electron'].if, 'always()');
+  assert.match(jobs['e2e-electron'].steps[0].run, /\[ "\$SHARDS" != "success" \]/);
+  assert.match(jobs['e2e-electron'].steps[0].run, /exit 1/);
+});
+
+test('packaged conversation branching includes its Host validation dependency', () => {
+  const builder = YAML.parse(fs.readFileSync(path.join(root, 'electron-builder.yml'), 'utf8'));
+  assert.ok(builder.files.includes('node_modules/zod/**/*'));
 });
 
 test('packaged feeds are architecture-isolated', () => {

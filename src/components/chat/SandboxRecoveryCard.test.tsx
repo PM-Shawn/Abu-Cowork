@@ -4,7 +4,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initLanguage } from '@/i18n';
-import type { SandboxRecoveryAction } from '@/types';
+import type { Message, SandboxRecoveryAction } from '@/types';
 import SandboxRecoveryCard from './SandboxRecoveryCard';
 
 const mockRunAgentLoop = vi.fn();
@@ -19,8 +19,9 @@ const chatState = {
     'conv-1': {
       id: 'conv-1',
       status: 'idle',
+      messages: [],
     },
-  } as Record<string, { id: string; status: string }>,
+  } as Record<string, { id: string; status: string; messages: Message[] }>,
   setToolCallSandboxRecoveryAction: mockSetAction,
   cancelStreaming: mockCancelStreaming,
 };

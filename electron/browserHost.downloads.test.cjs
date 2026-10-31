@@ -544,7 +544,7 @@ test('cancels a download it has nowhere to put, rather than letting Chromium cho
 // ═══════════════════════════════════════════════════════════════════════════
 
 test('one task never sees another task\'s downloads', async () => {
-  const { host, deliver, restore } = loadHost();
+  const { host, root, deliver, restore } = loadHost();
   try {
     const a = await openTab(host, OWNER_A);
     const b = await openTab(host, OWNER_B);
@@ -557,8 +557,12 @@ test('one task never sees another task\'s downloads', async () => {
 
     assert.deepEqual(forA.map((d) => d.filename), ['a.csv']);
     assert.deepEqual(forB.map((d) => d.filename), ['b.csv']);
+    assert.equal(forA[0].path, path.join(root, OWNER_A, 'main', 'a.csv'));
+    assert.equal(forB[0].path, path.join(root, OWNER_B, 'main', 'b.csv'));
     // And the internal owner key is never part of what the model is told.
-    assert.ok(!JSON.stringify(forA).includes(OWNER_B));
+    for (const download of [...forA, ...forB]) {
+      assert.equal(Object.hasOwn(download, 'ownerKey'), false);
+    }
   } finally { restore(); }
 });
 

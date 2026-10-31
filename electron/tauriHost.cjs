@@ -56,6 +56,7 @@ const { createQuitPreparation } = require('./quitPreparation.cjs');
 const { createExitSaveController } = require('./exitSaveController.cjs');
 const { fsDispatch, FS_MISS, canonicalizeForPathPolicy, inspectPathNameComparison } = require('./fsHost.cjs');
 const { FILE_OPERATION_CHANNEL, createFileOperationHost } = require('./fileOperationHost.cjs');
+const { CHANNEL: CONVERSATION_BRANCH_CHANNEL, createConversationBranchHost } = require('./conversationBranchHost.cjs');
 const { pluginGitDispatch, PLUGIN_GIT_MISS } = require('./pluginGitHost.cjs');
 const { createMarketSourceHost, marketSourceDispatch, MARKET_SOURCE_MISS } = require('./marketSourceHost.cjs');
 const { PLUGIN_SNAPSHOT_CHANNEL, createPluginSnapshotHost } = require('./pluginSnapshotHost.cjs');
@@ -1858,6 +1859,11 @@ function registerTauriHost(app, options = {}) {
   });
 
   const fileOperations = createFileOperationHost({ app, trashItem: filePath => require('electron').shell.trashItem(filePath) });
+  const conversationBranches = createConversationBranchHost({ appDataDir: abuAppDataDir(app) });
+  ipcMain.handle(CONVERSATION_BRANCH_CHANNEL, async (e, payload = {}) => {
+    assertTrustedMainIpcSender(e);
+    return conversationBranches(payload.action, payload.request);
+  });
   ipcMain.handle(FILE_OPERATION_CHANNEL, async (e, payload = {}) => {
     assertTrustedMainIpcSender(e);
     return fileOperations(e.sender, payload.action, payload.request);

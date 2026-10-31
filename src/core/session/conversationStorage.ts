@@ -22,6 +22,7 @@ import { findToolResultImageSnapshot, refreshOutputManifest } from './outputSnap
 import { APP_VERSION } from '@/utils/version';
 import { acceptConversationPermissionMode } from './conversationPermissionMode';
 import { lastUserMessageAt } from './conversationActivity';
+import { hasElectronCommandHost, invokeElectronConversationBranch } from '@/utils/electronHost';
 import { rendererConversationFs } from './conversationFsRenderer';
 import {
   createConversationWriter,
@@ -135,7 +136,10 @@ export function isMessageWrittenToDisk(id: string): boolean {
 // ════════════════════════════════════════════════════════════
 
 export async function loadIndex(): Promise<ConversationIndex> {
-  return writer.loadIndex();
+  const index = await writer.loadIndex();
+  if (!hasElectronCommandHost()) return index;
+  const pending = new Set(await invokeElectronConversationBranch<string[]>('pending'));
+  return { ...index, entries: Object.fromEntries(Object.entries(index.entries).filter(([id]) => !pending.has(id))) };
 }
 
 export function getIndexEntries(): Record<string, ConversationMeta> {
@@ -332,7 +336,7 @@ export async function catalogSearch(query: string, limit?: number): Promise<Sear
  * of only after the next startup reconcile. Fire-and-forget from the caller;
  * swallows all errors — reconcile on next launch repairs any missed reindex.
  */
-export async function catalogReindexConversation(convId: string): Promise<void> {
+export async function catalogReindexConversation(convId: string, options?: { strict: true }): Promise<void> {
   try {
     await writer.ensureReady();
     // Drain the pending message-append write queue FIRST (fix #3).
@@ -360,7 +364,8 @@ export async function catalogReindexConversation(convId: string): Promise<void> 
       convId,
       conversationsRoot: conversationsRoot(),
     });
-  } catch {
+  } catch (error) {
+    if (options?.strict) throw error;
     // Non-fatal: startup reconcile repairs the catalog/FTS row from JSONL.
   }
 }
@@ -458,6 +463,9 @@ export async function deleteConversationFiles(convId: string): Promise<void> {
  */
 export function buildMeta(conv: {
   id: string;
+  branchOrigin?: import('@/types').ConversationBranchOrigin;
+  branchInitialOpenPending?: true;
+  enabledMCPServers?: string[];
   title: string;
   createdAt: number;
   updatedAt: number;
@@ -480,6 +488,9 @@ export function buildMeta(conv: {
   const userMessageAt = lastUserMessageAt(conv.messages);
   return {
     id: conv.id,
+    ...(conv.branchOrigin ? { branchOrigin: conv.branchOrigin } : {}),
+    ...(conv.branchInitialOpenPending ? { branchInitialOpenPending: true as const } : {}),
+    ...(conv.enabledMCPServers ? { enabledMCPServers: [...conv.enabledMCPServers] } : {}),
     title: conv.title,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,

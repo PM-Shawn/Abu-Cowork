@@ -43,8 +43,7 @@ const {
 } = require('./runtimeResolver.cjs');
 const { runtimeState } = require('./runtimeObservability.cjs');
 
-// ── Seatbelt (SBPL) profile generation — line-for-line port of
-// src-tauri/src/sandbox.rs's generate_seatbelt_profile() ──
+// ── Seatbelt (SBPL) profile generation ──
 
 /**
  * Sensitive paths under $HOME that should never be readable.
@@ -76,11 +75,30 @@ function escapeSbplPath(p) {
   return p.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+function resolveTemporaryDirectory() {
+  const configured = os.tmpdir();
+  if (!path.isAbsolute(configured)) throw new Error('Temporary directory must be an absolute path');
+  const directory = fs.realpathSync.native(configured);
+  if (!fs.statSync(directory).isDirectory()) throw new Error('Temporary path must be a directory');
+  const home = fs.realpathSync.native(os.homedir());
+  const contains = (parent, candidate) => {
+    const relative = path.relative(parent, candidate);
+    return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+  };
+  const sensitive = SENSITIVE_READ_PATHS.flatMap(relative => {
+    const filename = path.join(home, relative);
+    return fs.existsSync(filename) ? [filename, fs.realpathSync.native(filename)] : [filename];
+  });
+  if (contains(directory, home) || sensitive.some(filename => contains(directory, filename) || contains(filename, directory))) {
+    throw new Error('Temporary directory overlaps a protected location');
+  }
+  return directory;
+}
+
 /**
  * Generate a Seatbelt Profile Language (SBPL) configuration string.
- * Whitelist model — `(deny default)` base with explicit allows. Port of
- * sandbox.rs's `generate_seatbelt_profile` — every line below corresponds to
- * the same-order `profile.push_str(...)` call in the Rust source.
+ * Uses a `(deny default)` base with explicit allowed paths, including the
+ * host's configured temporary directory after canonical path validation.
  *
  * @param {string | null | undefined} cwd
  * @param {string[]} extraWritablePaths
@@ -156,6 +174,7 @@ function generateSeatbeltProfile(cwd, extraWritablePaths, homeDir, networkProxyP
   profile += '(allow file-write* (subpath "/private/tmp"))\n';
   profile += '(allow file-write* (subpath "/dev"))\n';
   profile += '(allow file-write* (subpath "/private/var"))\n';
+  profile += `(allow file-write* (subpath "${escapeSbplPath(resolveTemporaryDirectory())}"))\n`;
 
   // CWD — the working directory is writable
   if (cwd) {

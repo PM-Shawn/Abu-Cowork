@@ -256,6 +256,20 @@ const enUS: TranslationDict = {
   },
 
   chat: {
+    branch: {
+      action: 'Branch into a new chat',
+      creating: 'Creating a new chat…',
+      incomplete: 'This turn is running. You can branch after it finishes or you stop it.',
+      title: '{title} · Branch',
+      source: 'Continue from chat',
+      sourceDeleted: 'The original chat was deleted',
+      sourceUnavailable: 'The original reply is unavailable',
+      sourceInaccessible: 'Cannot access the original chat. Check your access permissions.',
+      failed: 'Could not create a new chat',
+      saveFailed: 'Could not create the new chat. Please try again.',
+      selectionUnavailable: 'The selected reply is unavailable. Choose a reply again.',
+      historyUnavailable: 'Could not read the complete chat history up to the selected reply.',
+    },
     inputPlaceholder: 'What can Abu help you with?',
     inputPlaceholderBusy: 'Abu is working...',
     inputPlaceholderWithSkill: 'Enter parameters...',

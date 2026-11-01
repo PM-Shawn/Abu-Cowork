@@ -11,11 +11,13 @@ function createApplicationExitWait(app, onFailure, timeoutMs = 30000) {
     app.removeListener('will-quit', success);
   };
   const success = () => { if (active) { cleanup(); resolve(); } };
-  const fail = () => {
+  const fail = (error) => {
     if (!active) return;
     cleanup();
     onFailure();
-    reject(new Error('Application restart did not complete. Please try again.'));
+    reject(error instanceof Error ? error : new Error(error === undefined
+      ? 'Application restart did not complete. Please try again.'
+      : String(error)));
   };
   const timer = setTimeout(fail, timeoutMs);
   app.once('will-quit', success);

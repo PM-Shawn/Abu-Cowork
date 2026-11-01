@@ -285,6 +285,9 @@ export interface SettingsState {
   lastUpdateCheck: number;
   updateDownloadProgress: UpdateDownloadProgress | null;
   updateInstalling: boolean;
+  updateRestarting: boolean;
+  updateRestartError: string | null;
+  updateDownloadError: string | null;
   /** Whether this install's updater is unavailable (non-official package, or
    *  dev shell without a feed) — learned from the update check's disabled
    *  marker; `null` until a check has answered. Session-only.
@@ -562,6 +565,8 @@ interface SettingsActions {
   setLastUpdateCheck: (time: number) => void;
   setUpdateDownloadProgress: (progress: UpdateDownloadProgress | null) => void;
   setUpdateInstalling: (installing: boolean) => void;
+  setUpdateRestartState: (restarting: boolean, error: string | null) => void;
+  setUpdateDownloadError: (error: string | null) => void;
   setUpdaterUnsupported: (unsupported: boolean) => void;
   setUserNickname: (nickname: string) => void;
   setUserAvatar: (avatar: string) => void;
@@ -1328,6 +1333,9 @@ export const useSettingsStore = create<SettingsStore>()(
       lastUpdateCheck: 0,
       updateDownloadProgress: null,
       updateInstalling: false,
+      updateRestarting: false,
+      updateRestartError: null,
+      updateDownloadError: null,
       updaterUnsupported: null,
       userNickname: '',
       userAvatar: '',
@@ -1724,6 +1732,8 @@ export const useSettingsStore = create<SettingsStore>()(
       setLastUpdateCheck: (lastUpdateCheck) => set({ lastUpdateCheck }),
       setUpdateDownloadProgress: (updateDownloadProgress) => set({ updateDownloadProgress }),
       setUpdateInstalling: (updateInstalling) => set({ updateInstalling }),
+      setUpdateRestartState: (updateRestarting, updateRestartError) => set({ updateRestarting, updateRestartError }),
+      setUpdateDownloadError: (updateDownloadError) => set({ updateDownloadError }),
       setUpdaterUnsupported: (updaterUnsupported) => set({ updaterUnsupported }),
       setUserNickname: (userNickname) => set({ userNickname }),
       setUserAvatar: (userAvatar) => set({ userAvatar }),
@@ -3065,6 +3075,9 @@ export const useSettingsStore = create<SettingsStore>()(
         state.viewMode = 'chat';
         state.updateDownloadProgress = null;
         state.updateInstalling = false;
+        state.updateRestarting = false;
+        state.updateRestartError = null;
+        state.updateDownloadError = null;
         state.accountLoginOpen = false;
         rememberHydratedBrowserConfig(state);
         // Main owns the runtime gate. Restore it only from persisted user

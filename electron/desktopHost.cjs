@@ -457,17 +457,17 @@ function processRestart(app) {
 async function processRestartInternal(app) {
   const { prepareAppExit, cancelAppExitPreparation } = require('./tauriHost.cjs');
   const { createApplicationExitWait } = require('./applicationExitWait.cjs');
+  const startedAt = performance.now();
+  console.log('[restart] preparing application exit');
   await prepareAppExit(true);
-  // If a downloaded update is pending (updaterHost's download_and_install
-  // completed), restart must apply it: quitAndInstall replaces the app and
-  // relaunches. Plain relaunch would boot the OLD version — and note the
-  // app.exit() below never fires 'before-quit', so the autoInstallOnAppQuit
-  // safety net does NOT run on this path. quitAndInstallIfPending owns the
-  // quitting-guard marking + error fallback (see its JSDoc); it returns
-  // false when nothing is pending or the install attempt failed, in which
-  // case an honest plain relaunch of the current version is correct.
+  console.log(`[restart] exit prepared after ${Math.round(performance.now() - startedAt)}ms`);
   const exit = createApplicationExitWait(app, cancelAppExitPreparation);
-  if (quitAndInstallIfPending(exit.fail)) { await exit.wait; return null; }
+  const cleanup = quitAndInstallIfPending(exit.fail);
+  if (cleanup) {
+    try { await exit.wait; }
+    finally { cleanup(); }
+    return null;
+  }
   exit.cancel();
   app.relaunch();
   app.exit(0);

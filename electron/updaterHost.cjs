@@ -60,7 +60,8 @@
  */
 'use strict';
 
-const { app } = require('electron');
+const { app, autoUpdater: nativeUpdater } = require('electron');
+const { createMacUpdateReadiness } = require('./macUpdateReadiness.cjs');
 const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
 const { isOfficialBuild } = require('./releaseMetadata.cjs');
 
@@ -79,6 +80,8 @@ let disabledReason = null;
 let nextRid = 90001;
 /** Set once download_and_install completed; consumed by processRestart. */
 let pendingInstall = false;
+let macReadiness = null;
+let checkedVersion = null;
 
 function log(msg) {
   console.log(`[updaterHost] ${msg}`);
@@ -176,6 +179,7 @@ function getUpdater() {
   // automatically; nothing to do here.
 
   updater = autoUpdater;
+  if (process.platform === 'darwin') macReadiness = createMacUpdateReadiness(nativeUpdater);
   return updater;
 }
 
@@ -200,6 +204,7 @@ async function check() {
   const result = await au.checkForUpdates();
   if (!result || !result.isUpdateAvailable) return null;
   const info = result.updateInfo;
+  checkedVersion = info.version;
   return {
     rid: nextRid++,
     currentVersion: app.getVersion(),
@@ -253,13 +258,18 @@ async function downloadAndInstall(a, event) {
       },
     });
   };
+  const onDownloaded = () => send({ event: 'Finished' });
   au.on('download-progress', onProgress);
+  if (!macReadiness) au.once('update-downloaded', onDownloaded);
   try {
-    await au.downloadUpdate();
+    const startedAt = performance.now();
+    if (macReadiness) await macReadiness.download(au, checkedVersion, onDownloaded);
+    else await au.downloadUpdate();
+    log(`update ready after ${Math.round(performance.now() - startedAt)}ms`);
     pendingInstall = true;
-    send({ event: 'Finished' });
   } finally {
     au.removeListener('download-progress', onProgress);
+    au.removeListener('update-downloaded', onDownloaded);
   }
   return null;
 }
@@ -271,39 +281,24 @@ async function downloadAndInstall(a, event) {
  * fires, so without the mark the preventable-close handler would
  * preventDefault the close, emit 'close-requested' to the renderer, and the
  * install would silently never happen) and calls quitAndInstall. Returns
- * true when it took over (caller must NOT also relaunch), false when there
- * is nothing pending or quitAndInstall threw (caller falls back to a plain
- * relaunch into the current version).
- *
- * pendingInstall is deliberately NOT cleared on the happy path:
- * MacUpdater.quitAndInstall can return without quitting (native Squirrel
- * still fetching from the local proxy — it registers an update-downloaded
- * listener and installs when ready). If that fetch has failed instead, the
- * app keeps running; keeping the flag makes the Restart button retryable
- * rather than silently booting the old version on the second click.
+ * a cleanup function when it took over, or null when no update is pending.
+ * Installation errors reject the restart request and preserve the retry.
  */
 function quitAndInstallIfPending(onFailure) {
-  if (!pendingInstall || !updater) return false;
+  if (!pendingInstall || !updater) return null;
   // Lazy require: tauriHost requires this module at top level, so requiring
   // it back at load time WOULD be a genuine cycle; at call time it's settled.
-  const { markQuitting, cancelAppExitPreparation } = require('./tauriHost.cjs');
-  const restoreApplication = () => {
-    if (onFailure) onFailure();
-    else cancelAppExitPreparation();
-  };
-  updater.once('error', restoreApplication);
+  const { markQuitting } = require('./tauriHost.cjs');
+  const cleanup = () => updater.removeListener('error', onFailure);
+  updater.once('error', onFailure);
   try {
     markQuitting();
     updater.quitAndInstall();
-    return true;
+    return cleanup;
   } catch (err) {
-    updater.removeListener('error', restoreApplication);
-    cancelAppExitPreparation();
-    pendingInstall = false;
-    console.warn(
-      `[updaterHost] quitAndInstall failed — falling back to plain relaunch: ${err instanceof Error ? err.message : String(err)}`
-    );
-    return false;
+    cleanup();
+    onFailure(err);
+    return cleanup;
   }
 }
 

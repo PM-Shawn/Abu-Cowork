@@ -453,7 +453,7 @@ describe('IMChannelSection', () => {
     });
 
     it('offers a new scan once the WeChat login has expired, and stores what the scan returns', () => {
-      show(wechat({ status: 'error' }));
+      show(wechat({ status: 'auth_expired' }));
       ui.expand('WeChat bot');
       expect(screen.getByText('微信登录已过期，请重新扫码绑定')).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Finish scan' })).toBeNull();
@@ -465,6 +465,17 @@ describe('IMChannelSection', () => {
         appSecret: JSON.stringify(WECHAT_CREDENTIALS),
       });
       expect(screen.queryByRole('button', { name: 'Finish scan' })).toBeNull();
+    });
+
+    it.each([
+      '阿布的后台服务暂时不可用，请稍后再试。',
+      'Unable to connect to the service',
+    ])('shows the actual error without requesting a new binding: %s', (lastError) => {
+      show(wechat({ status: 'error', lastError }));
+      ui.expand('WeChat bot');
+      expect(screen.getByText(lastError)).toBeInTheDocument();
+      expect(screen.queryByText('微信登录已过期，请重新扫码绑定')).toBeNull();
+      expect(screen.queryByRole('button', { name: '重新扫码绑定' })).toBeNull();
     });
   });
 

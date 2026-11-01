@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { DownloadEvent } from '@tauri-apps/plugin-updater';
+import { relaunch } from '@tauri-apps/plugin-process';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 // Controllable UI locale (checker.ts picks notes by getLocale()).
@@ -18,6 +19,7 @@ vi.mock('@/i18n', async (importActual) => {
 // body" path is observable.
 const mockCheck = vi.fn();
 const mockDownloadAndInstall = vi.fn();
+const mockRestart = vi.mocked(relaunch);
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (cmd: string) => {
     if (cmd === 'plugin:updater|check') return mockCheck();
@@ -43,7 +45,9 @@ vi.mock('@tauri-apps/plugin-updater', () => ({
 // Silence the notice bus (irrelevant to notes-language behavior).
 vi.mock('@/core/notice/bus', () => ({ publish: vi.fn() }));
 
-import { checkForUpdate, downloadAndInstallUpdate, refreshUpdateNotes } from './checker';
+import { checkForUpdate, downloadAndInstallUpdate, refreshUpdateNotes, restartApp } from './checker';
+import { updateErrorMessage } from './errorMessage';
+import enUS from '@/i18n/locales/en-US';
 import { publish } from '@/core/notice/bus';
 
 function requireUpdateInfo(result: Awaited<ReturnType<typeof checkForUpdate>>) {
@@ -91,6 +95,9 @@ describe('checkForUpdate — locale-aware release notes', () => {
       updateChecking: false,
       updateDownloadProgress: null,
       updateInstalling: false,
+      updateRestarting: false,
+      updateRestartError: null,
+      updateDownloadError: null,
     });
     mockLocale = 'zh-CN';
   });
@@ -483,5 +490,45 @@ describe('downloadAndInstallUpdate — progress lifecycle', () => {
     await expect(downloadAndInstallUpdate()).rejects.toThrow('network failed');
     expect(useSettingsStore.getState().updateDownloadProgress).toBeNull();
     expect(useSettingsStore.getState().updateInstalling).toBe(false);
+    expect(useSettingsStore.getState().updateDownloadError).toBe('network failed');
+  });
+});
+
+describe('restartApp', () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ updateRestarting: false, updateRestartError: null });
+    mockRestart.mockReset();
+  });
+
+  afterEach(() => {
+    useSettingsStore.setState({ updateRestarting: false, updateRestartError: null });
+  });
+
+  it('shares immediate progress across callers and exposes failure for a retry', async () => {
+    let fail!: (error: Error) => void;
+    mockRestart.mockImplementationOnce(() => new Promise((_, reject) => { fail = reject; }));
+    const first = restartApp();
+    expect(useSettingsStore.getState().updateRestarting).toBe(true);
+    await restartApp();
+    expect(mockRestart).toHaveBeenCalledTimes(1);
+    const rejected = expect(first).rejects.toThrow('permission denied');
+    fail(new Error('permission denied'));
+    await rejected;
+    expect(useSettingsStore.getState().updateRestarting).toBe(false);
+    expect(useSettingsStore.getState().updateRestartError).toBe('permission denied');
+    mockRestart.mockResolvedValueOnce(undefined);
+    await restartApp();
+    expect(mockRestart).toHaveBeenCalledTimes(2);
+    expect(useSettingsStore.getState().updateRestarting).toBe(true);
+    expect(useSettingsStore.getState().updateRestartError).toBeNull();
+  });
+
+  it('presents actionable update failures and retains unknown installation errors', () => {
+    const messages = enUS.updates;
+    expect(updateErrorMessage('ABU_EXIT_CHILD_TIMEOUT: terminal 123', messages)).toBe(messages.exitTimeout);
+    expect(updateErrorMessage('ABU_UPDATE_PREPARATION_TIMEOUT', messages)).toBe(messages.preparationTimeout);
+    expect(updateErrorMessage('Application exit was cancelled', messages)).toBe(messages.restartCancelled);
+    expect(updateErrorMessage('Application restart did not complete', messages)).toBe(messages.restartTimeout);
+    expect(updateErrorMessage('permission denied', messages)).toBe('permission denied');
   });
 });

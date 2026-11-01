@@ -129,6 +129,15 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
       return;
     }
 
+    const messages = (body as { messages?: OpenAiRequestMessage[] } | null)?.messages;
+    if (messages?.some((message) => message.role === 'system'
+      && typeof message.content === 'string'
+      && message.content.includes('你是一个记忆提取助手'))) {
+      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' });
+      res.end(completeSse('[]'));
+      return;
+    }
+
     requests.push({
       authorization: req.headers.authorization,
       body,
@@ -303,6 +312,102 @@ test.describe.serial('Electron run_command approval E2E', () => {
       dataRoot = undefined;
     }
   });
+
+  for (const toolName of ['read_file', 'write_file', 'list_directory'] as const) {
+    test(`explains the symbolic link target after parent approval for ${toolName}`, async () => {
+      const temporaryRoot = path.join(process.cwd(), '.agent', 'temp');
+      fs.mkdirSync(temporaryRoot, { recursive: true });
+      const rootDir = fs.realpathSync(fs.mkdtempSync(path.join(temporaryRoot, 'link-approval-')));
+      dataRoot = {
+        rootDir,
+        userDataDir: path.join(rootDir, 'user-data'),
+        appDataDir: path.join(rootDir, 'app-data'),
+        sidecarCrashToken: randomUUID(),
+      };
+      const parent = path.join(dataRoot.appDataDir, 'Home', 'Documents');
+      const target = path.join(dataRoot.appDataDir, 'Home', 'Desktop', 'destination');
+      const runtimeTemp = path.join(rootDir, 'runtime-temp');
+      for (const directory of [parent, target, runtimeTemp]) fs.mkdirSync(directory, { recursive: true });
+      const linked = path.join(parent, 'linked');
+      fs.symlinkSync(target, linked, process.platform === 'win32' ? 'junction' : 'dir');
+      const file = path.join(target, 'private-report.txt');
+      const original = 'CONTENT_REQUIRES_SEPARATE_TARGET_APPROVAL';
+      fs.writeFileSync(file, original);
+      const lexicalPath = toolName === 'list_directory' ? linked
+        : path.join(linked, toolName === 'write_file' ? 'new-report.txt' : 'private-report.txt');
+      const actualPath = toolName === 'write_file'
+        ? path.join(fs.realpathSync(target), 'new-report.txt') : fs.realpathSync(lexicalPath);
+      const normalized = (value: string) => {
+        const slashes = value.replaceAll('\\', '/');
+        return process.platform === 'win32' ? slashes.toLowerCase() : slashes;
+      };
+      const input = toolName === 'write_file'
+        ? { path: lexicalPath, content: 'APPROVED_TARGET_UPDATE' }
+        : { path: lexicalPath };
+      mock = await startOpenAiMock([
+        { kind: 'tool-call', arguments: input, toolCallId: 'call-link-parent', toolName },
+        { kind: 'complete', responseText: 'Parent approval checked.' },
+        { kind: 'tool-call', arguments: input, toolCallId: 'call-link-target', toolName },
+        { kind: 'complete', responseText: 'Target approval checked.' },
+      ]);
+      const launched = await launchAbuElectron(dataRoot, { temporaryDirectory: runtimeTemp });
+      app = launched.app;
+      const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+      await waitForApp(page);
+      await configureLocalMockProvider(page, mock.baseUrl, LOCAL_MOCK_PROVIDER_OPTIONS);
+
+      const comparison = await page.evaluate(async (candidate) => {
+        const bridge = (window as unknown as {
+          __ABU_SHELL__: { inspectPathNameComparison(path: string): Promise<{
+            canonical: { path: string; components: Array<{ directoryIdentity: string | null }> };
+          }> };
+        }).__ABU_SHELL__;
+        return bridge.inspectPathNameComparison(candidate);
+      }, lexicalPath);
+      expect(normalized(comparison.canonical.path)).toBe(normalized(actualPath));
+      expect(comparison.canonical.components.every((component) => component.directoryIdentity !== null)).toBe(true);
+
+      await page.getByPlaceholder(CHAT_PLACEHOLDER).fill('Check the linked report.');
+      await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+      const approval = page.getByRole('alertdialog');
+      await expect(approval.getByText(normalized(parent), { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+      await pressWhenSettled(approval.getByRole('button', { name: '允许本次会话', exact: true }));
+      await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(2);
+      expectNamedToolResult(mock.requests[1].body, toolName, normalized(actualPath));
+      expectNamedToolResult(mock.requests[1].body, toolName, '符号链接');
+      expectNamedToolResult(mock.requests[1].body, toolName, '单独授权');
+      expect(JSON.stringify(mock.requests[1].body)).not.toContain(original);
+      expect(fs.readFileSync(file, 'utf8')).toBe(original);
+      if (toolName === 'write_file') expect(fs.existsSync(actualPath)).toBe(false);
+      await expect(page.getByText('Parent approval checked.', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+      await expect(approval).toBeHidden();
+      await page.getByRole('button', { name: /^(读取了文件|修改了文件|创建了文件|调用了工具)$/ }).click();
+      const detailLabel = toolName === 'read_file' ? '读取 private-report.txt'
+        : toolName === 'list_directory' ? '列出 linked' : '错误';
+      await page.getByRole('button', { name: detailLabel, exact: true }).click();
+      const explanation = page.locator('pre').filter({ hasText: '单独授权' });
+      await expect(explanation).toBeVisible();
+      await expect(explanation).toContainText(normalized(actualPath));
+
+      await page.getByPlaceholder(CHAT_PLACEHOLDER).fill('Request access to the target.');
+      await page.getByPlaceholder(CHAT_PLACEHOLDER).press('Enter');
+      await expect(approval.getByText(normalized(actualPath), { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+      await pressWhenSettled(approval.getByRole('button', { name: '允许本次会话', exact: true }));
+      await expect.poll(() => mock!.requests.length, { timeout: READY_TIMEOUT }).toBe(4);
+      const messages = (mock.requests[3].body as { messages: OpenAiRequestMessage[] }).messages;
+      const call = messages.filter((message) => message.role === 'assistant')
+        .flatMap((message) => message.tool_calls ?? []).findLast((candidate) => candidate.function?.name === toolName);
+      expect(call).toBeDefined();
+      const result = messages.find((message) => message.role === 'tool' && message.tool_call_id === call?.id);
+      expect(result).toBeDefined();
+      expect(String(result?.content)).not.toContain('Error:');
+      if (toolName === 'read_file') expect(String(result?.content)).toContain(original);
+      if (toolName === 'list_directory') expect(String(result?.content)).toContain('private-report.txt');
+      expect(fs.readFileSync(file, 'utf8')).toBe(original);
+      if (toolName === 'write_file') expect(fs.readFileSync(actualPath, 'utf8')).toBe('APPROVED_TARGET_UPDATE');
+      await expect(page.getByText('Target approval checked.', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    });
+  }
 
   test('confirms an approval-required command, executes it, and continues with the tool result', async () => {
     const response = `abu-e2e-approved-command-complete-${randomUUID()}`;

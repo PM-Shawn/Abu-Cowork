@@ -4193,6 +4193,7 @@ export interface TranslationDict {
   toolErrors: {
     userDeniedAccess: string;
     pathAccessDenied: string;
+    symlinkTargetNeedsAuthorization: string;
     needsAuthorization: string;
     scopedRunNoWorkspaceCommand: string;
   };

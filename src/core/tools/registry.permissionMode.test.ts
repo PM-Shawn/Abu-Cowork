@@ -7,7 +7,7 @@ import { tempDir } from '@tauri-apps/api/path';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
 import { setPlatformForTest } from '../../test/helpers';
 import { TOOL_NAMES } from './toolNames';
-import { getI18n } from '../../i18n';
+import { getI18n, getLocale, initLanguage } from '../../i18n';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useTeamStore } from '../../stores/teamStore';
@@ -122,6 +122,61 @@ describe('compaction file permissions', () => {
     expect(decision.decision).toBe('deny');
     expect(permission).not.toHaveBeenCalled();
   });
+});
+
+describe('symbolic link authorization reasons', () => {
+  const parent = '/Users/testuser/Documents';
+  const targetRoot = '/Users/testuser/Desktop/link-destination';
+  const previousLocale = getLocale();
+
+  beforeEach(() => {
+    registerBuiltinTools();
+    useChatStore.setState({ conversations: {}, conversationIndex: {}, activeConversationId: null });
+    setMigratedBrowserSettings({ permissionMode: 'standard' });
+    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => (
+      candidate.replace(`${parent}/linked`, targetRoot)
+    ));
+  });
+
+  afterEach(() => {
+    revokeWorkspace(parent);
+    revokeWorkspace(targetRoot);
+    vi.mocked(canonicalizeElectronPathForPolicy).mockReset().mockResolvedValue(null);
+    initLanguage(previousLocale);
+  });
+
+  for (const locale of ['en-US', 'zh-CN'] as const) {
+    it.each([
+      { tool: TOOL_NAMES.READ_FILE, suffix: '/report.txt', capability: 'read' as const },
+      { tool: TOOL_NAMES.WRITE_FILE, suffix: '/report.txt', capability: 'write' as const },
+      { tool: TOOL_NAMES.LIST_DIRECTORY, suffix: '', capability: 'read' as const },
+    ])(`explains the unapproved target after parent approval for $tool (${locale})`, async ({ tool, suffix, capability }) => {
+      initLanguage(locale);
+      const input = { path: `${parent}/linked${suffix}`, content: 'updated' };
+      const requested: string[] = [];
+      const capabilities = capability === 'write' ? ['read', 'write'] as const : ['read'] as const;
+      const decision = await checkToolApproval(tool, input, undefined, undefined, async (request) => {
+        requested.push(request.path);
+        authorizeWorkspace(request.path, [...capabilities]);
+        return true;
+      });
+
+      expect(requested).toEqual([parent]);
+      expect(decision.decision).toBe('deny');
+      expect(decision.reason).toContain(`${targetRoot}${suffix}`);
+      expect(decision.reason).toContain(locale === 'zh-CN' ? '符号链接' : 'symbolic link');
+      expect(decision.reason).toContain(locale === 'zh-CN' ? '单独授权' : 'separate authorization');
+
+      const allowed = await checkToolApproval(tool, input, undefined, undefined, async (request) => {
+        requested.push(request.path);
+        expect(request.capability).toBe(capability);
+        authorizeWorkspace(targetRoot, [...capabilities]);
+        return true;
+      });
+      expect(requested).toEqual([parent, `${targetRoot}${suffix}`]);
+      expect(allowed.decision).toBe('allow');
+    });
+  }
 });
 
 // ── write_file overwrite-safety read-precheck must not dead-end on $TMPDIR ──

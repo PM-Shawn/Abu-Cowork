@@ -3380,6 +3380,7 @@ const enUS: TranslationDict = {
   toolErrors: {
     userDeniedAccess: 'User denied access to',
     pathAccessDenied: 'Path access denied',
+    symlinkTargetNeedsAuthorization: 'This path resolves through a symbolic link to {path}. This target is outside the authorized paths and requires separate authorization.',
     needsAuthorization: 'User authorization required to access',
     scopedRunNoWorkspaceCommand: 'Error: this unattended run has no write-authorized working directory, so no writing command can run. Choose Full Autonomy, configure a workspace path for this task, or pass an absolute `cwd` inside an authorized directory.',
   },

@@ -4,6 +4,7 @@
  */
 
 import { appDataDir, homeDir, tempDir } from '@tauri-apps/api/path';
+import { format, getI18n } from '@/i18n';
 import { createConversationPaths } from '../session/conversationPaths';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
@@ -1041,6 +1042,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
       allowed: false,
       needsPermission: true,
       permissionPath: resolved.canonicalPath,
+      reason: format(getI18n().toolErrors.symlinkTargetNeedsAuthorization, { path: resolved.canonicalPath }),
       capability: 'read',
     };
   }
@@ -1175,6 +1177,7 @@ export async function checkWritePath(
       allowed: false,
       needsPermission: true,
       permissionPath: resolved.canonicalPath,
+      reason: format(getI18n().toolErrors.symlinkTargetNeedsAuthorization, { path: resolved.canonicalPath }),
       capability: 'write',
     };
   }
@@ -1268,6 +1271,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
       allowed: false,
       needsPermission: true,
       permissionPath: resolved.canonicalPath,
+      reason: format(getI18n().toolErrors.symlinkTargetNeedsAuthorization, { path: resolved.canonicalPath }),
       // 列目录时被列的文件夹本身就是授权单位
       permissionIsFolder: true,
       capability: 'read',

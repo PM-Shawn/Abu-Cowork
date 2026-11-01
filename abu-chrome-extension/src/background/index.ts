@@ -11,6 +11,7 @@
 import type { BridgeRequest, BridgeResponse, FrameTree, JsDialogAction } from '../shared/types.js';
 import { MAIN_FRAME_REF } from '../shared/types.js';
 import { CONTENT_SCRIPT_ACTIONS } from './contentActions.js';
+import { createClaimLifecycle } from './claimLifecycle.js';
 import { noCaptureAreaRefusal } from '../shared/captureArea.js';
 import {
   createDownloadTracker,
@@ -150,6 +151,7 @@ chrome.windows.onFocusChanged.addListener((windowId) => {
 // Requests carry `ownerId`/`runId`; `tabClaims` turns those into per-task tab
 // ownership, mirroring `electron/browserHost.cjs` (see tabClaims.ts).
 const tabClaims = createTabClaimStore();
+const claimLifecycle = createClaimLifecycle(tabClaims);
 
 const tabResolution: TabResolutionDeps = {
   tabExists: async (tabId) => {
@@ -332,7 +334,8 @@ function setupSocketHandlers(socket: WebSocket): void {
         return;
       }
       const request = parsed as BridgeRequest;
-      const response = await handleRequest(request);
+      const finish = claimLifecycle.beginRequest(ownerFromPayload(request.payload));
+      const response = await handleRequest(request).finally(finish);
       logOp(request.action, response.success);
       socket.send(JSON.stringify(response));
     } catch (err) {
@@ -352,11 +355,7 @@ function setupSocketHandlers(socket: WebSocket): void {
     console.log(`[abu-ext] Disconnected (code: ${event.code})`);
     state.connected = false;
     ws = null;
-    // Claims only mean something for the bridge connection that minted their
-    // owner ids: on close that bridge rejects every pending request of its own
-    // (`wsServer.ts`'s `ws.on('close')`), so holding their tabs would only
-    // refuse whoever reconnects next.
-    tabClaims.releaseAll();
+    claimLifecycle.releaseAll();
     scheduleReconnect();
   };
 
@@ -369,19 +368,17 @@ function setupSocketHandlers(socket: WebSocket): void {
  * Bridge → extension control messages. They carry a `type` instead of an
  * `action`, and there is no request id to answer.
  *
- * `release` drops the tab claims a finished run holds. `cancel` is now
- * recognised rather than parsed as a request and answered with
- * `Unknown action: undefined` — actually stopping in-flight content-script work
- * is a separate, already-scheduled item on the browser batch's remaining-work
- * list ("have the extension channel abort in-flight work on cancel") and is
- * deliberately not attempted here.
+ * Release waits for accepted work. Conversation deletion also seals admission.
+ * Cancel records caller cancellation; page work retains its claims until it
+ * completes.
  */
 function handleControlMessage(inbound: Exclude<BridgeInbound, { kind: 'request' }>): void {
   if (inbound.kind === 'release') {
-    const dropped = tabClaims.releaseOwner(inbound.ownerId, inbound.runId);
-    if (dropped > 0) {
-      console.log(`[abu-ext] Released ${dropped} tab claim(s) for ${inbound.ownerId}`);
-    }
+    claimLifecycle.releaseOwner(inbound.ownerId, inbound.runId);
+    return;
+  }
+  if (inbound.kind === 'conversation-deleted') {
+    claimLifecycle.deleteConversation(inbound.ownerId);
     return;
   }
   if (inbound.kind === 'cancel') {
@@ -1094,30 +1091,35 @@ async function sendToContentScript(
 
   const doSend = (frameId: number, actionName = action, body = payload): Promise<unknown> =>
     new Promise((resolve, reject) => {
+      // A caller timeout ends its wait. The actual callback ends page work.
+      const finish = claimLifecycle.beginTabOperation(tabId);
       const timer = setTimeout(() => {
         reject(new Error(`Content script did not respond within ${CONTENT_SCRIPT_TIMEOUT / 1000}s (action: ${actionName})`));
       }, CONTENT_SCRIPT_TIMEOUT);
 
-      chrome.tabs.sendMessage(
-        tabId,
-        // `__abuFrameId` tells that copy of the runtime which frame it is, so
-        // the refs it mints carry the handle a later call can route on. It is
-        // stamped HERE, in the worker: the model's payload cannot name it (the
-        // bridge builds payloads field by field from the tool schema) and a
-        // page cannot see it (isolated world).
-        { action: actionName, payload: { ...body, __abuFrameId: hostFrameStamp(frameId) } },
-        { frameId },
-        (response) => {
-          clearTimeout(timer);
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else if (response && response.error) {
-            reject(new Error(response.error));
-          } else {
-            resolve(response?.data ?? response);
-          }
-        },
-      );
+      try {
+        chrome.tabs.sendMessage(
+          tabId,
+          // The worker stamps the frame identity in the isolated world.
+          { action: actionName, payload: { ...body, __abuFrameId: hostFrameStamp(frameId) } },
+          { frameId },
+          (response) => {
+            clearTimeout(timer);
+            finish();
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else if (response && response.error) {
+              reject(new Error(response.error));
+            } else {
+              resolve(response?.data ?? response);
+            }
+          },
+        );
+      } catch (error) {
+        clearTimeout(timer);
+        finish();
+        throw error;
+      }
     });
 
   const send = async (frameId: number): Promise<unknown> => {

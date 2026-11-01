@@ -15,6 +15,7 @@ import { createServer, type Server as HTTPServer } from 'http';
 import { randomBytes } from 'crypto';
 import type {
   BridgeCancelMessage,
+  BridgeConversationDeletedMessage,
   BridgeReleaseMessage,
   BridgeRequest,
   BridgeResponse,
@@ -38,6 +39,7 @@ let extensionSocket: WebSocket | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let pongReceived = true;
 const pendingRequests = new Map<string, PendingRequest>();
+const deletedConversations = new Set<string>();
 let requestCounter = 0;
 let activePort: number | null = null;
 
@@ -263,14 +265,24 @@ function handleResponse(msg: BridgeResponse): void {
  */
 export function releaseExtensionTabs(ownerId: unknown, runId?: unknown): void {
   if (typeof ownerId !== 'string' || ownerId.length === 0) return;
-  if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) return;
   const release: BridgeReleaseMessage = {
     type: 'release',
     ownerId,
     ...(typeof runId === 'string' && runId.length > 0 ? { runId } : {}),
   };
+  sendLifecycleMessage(release);
+}
+
+export function deleteExtensionConversation(ownerId: unknown): void {
+  if (typeof ownerId !== 'string' || !ownerId.trim()) return;
+  deletedConversations.add(ownerId);
+  sendLifecycleMessage({ type: 'conversation-deleted', ownerId });
+}
+
+function sendLifecycleMessage(message: BridgeReleaseMessage | BridgeConversationDeletedMessage): void {
+  if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) return;
   try {
-    extensionSocket.send(JSON.stringify(release));
+    extensionSocket.send(JSON.stringify(message));
   } catch (err) {
     console.error('[abu-bridge] Failed to send release to extension:', err);
   }
@@ -293,6 +305,10 @@ export function sendToExtension(
   signal?: AbortSignal
 ): Promise<BridgeResponse> {
   return new Promise((resolve, reject) => {
+    if (typeof payload.ownerId === 'string' && deletedConversations.has(payload.ownerId)) {
+      reject(new Error('Browser conversation was deleted'));
+      return;
+    }
     if (!extensionSocket || extensionSocket.readyState !== WebSocket.OPEN) {
       reject(new Error(
         'Chrome Extension is not connected. Please install and enable the Abu Browser Extension, then check the connection status in the extension popup.'

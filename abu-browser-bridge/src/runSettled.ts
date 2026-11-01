@@ -1,6 +1,5 @@
 /**
- * The Abu client → bridge "a run settled" notification, and the only caller of
- * `releaseExtensionTabs`.
+ * The Abu client → bridge run-settled and conversation-deleted notifications.
  *
  * A run ending used to reach this bridge through no signal at all. The one
  * event it saw was a per-REQUEST abort, and the MCP SDK raises that for its own
@@ -18,9 +17,10 @@
  */
 import {
   ABU_RUN_SETTLED_NOTIFICATION,
+  ABU_CONVERSATION_DELETED_NOTIFICATION,
   type RunSettledNotificationParams,
 } from './types.js';
-import { releaseExtensionTabs } from './wsServer.js';
+import { deleteExtensionConversation, releaseExtensionTabs } from './wsServer.js';
 
 /**
  * Run key a settlement notification means when it carries no usable `runId`.
@@ -74,6 +74,10 @@ export function registerRunSettledHandler(
 ): void {
   const previous = target.fallbackNotificationHandler;
   target.fallbackNotificationHandler = async (notification) => {
+    if (notification.method === ABU_CONVERSATION_DELETED_NOTIFICATION) {
+      deleteExtensionConversation(notification.params?.ownerId);
+      return;
+    }
     if (notification.method !== ABU_RUN_SETTLED_NOTIFICATION) {
       await previous?.(notification);
       return;

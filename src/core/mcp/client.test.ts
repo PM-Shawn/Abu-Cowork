@@ -423,4 +423,45 @@ describe('browser bridge run-settled notification', () => {
 
     expect(mockNotification).not.toHaveBeenCalled();
   });
+
+  it('deletion names the whole conversation and seals future calls from every run', async () => {
+    await manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1' });
+    await manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1', agentRunId: 'child' });
+    manager.notifyBrowserBridgeConversationDeleted('conv-1');
+    expect(settledParams()).toEqual([{
+      method: 'notifications/abu/conversationDeleted', params: { ownerId: 'conv-1' },
+    }]);
+    for (const agentRunId of [undefined, 'child', 'late-child']) {
+      await expect(manager.callTool('abu-browser-bridge', 'click', {}, {
+        conversationId: 'conv-1', agentRunId,
+      })).rejects.toThrow('deleted');
+    }
+    expect(mockCallTool).toHaveBeenCalledTimes(2);
+    manager.notifyBrowserBridgeRunSettled('conv-1');
+    manager.notifyBrowserBridgeRunSettled('conv-1', 'child');
+    manager.notifyBrowserBridgeRunSettled('conv-1', 'late-child');
+    expect(settledParams().slice(1)).toEqual([
+      { method: 'notifications/abu/runSettled', params: { ownerId: 'conv-1', runId: 'main' } },
+      { method: 'notifications/abu/runSettled', params: { ownerId: 'conv-1', runId: 'child' } },
+    ]);
+    await expect(manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'restored' })).resolves.toBe('ok');
+  });
+
+  it('deletion during the dispatch callback prevents the tool from reaching the SDK', async () => {
+    await expect(manager.callTool('abu-browser-bridge', 'click', {}, {
+      conversationId: 'conv-1',
+      beforeDispatch: () => manager.notifyBrowserBridgeConversationDeleted('conv-1'),
+    })).rejects.toThrow('deleted');
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
+  it('deletion seals a conversation even while the bridge is disconnected', async () => {
+    await manager.disconnectServer('abu-browser-bridge');
+    manager.notifyBrowserBridgeConversationDeleted('conv-1');
+    manager.notifyBrowserBridgeConversationDeleted('');
+    setFakeServer('abu-browser-bridge');
+    await expect(manager.callTool('abu-browser-bridge', 'click', {}, { conversationId: 'conv-1' })).rejects.toThrow('deleted');
+    expect(mockNotification).not.toHaveBeenCalled();
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
 });

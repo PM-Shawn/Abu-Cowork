@@ -221,7 +221,7 @@
     "@vitest/coverage-v8": "^4.1.10",
     "cross-env": "^10.1.0",
     "culori": "^4.0.2",
-    "electron": "^43.1.1",
+    "electron": "^43.8.1",
     "electron-builder": "^26.15.3",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",

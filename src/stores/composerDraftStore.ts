@@ -15,6 +15,9 @@ import { persist } from 'zustand/middleware';
 import type { ImageAttachment } from '@/types';
 import type { ChatReference } from '@/types/chatReference';
 import type { EnterpriseMode } from '@/core/enterprise/types';
+import { useImageEditStore } from './imageEditStore';
+import { useToastStore } from './toastStore';
+import { getI18n } from '@/i18n';
 
 const WELCOME_COMPOSER_DRAFT_SEGMENT = 'welcome';
 const LEGACY_WELCOME_COMPOSER_DRAFT_KEY = WELCOME_COMPOSER_DRAFT_SEGMENT;
@@ -430,11 +433,17 @@ export function clearConversationComposerDraft(
   }
   for (const key of keys) {
     discardedDraftKeys.add(key);
+    void useImageEditStore.getState().clear(key).then(undefined, error => {
+      useToastStore.getState().addToast({ type: 'error', title: getI18n().media.editUnavailable, message: String(error) });
+    });
     clearComposerDraft(key);
   }
 }
 
 export function clearSessionComposerDrafts(): void {
+  void useImageEditStore.getState().clear().then(undefined, error => {
+    useToastStore.getState().addToast({ type: 'error', title: getI18n().media.editUnavailable, message: String(error) });
+  });
   for (const draft of sessionDrafts.values()) {
     disposeComposerDraftResources(draft);
   }

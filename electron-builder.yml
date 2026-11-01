@@ -94,6 +94,12 @@ files:
   # mediaSignature.cjs (delegated-media magic-byte validation) inflates PNG
   # scanlines via fflate in the packaged main process; zero transitive deps.
   - "node_modules/fflate/**/*"
+  - "node_modules/range-parser/**/*"
+  - "node_modules/sharp/**/*"
+  - "node_modules/@img/**/*"
+  - "node_modules/detect-libc/**/*"
+  - "node_modules/@emnapi/runtime/**/*"
+  - "node_modules/tslib/**/*"
   # httpHost.cjs sends local model server requests through undici's own fetch
   # and Agent (no header / body timeout) in the packaged main process; no
   # runtime dependencies.
@@ -103,6 +109,8 @@ files:
 # a binary in place, so unpack it to app.asar.unpacked/.
 asarUnpack:
   - "**/node_modules/node-pty/**"
+  - "**/node_modules/sharp/**"
+  - "**/node_modules/@img/**"
 
 # Files that must live on the real filesystem (outside asar): the sidecar bundle
 # (spawned as a child via Electron-as-Node), builtin skills/agents, the browser

@@ -2,6 +2,7 @@ use crate::error::HelperError;
 use crate::file_operation_platform::{self as platform, Access};
 use serde_json::{json, Value};
 use image::{ImageDecoder, ImageEncoder};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -11,6 +12,7 @@ use std::time::UNIX_EPOCH;
 
 const MAX_TARGETS: usize = 10_000;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_MEDIA_CHUNK_BYTES: u64 = 1024 * 1024;
 const MAX_STREAM_WRITE_BYTES: u64 = 200 * 1024 * 1024;
 const MAX_SESSIONS: usize = 128;
 const MAX_IMAGE_WORK_BYTES: u64 = 256 * 1024 * 1024;
@@ -273,6 +275,32 @@ fn inspect_components(target: &Target, cancelled: &AtomicBool, root: PathBuf, mu
 
 struct Observation { target: Target, resolved: Resolved, canonical_anchors: Vec<Anchor>, comparison: Value, parent_ref: Option<String> }
 impl Observation {
+    fn media_info(&self, cancelled: &AtomicBool) -> Result<Value, HelperError> {
+        if self.target.purpose != "read" || !self.resolved.is_file
+            || (self.resolved.is_symlink && !self.target.follow) { return Err(refused()); }
+        self.validate(cancelled)?;
+        let file = self.resolved.file.as_ref().ok_or_else(refused)?;
+        let metadata = file.metadata().map_err(io_error)?;
+        let modified = metadata.modified().map_err(io_error)?.duration_since(UNIX_EPOCH).map_err(|_| refused())?;
+        Ok(json!({ "size": metadata.len(), "modifiedNs": modified.as_nanos().to_string() }))
+    }
+    fn read_media_range(&self, params: &Value, cancelled: &AtomicBool) -> Result<Value, HelperError> {
+        let expected_size = params.get("expectedSize").and_then(Value::as_u64).ok_or_else(refused)?;
+        let expected_modified = text(params, "expectedModifiedNs")?;
+        let offset = params.get("offset").and_then(Value::as_u64).ok_or_else(refused)?;
+        let length = params.get("length").and_then(Value::as_u64).filter(|length| *length > 0 && *length <= MAX_MEDIA_CHUNK_BYTES).ok_or_else(refused)?;
+        let end = offset.checked_add(length).filter(|end| *end <= expected_size).ok_or_else(refused)?;
+        let expected = json!({ "size": expected_size, "modifiedNs": expected_modified });
+        if self.media_info(cancelled)? != expected { return Err(refused()); }
+        let mut reader = self.resolved.file.as_ref().ok_or_else(refused)?.try_clone().map_err(io_error)?;
+        reader.seek(SeekFrom::Start(offset)).map_err(io_error)?;
+        let mut bytes = vec![0u8; (end - offset) as usize];
+        check(cancelled)?;
+        reader.read_exact(&mut bytes).map_err(io_error)?;
+        check(cancelled)?;
+        if self.media_info(cancelled)? != expected { return Err(refused()); }
+        Ok(json!({ "base64": STANDARD.encode(bytes) }))
+    }
     fn read_bytes(&self, cancelled: &AtomicBool) -> Result<Vec<u8>, HelperError> {
         if self.target.purpose != "read" || !self.resolved.is_file
             || (self.resolved.is_symlink && !self.target.follow) { return Err(refused()); }
@@ -877,6 +905,8 @@ impl Session {
                 let bytes = observation.read_bytes(&self.cancelled)?;
                 Ok(json!({ "bytes": bytes }))
             }
+            "media-info" => observation.media_info(&self.cancelled),
+            "read-media-range" => observation.read_media_range(params, &self.cancelled),
             "enumerate" => {
                 if !["list", "traverse", "delete"].contains(&observation.target.purpose.as_str())
                     || !observation.resolved.is_dir

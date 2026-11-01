@@ -80,16 +80,16 @@ function resolveTemporaryDirectory() {
   if (!path.isAbsolute(configured)) throw new Error('Temporary directory must be an absolute path');
   const directory = fs.realpathSync.native(configured);
   if (!fs.statSync(directory).isDirectory()) throw new Error('Temporary path must be a directory');
-  const home = fs.realpathSync.native(os.homedir());
+  const homeDirectory = fs.realpathSync.native(os.homedir());
   const contains = (parent, candidate) => {
     const relative = path.relative(parent, candidate);
     return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
   };
   const sensitive = SENSITIVE_READ_PATHS.flatMap(relative => {
-    const filename = path.join(home, relative);
+    const filename = path.join(homeDirectory, relative);
     return fs.existsSync(filename) ? [filename, fs.realpathSync.native(filename)] : [filename];
   });
-  if (contains(directory, home) || sensitive.some(filename => contains(directory, filename) || contains(filename, directory))) {
+  if (contains(directory, homeDirectory) || sensitive.some(filename => contains(directory, filename) || contains(filename, directory))) {
     throw new Error('Temporary directory overlaps a protected location');
   }
   return directory;

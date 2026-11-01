@@ -120,8 +120,8 @@ const PREFETCH_RULES: ReadonlyArray<{
     tools: [TOOL_NAMES.MANAGE_FILE_WATCH],
   },
   {
-    keywords: ['图片', '图像', '照片', '画', '生成图', 'image', 'dall'],
-    tools: [TOOL_NAMES.GENERATE_IMAGE, TOOL_NAMES.PROCESS_IMAGE],
+    keywords: ['图片', '图像', '照片', '画', '生成图', '宽高比', 'image', 'dall', 'aspect ratio'],
+    tools: [TOOL_NAMES.GENERATE_IMAGE, TOOL_NAMES.EDIT_IMAGE, TOOL_NAMES.PROCESS_IMAGE],
   },
   {
     keywords: ['缩放', '裁剪', '压缩图', '转换格式', 'resize', 'crop'],
@@ -206,6 +206,7 @@ export interface PrefetchContext {
   turnCount: number;
   /** The conversation carries a goal (any phase) — keep manage_goal loaded. */
   hasGoal?: boolean;
+  hasImageEdit?: boolean;
 }
 
 /**
@@ -218,6 +219,7 @@ export interface PrefetchContext {
 export function prefetchTools(ctx: PrefetchContext): string[] {
   const additionalTools: string[] = [];
   const lower = ctx.userInput.toLowerCase();
+  if (ctx.hasImageEdit) additionalTools.push(TOOL_NAMES.EDIT_IMAGE);
 
   // Keyword matching
   for (const rule of PREFETCH_RULES) {

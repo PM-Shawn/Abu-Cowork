@@ -27,6 +27,7 @@ import { manageScheduledTaskTool, manageTriggerTool, manageFileWatchTool } from 
 
 // --- Media tools ---
 import { generateImageTool } from './definitions/mediaTools';
+import { editImageTool } from './definitions/editImageTool';
 import { processImageTool } from './definitions/processImageTool';
 
 // --- Widget tools (inline visualization) ---
@@ -97,6 +98,7 @@ export function registerBuiltinTools(): void {
   toolRegistry.register(reportPlanTool);
   toolRegistry.register(manageGoalTool);
   toolRegistry.register(generateImageTool);
+  toolRegistry.register(editImageTool);
   toolRegistry.register(processImageTool);
   toolRegistry.register(showWidgetTool);
   toolRegistry.register(readMeTool);

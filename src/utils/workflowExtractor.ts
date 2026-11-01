@@ -6,17 +6,14 @@ import { presentedFileNames, getToolLabel as getLocalizedToolLabel, type ToolLab
 import { format } from '@/i18n';
 import zhCN from '@/i18n/locales/zh-CN';
 import enUS from '@/i18n/locales/en-US';
+import { isToolResultError, mediaToolAnnouncedPath } from '@/core/media/presentedFileRecords';
+export { isToolResultError, mediaToolAnnouncedPath } from '@/core/media/presentedFileRecords';
 
 /**
  * Check if a tool result indicates a real tool execution error.
  * Matches results starting with "Error:" or "Error " (e.g. "Error reading file:") —
  * NOT incidental "error" mentions in content (e.g. "Console: 11 errors" from Playwright).
  */
-export function isToolResultError(result: string): boolean {
-  const trimmed = result.trimStart();
-  return trimmed.startsWith('Error:') || trimmed.startsWith('Error ');
-}
-
 function isToolCallError(tc: ToolCall): boolean {
   if (
     (tc.name === TOOL_NAMES.DELEGATE_TO_AGENT || tc.name === TOOL_NAMES.RUN_AGENT_BATCH) &&
@@ -670,19 +667,6 @@ export function extractFilePathsFromText(text: string): string[] {
  * Output path of a finished generate_image / process_image call, read from
  * its result text; process_image falls back to `input.output_path`.
  */
-export function mediaToolAnnouncedPath(tc: ToolCall): string | null {
-  if (!tc.result) return null;
-  if (tc.name === TOOL_NAMES.GENERATE_IMAGE) {
-    const match = tc.result.match(/(?:图片已保存到|Image saved to): (.+?)(?:\n|$)/);
-    return match ? match[1].trim() : null;
-  }
-  if (tc.name === TOOL_NAMES.PROCESS_IMAGE) {
-    const match = tc.result.match(/(?:Image processed successfully|图片处理成功): (.+?)(?:\n|$)/);
-    return match ? match[1].trim() : null;
-  }
-  return null;
-}
-
 export function mediaToolOutputPath(tc: ToolCall): string | null {
   if (!tc.result) return null;
   const announced = mediaToolAnnouncedPath(tc);

@@ -85,7 +85,7 @@ Important: prefer a dedicated tool when one is available:
 - HTTP requests → http_fetch
 - Edit a file → edit_file
 
-This tool is suitable for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (automatically uses the built-in runtime). Set background=true for long-running services.`;
+This tool is suitable for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (automatically uses the built-in runtime). For long-running commands, including finite jobs such as rendering, set background=true when permitted and use background_command_output to check completion and the exit result. Use tool_search to find that tool if needed. Background commands are unavailable in scoped unattended runs. Foreground commands are terminated on timeout.`;
   },
   descriptionByFamily: {
     get gpt() {
@@ -101,7 +101,7 @@ Prefer a dedicated tool when one is offered:
 - HTTP requests → http_fetch
 - Edit or create a file → apply_patch when it is offered, otherwise edit_file / write_file. Never write a file with cat, echo, printf, heredocs, shell redirection or a Python script.
 
-Use it for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (the built-in runtime is used automatically). Set background=true for long-running services. Quote arguments carefully: backticks and $() in the command still execute.`;
+Use it for: moving/copying/renaming files (mv/cp), package management (npm/pip/brew), build and test (npm run/cargo build), Git operations, running Python scripts (the built-in runtime is used automatically). For long-running commands, including finite jobs such as rendering, set background=true when permitted and use background_command_output to check completion and the exit result. Use tool_search to find that tool if needed. Background commands are unavailable in scoped unattended runs. Foreground commands are terminated on timeout. Quote arguments carefully: backticks and $() in the command still execute.`;
     },
   },
   inputSchema: {
@@ -109,7 +109,7 @@ Use it for: moving/copying/renaming files (mv/cp), package management (npm/pip/b
     properties: {
       command: { type: 'string', description: 'The shell command to execute' },
       cwd: { type: 'string', description: 'Working directory for the command (optional, defaults to user home)' },
-      background: { type: 'boolean', description: 'Set to true for long-running services (servers, etc). Will start the process and return initial output after a few seconds.' },
+      background: { type: 'boolean', description: 'Set to true for long-running commands, including services and finite jobs such as rendering. Returns initial output after a few seconds; use background_command_output to check completion and the exit result. Unavailable in scoped unattended runs.' },
       timeout: { type: 'number', description: 'Timeout in seconds (default 30, max 300). Command will be killed if it exceeds this.' },
     },
     required: ['command'],

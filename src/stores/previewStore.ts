@@ -5,6 +5,7 @@ import { useBatchProgressStore } from './batchProgressStore';
 import { closeBrowserViews, type BrowserCloseReason } from '@/core/browser/browserViewLifecycle';
 import { makeBatchKey, type BatchIdentity } from '@/types';
 import type { VersionOrigin } from '@/utils/canvasVersions';
+import type { MediaFileRef } from '@/types/media';
 import { normalizeSeparators } from '@/utils/pathUtils';
 import {
   buildBrowserSignalContext,
@@ -85,7 +86,7 @@ export type WorkspaceTab = (
   // again is a new request.
   // `keptCopyOf` is set when `filePath` is the copy Abu kept of a file that is no longer at
   // its own path, and names that path; the preview of such a tab is read-only.
-  | { id: string; kind: 'preview'; filePath: string; line?: number; lineRequest?: number; keptCopyOf?: string }
+  | { id: string; kind: 'preview'; filePath: string; line?: number; lineRequest?: number; keptCopyOf?: string; mediaRef?: MediaFileRef }
   // Agent views carry main's ownerKey; user-created tabs inherit the current conversation.
   | { id: string; kind: 'browser'; url: string }
   | { id: string; kind: 'terminal' }
@@ -260,6 +261,9 @@ interface PreviewState {
   // `options.keptCopyOf` says that `filePath` is the kept copy of the file that was at
   // that path; the tab keeps it for as long as it is open.
   openPreview: (filePath: string, options?: { line?: number; focusTab?: boolean; keptCopyOf?: string }) => void;
+  selectImageVersion: (tabId: string, fileRef: MediaFileRef) => void;
+  retainImageSource: (conversationId: string, filePath: string, fileRef: MediaFileRef) => void;
+  releaseImageSources: (captureIds: string[]) => void;
   // Open (or activate an existing) browser tab for `url` (default ''). Main
   // may supply an id when adopting an agent-created Electron browser view, plus
   // the conversation that view belongs to (omitted for the legacy shared pool).
@@ -485,6 +489,25 @@ export const usePreviewStore = create<PreviewState>((set, get) => {
     ];
     commitTabs(nextTabs, id, focus(id));
     expandRightPanel();
+  },
+
+  selectImageVersion: (tabId, fileRef) => {
+    const { tabs, activeTabId, currentConversationId } = get();
+    const tab = tabs.find(item => item.id === tabId && item.kind === 'preview');
+    if (!tab || !isTabVisibleFor(tab, currentConversationId)) throw new Error('Image preview is unavailable');
+    commitTabs(tabs.map(item => item.id === tabId ? { ...item, filePath: fileRef.originalPath, mediaRef: fileRef } : item), activeTabId);
+  },
+
+  retainImageSource: (conversationId, filePath, fileRef) => {
+    const { tabs, activeTabId } = get();
+    commitTabs(tabs.map(tab => tab.kind === 'preview' && isTabVisibleFor(tab, conversationId) && tab.filePath === filePath
+      && (!tab.mediaRef?.captureId || tab.mediaRef.captureId === fileRef.captureId) ? { ...tab, mediaRef: fileRef } : tab), activeTabId);
+  },
+
+  releaseImageSources: (captureIds) => {
+    const { tabs, activeTabId } = get();
+    commitTabs(tabs.map(tab => tab.kind === 'preview' && tab.mediaRef?.captureId && captureIds.includes(tab.mediaRef.captureId)
+      ? { ...tab, mediaRef: undefined } : tab), activeTabId);
   },
 
   openBrowser: (url = '', requestedId, ownerConversationId, sourceViewId) => {

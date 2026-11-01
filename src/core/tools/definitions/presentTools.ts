@@ -11,50 +11,10 @@ import {
 } from '../pathSafety';
 import { resolveExpectedFile } from '../../team/expectedFiles';
 import { normalizeLexicalPath } from '../../../utils/pathUtils';
+import { parsePresentedFilesInput, PRESENTED_RESULT_PREFIX } from '../../media/presentedFileRecords';
+export { parsePresentedFilesInput, parsePresentedResult, PRESENTED_RESULT_PREFIX, type PresentedFileInput } from '../../media/presentedFileRecords';
 
 export const MAX_PRESENTED_FILES = 8;
-
-export interface PresentedFileInput {
-  path: string;
-  description?: string;
-}
-
-/** Model input → entries with a non-blank string path; description kept only when non-empty. */
-export function parsePresentedFilesInput(raw: unknown): PresentedFileInput[] {
-  if (!Array.isArray(raw)) return [];
-  const files: PresentedFileInput[] = [];
-  for (const entry of raw) {
-    if (typeof entry !== 'object' || entry === null) continue;
-    const { path, description } = entry as Record<string, unknown>;
-    if (typeof path !== 'string') continue;
-    const trimmed = path.trim();
-    if (!trimmed) continue;
-    files.push(
-      typeof description === 'string' && description !== ''
-        ? { path: trimmed, description }
-        : { path: trimmed },
-    );
-  }
-  return files;
-}
-
-/**
- * A successful call answers with one line per file, `Presented <absolute path>`,
- * in the order of its input. The text is the same in every interface language,
- * because the chat reads the presented paths back from it.
- */
-export const PRESENTED_RESULT_PREFIX = 'Presented ';
-
-/** The paths a result lists when each of its non-empty lines is a presented line; otherwise null. */
-export function parsePresentedResult(result: string): string[] | null {
-  const paths: string[] = [];
-  for (const line of result.split('\n')) {
-    if (line.trim() === '') continue;
-    if (!line.startsWith(PRESENTED_RESULT_PREFIX)) return null;
-    paths.push(line.slice(PRESENTED_RESULT_PREFIX.length));
-  }
-  return paths;
-}
 
 type RejectionReason = 'needsAbsolutePath' | 'notAuthorized' | 'notFound' | 'notAFile';
 

@@ -153,6 +153,7 @@ export async function checkForUpdate(
 ): Promise<UpdateCheckResult> {
   const store = useSettingsStore.getState();
   const { silent = false } = opts;
+  if (store.updateDownloadProgress || store.updateInstalling || store.updateRestarting) return { kind: 'throttled' };
 
   if (!force) {
     const elapsed = Date.now() - store.lastUpdateCheck;
@@ -258,6 +259,9 @@ export async function downloadAndInstallUpdate(): Promise<void> {
   if (!_pendingUpdate) throw new Error('No pending update');
 
   const store = useSettingsStore.getState();
+  if (store.updateDownloadProgress || store.updateRestarting) return;
+  store.setUpdateDownloadError(null);
+  store.setUpdateRestartState(false, null);
 
   // Give immediate feedback before the updater opens the connection or emits
   // its first byte event. Slow DNS/proxy/TLS setup must not look like a dead
@@ -315,10 +319,19 @@ export async function downloadAndInstallUpdate(): Promise<void> {
   } catch (err) {
     store.setUpdateDownloadProgress(null);
     store.setUpdateInstalling(false);
+    store.setUpdateDownloadError(err instanceof Error ? err.message : String(err));
     throw err;
   }
 }
 
 export async function restartApp(): Promise<void> {
-  await relaunch();
+  const store = useSettingsStore.getState();
+  if (store.updateRestarting) return;
+  store.setUpdateRestartState(true, null);
+  try {
+    await relaunch();
+  } catch (error) {
+    store.setUpdateRestartState(false, error instanceof Error ? error.message : String(error));
+    throw error;
+  }
 }

@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render as renderBare, screen, cleanup, waitFor } from '@testing-library/react';
+import { render as renderBare, screen, cleanup } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import AboutSection from './AboutSection';
@@ -42,6 +42,8 @@ vi.mock('@/i18n', () => ({
         downloading: '正在下载更新...',
         verifying: '正在验证更新...',
         restartToInstall: '重启以完成更新',
+        preparingRestart: '正在准备重启…',
+        restartFailed: '重启失败',
         downloadUpdate: '下载更新',
         downloadFailed: '下载更新失败',
         retry: '重试',
@@ -72,6 +74,9 @@ function resetUpdateState(updaterUnsupported: boolean | null) {
     updateChecking: false,
     updateDownloadProgress: null,
     updateInstalling: false,
+    updateRestarting: false,
+    updateRestartError: null,
+    updateDownloadError: null,
     updaterUnsupported,
     // The page lives in the settings window; it downloads and restarts only while that window is open.
     systemSettingsOpen: true,
@@ -309,21 +314,38 @@ describe('AboutSection — version, device and the update card', () => {
     expect(screen.getByRole('progressbar', { name: '正在验证更新...' })).not.toHaveAttribute('aria-valuenow');
   });
 
-  it('says the download failed and tries again on request', async () => {
+  it('presents a shared download failure with its reason and a retry', async () => {
     const user = userEvent.setup();
-    vi.mocked(downloadAndInstallUpdate).mockRejectedValueOnce(new Error('made-up network failure'));
-    useSettingsStore.setState({ updateInfo: RELEASE });
+    useSettingsStore.setState({ updateInfo: RELEASE, updateDownloadError: 'network unavailable' });
     render(<AboutSection />);
 
-    await user.click(screen.getByRole('button', { name: '下载更新' }));
-
     expect(await screen.findByText('下载更新失败')).toBeInTheDocument();
+    expect(screen.getByText('network unavailable')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: '下载更新' })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: '重试' }));
 
-    expect(downloadAndInstallUpdate).toHaveBeenCalledTimes(2);
-    await waitFor(() => expect(screen.queryByText('下载更新失败')).not.toBeInTheDocument());
+    expect(downloadAndInstallUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps restart progress visible and prevents another press', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({ updateInfo: RELEASE, updateInstalling: true, updateRestarting: true });
+    render(<AboutSection />);
+    const restart = screen.getByRole('button', { name: '正在准备重启…' });
+    expect(restart).toHaveAttribute('aria-disabled', 'true');
+    await user.click(restart);
+    expect(restartApp).not.toHaveBeenCalled();
+  });
+
+  it('presents a shared restart error and lets the user retry', async () => {
+    const user = userEvent.setup();
+    useSettingsStore.setState({ updateInfo: RELEASE, updateInstalling: true, updateRestartError: 'permission denied' });
+    render(<AboutSection />);
+    expect(screen.getByText('重启失败')).toBeInTheDocument();
+    expect(screen.getByText('permission denied')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '重试' }));
+    expect(restartApp).toHaveBeenCalledTimes(1);
   });
 
   it('restarts to finish an update that is ready', async () => {

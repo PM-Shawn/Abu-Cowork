@@ -93,6 +93,11 @@ vi.mock('@tauri-apps/plugin-os', () => ({
   version: vi.fn().mockResolvedValue('14.0'),
 }));
 
+vi.mock('@tauri-apps/plugin-process', () => ({
+  relaunch: vi.fn().mockResolvedValue(undefined),
+  exit: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock('@tauri-apps/plugin-shell', () => ({
   Command: {
     sidecar: vi.fn(),

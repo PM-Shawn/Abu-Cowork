@@ -3920,6 +3920,12 @@ export interface TranslationDict {
     verifying: string;
     installing: string;
     restartToInstall: string;
+    preparingRestart: string;
+    restartFailed: string;
+    restartCancelled: string;
+    restartTimeout: string;
+    exitTimeout: string;
+    preparationTimeout: string;
     downloadFailed: string;
     retry: string;
     viewOnGitHub: string;

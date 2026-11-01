@@ -32,6 +32,288 @@
     "upload_file"
   ]);
 
+  // src/background/tabClaims.ts
+  var LEGACY_CONVERSATION = "legacy";
+  var MAIN_RUN_KEY = "main";
+  var OWNER_KEY_SEPARATOR = String.fromCharCode(0);
+  var LEGACY_OWNER = Object.freeze({
+    conversationId: LEGACY_CONVERSATION,
+    runKey: MAIN_RUN_KEY,
+    key: `${LEGACY_CONVERSATION}${OWNER_KEY_SEPARATOR}${MAIN_RUN_KEY}`
+  });
+  function sanitizeOwnerPart(value) {
+    return typeof value === "string" ? value.split(OWNER_KEY_SEPARATOR).join("").trim() : "";
+  }
+  function makeOwner(conversationId, runKey) {
+    const conversation = sanitizeOwnerPart(conversationId);
+    if (!conversation || conversation === LEGACY_CONVERSATION) return LEGACY_OWNER;
+    const run = sanitizeOwnerPart(runKey) || MAIN_RUN_KEY;
+    return Object.freeze({
+      conversationId: conversation,
+      runKey: run,
+      key: `${conversation}${OWNER_KEY_SEPARATOR}${run}`
+    });
+  }
+  function isLegacyOwner(owner) {
+    return owner.conversationId === LEGACY_CONVERSATION;
+  }
+  function ownerFromPayload(payload2) {
+    return makeOwner(payload2.ownerId, payload2.runId);
+  }
+  function createTabClaimStore() {
+    const claims = /* @__PURE__ */ new Map();
+    const currentTabByOwner = /* @__PURE__ */ new Map();
+    function inScope(owner, conversationId, runKey) {
+      if (owner.conversationId !== conversationId) return false;
+      return runKey === void 0 || owner.runKey === runKey;
+    }
+    return {
+      holderOf(tabId2) {
+        return claims.get(tabId2)?.owner ?? null;
+      },
+      currentTabOf(owner) {
+        return currentTabByOwner.get(owner.key) ?? null;
+      },
+      claim(tabId2, owner, claimedAt) {
+        if (isLegacyOwner(owner)) return;
+        if (!claims.has(tabId2)) claims.set(tabId2, { tabId: tabId2, owner, claimedAt });
+      },
+      touch(tabId2, owner) {
+        if (isLegacyOwner(owner)) return;
+        currentTabByOwner.set(owner.key, tabId2);
+      },
+      releaseTab(tabId2) {
+        claims.delete(tabId2);
+        for (const [ownerKey, current] of currentTabByOwner) {
+          if (current === tabId2) currentTabByOwner.delete(ownerKey);
+        }
+      },
+      releaseOwner(conversationId, runKey) {
+        let dropped = 0;
+        for (const [tabId2, record] of claims) {
+          if (inScope(record.owner, conversationId, runKey)) {
+            claims.delete(tabId2);
+            dropped += 1;
+          }
+        }
+        for (const ownerKey of Array.from(currentTabByOwner.keys())) {
+          if (inScope(parseOwnerKey(ownerKey), conversationId, runKey)) {
+            currentTabByOwner.delete(ownerKey);
+          }
+        }
+        return dropped;
+      },
+      releaseAll() {
+        claims.clear();
+        currentTabByOwner.clear();
+      },
+      entries() {
+        return Array.from(claims.values());
+      }
+    };
+  }
+  function parseOwnerKey(key) {
+    const at = key.indexOf(OWNER_KEY_SEPARATOR);
+    if (at < 0) return makeOwner(key, MAIN_RUN_KEY);
+    return makeOwner(key.slice(0, at), key.slice(at + 1));
+  }
+  var LEGACY_LAST_ACTIVE_ACTIONS = /* @__PURE__ */ new Set([
+    "snapshot",
+    "get_html",
+    "click",
+    "fill",
+    "select",
+    "wait_for",
+    "extract_text",
+    "extract_table",
+    "scroll",
+    "keyboard",
+    "start_recording",
+    "stop_recording"
+  ]);
+  var OWNER_CURRENT_TAB_ACTIONS = /* @__PURE__ */ new Set(["get_html"]);
+  var TAB_TARGETED_ACTIONS = /* @__PURE__ */ new Set([
+    "screenshot",
+    "screenshot_full_page",
+    "navigate",
+    "execute_js",
+    "snapshot",
+    "get_html",
+    "click",
+    "fill",
+    "select",
+    "find",
+    "wait_for",
+    "extract_text",
+    "extract_table",
+    "scroll",
+    "keyboard",
+    "get_dialog",
+    "handle_dialog",
+    "start_recording",
+    "stop_recording",
+    // T5/T6 — both name a tab, so both must resolve an owner-scoped target
+    // before they run. `download`'s isolation depends on it twice over: the tab
+    // it clicks in AND the task the resulting file is filed under.
+    "upload_file",
+    "download"
+  ]);
+  var NO_ACTIVE_TAB_MESSAGE = "No active browser tab is available. Call get_tabs and pass tabId.";
+  function staleTabMessage(tabId2) {
+    return `Browser tab ${tabId2} is no longer open \u2014 it was closed, or the id is not a live tab. Call get_tabs to see the tabs you have now.`;
+  }
+  function crossConversationMessage(tabId2, holder) {
+    return `Browser tab ${tabId2} belongs to another conversation's task (${holder.conversationId}). Call get_tabs to see the tabs you have now, and act on one this task already uses.`;
+  }
+  var NO_CLAIMED_TAB_MESSAGE = "This task has not acted on any browser tab yet, so there is no tab to fall back on. Call get_tabs and pass an explicit tabId.";
+  function missingTabIdMessage(action2) {
+    return `Missing tabId for browser action "${action2}". Call get_tabs and pass the target tabId.`;
+  }
+  function explicitTabId(payload2) {
+    const raw = payload2.tabId;
+    if (raw === void 0 || raw === null || raw === "") return void 0;
+    const numeric = Number(raw);
+    return Number.isInteger(numeric) ? numeric : void 0;
+  }
+  async function resolveTargetTab(store, action2, payload2, deps) {
+    const owner = ownerFromPayload(payload2);
+    const explicit = explicitTabId(payload2);
+    if (isLegacyOwner(owner)) {
+      if (explicit !== void 0) return explicit;
+      if (!LEGACY_LAST_ACTIVE_ACTIONS.has(action2)) throw new Error(missingTabIdMessage(action2));
+      const fallback = deps.lastActiveTabId();
+      if (fallback === null) throw new Error(NO_ACTIVE_TAB_MESSAGE);
+      return fallback;
+    }
+    if (explicit !== void 0) {
+      if (!await deps.tabExists(explicit)) {
+        store.releaseTab(explicit);
+        throw new Error(staleTabMessage(explicit));
+      }
+      const holder = store.holderOf(explicit);
+      if (!holder) {
+        store.claim(explicit, owner, deps.now());
+      } else if (holder.key !== owner.key) {
+        if (holder.conversationId !== owner.conversationId) {
+          throw new Error(crossConversationMessage(explicit, holder));
+        }
+        deps.log?.(
+          `cross-run tab access: run ${owner.runKey} acting on tab ${explicit} owned by run ${holder.runKey} of the same conversation (explicit tabId hand-over)`
+        );
+      }
+      store.touch(explicit, owner);
+      return explicit;
+    }
+    if (!OWNER_CURRENT_TAB_ACTIONS.has(action2)) throw new Error(missingTabIdMessage(action2));
+    const current = store.currentTabOf(owner);
+    if (current === null) throw new Error(NO_CLAIMED_TAB_MESSAGE);
+    if (!await deps.tabExists(current)) {
+      store.releaseTab(current);
+      throw new Error(staleTabMessage(current));
+    }
+    return current;
+  }
+  var NO_OWNERSHIP = /* @__PURE__ */ new Map();
+  function tabListingFor(store, owner, liveTabIds, legacyCurrentTab) {
+    if (isLegacyOwner(owner)) {
+      return { currentTabId: legacyCurrentTab(), ownership: NO_OWNERSHIP };
+    }
+    const live = new Set(liveTabIds);
+    const ownership = /* @__PURE__ */ new Map();
+    for (const tabId2 of live) {
+      const holder = store.holderOf(tabId2);
+      if (!holder) continue;
+      ownership.set(tabId2, holder.key === owner.key ? "you" : "other");
+    }
+    const current = store.currentTabOf(owner);
+    return {
+      currentTabId: current !== null && live.has(current) ? current : null,
+      ownership
+    };
+  }
+  function classifyInbound(raw) {
+    const message = raw ?? {};
+    if (typeof message.type !== "string") return { kind: "request" };
+    if (message.type === "cancel") {
+      return { kind: "cancel", requestId: String(message.requestId ?? "") };
+    }
+    if (message.type === "conversation-deleted" && typeof message.ownerId === "string" && message.ownerId.trim()) {
+      return { kind: "conversation-deleted", ownerId: message.ownerId };
+    }
+    if (message.type === "release" && typeof message.ownerId === "string") {
+      return {
+        kind: "release",
+        ownerId: message.ownerId,
+        runId: typeof message.runId === "string" ? message.runId : void 0
+      };
+    }
+    return { kind: "unknown", type: message.type };
+  }
+
+  // src/background/claimLifecycle.ts
+  function createClaimLifecycle(claims) {
+    const deleted = /* @__PURE__ */ new Set();
+    const requests = /* @__PURE__ */ new Set();
+    const tabOperations = /* @__PURE__ */ new Map();
+    const releases = /* @__PURE__ */ new Map();
+    let disconnecting = false;
+    function flush() {
+      if (disconnecting && requests.size === 0 && tabOperations.size === 0) {
+        claims.releaseAll();
+        releases.clear();
+        disconnecting = false;
+        return;
+      }
+      for (const [key, scope] of releases) {
+        if ([...requests].some((owner) => owner.conversationId === scope.conversationId)) continue;
+        if (claims.entries().some(({ tabId: tabId2, owner }) => owner.conversationId === scope.conversationId && (scope.runKey === void 0 || owner.runKey === scope.runKey) && tabOperations.has(tabId2))) continue;
+        claims.releaseOwner(scope.conversationId, scope.runKey);
+        releases.delete(key);
+      }
+    }
+    function releaseOwner(conversationId, runKey) {
+      const owner = makeOwner(conversationId, runKey);
+      const scope = { conversationId: owner.conversationId, runKey };
+      releases.set(JSON.stringify([scope.conversationId, runKey]), scope);
+      flush();
+    }
+    return {
+      beginRequest(owner) {
+        if (deleted.has(owner.conversationId)) throw new Error("Browser conversation was deleted");
+        if (disconnecting) throw new Error("Previous browser connection still has active operations. Retry after they finish.");
+        releases.delete(JSON.stringify([owner.conversationId, owner.runKey]));
+        const entry = { ...owner };
+        requests.add(entry);
+        return () => {
+          requests.delete(entry);
+          flush();
+        };
+      },
+      beginTabOperation(tabId2) {
+        tabOperations.set(tabId2, (tabOperations.get(tabId2) ?? 0) + 1);
+        let finished = false;
+        return () => {
+          if (finished) return;
+          finished = true;
+          const remaining = (tabOperations.get(tabId2) ?? 1) - 1;
+          if (remaining === 0) tabOperations.delete(tabId2);
+          else tabOperations.set(tabId2, remaining);
+          flush();
+        };
+      },
+      releaseOwner,
+      deleteConversation(conversationId) {
+        const owner = makeOwner(conversationId);
+        deleted.add(owner.conversationId);
+        releaseOwner(owner.conversationId);
+      },
+      releaseAll() {
+        disconnecting = true;
+        flush();
+      }
+    };
+  }
+
   // src/shared/captureArea.ts
   function noCaptureAreaRefusal(scrollHeight, viewportHeight) {
     const measured = (value) => Number.isFinite(value) && value > 0;
@@ -533,221 +815,6 @@
     }
   }
 
-  // src/background/tabClaims.ts
-  var LEGACY_CONVERSATION = "legacy";
-  var MAIN_RUN_KEY = "main";
-  var OWNER_KEY_SEPARATOR = String.fromCharCode(0);
-  var LEGACY_OWNER = Object.freeze({
-    conversationId: LEGACY_CONVERSATION,
-    runKey: MAIN_RUN_KEY,
-    key: `${LEGACY_CONVERSATION}${OWNER_KEY_SEPARATOR}${MAIN_RUN_KEY}`
-  });
-  function sanitizeOwnerPart(value) {
-    return typeof value === "string" ? value.split(OWNER_KEY_SEPARATOR).join("").trim() : "";
-  }
-  function makeOwner(conversationId, runKey) {
-    const conversation = sanitizeOwnerPart(conversationId);
-    if (!conversation || conversation === LEGACY_CONVERSATION) return LEGACY_OWNER;
-    const run = sanitizeOwnerPart(runKey) || MAIN_RUN_KEY;
-    return Object.freeze({
-      conversationId: conversation,
-      runKey: run,
-      key: `${conversation}${OWNER_KEY_SEPARATOR}${run}`
-    });
-  }
-  function isLegacyOwner(owner) {
-    return owner.conversationId === LEGACY_CONVERSATION;
-  }
-  function ownerFromPayload(payload2) {
-    return makeOwner(payload2.ownerId, payload2.runId);
-  }
-  function createTabClaimStore() {
-    const claims = /* @__PURE__ */ new Map();
-    const currentTabByOwner = /* @__PURE__ */ new Map();
-    function inScope(owner, conversationId, runKey) {
-      if (owner.conversationId !== conversationId) return false;
-      return runKey === void 0 || owner.runKey === runKey;
-    }
-    return {
-      holderOf(tabId2) {
-        return claims.get(tabId2)?.owner ?? null;
-      },
-      currentTabOf(owner) {
-        return currentTabByOwner.get(owner.key) ?? null;
-      },
-      claim(tabId2, owner, claimedAt) {
-        if (isLegacyOwner(owner)) return;
-        if (!claims.has(tabId2)) claims.set(tabId2, { tabId: tabId2, owner, claimedAt });
-      },
-      touch(tabId2, owner) {
-        if (isLegacyOwner(owner)) return;
-        currentTabByOwner.set(owner.key, tabId2);
-      },
-      releaseTab(tabId2) {
-        claims.delete(tabId2);
-        for (const [ownerKey, current] of currentTabByOwner) {
-          if (current === tabId2) currentTabByOwner.delete(ownerKey);
-        }
-      },
-      releaseOwner(conversationId, runKey) {
-        let dropped = 0;
-        for (const [tabId2, record] of claims) {
-          if (inScope(record.owner, conversationId, runKey)) {
-            claims.delete(tabId2);
-            dropped += 1;
-          }
-        }
-        for (const ownerKey of Array.from(currentTabByOwner.keys())) {
-          if (inScope(parseOwnerKey(ownerKey), conversationId, runKey)) {
-            currentTabByOwner.delete(ownerKey);
-          }
-        }
-        return dropped;
-      },
-      releaseAll() {
-        claims.clear();
-        currentTabByOwner.clear();
-      },
-      entries() {
-        return Array.from(claims.values());
-      }
-    };
-  }
-  function parseOwnerKey(key) {
-    const at = key.indexOf(OWNER_KEY_SEPARATOR);
-    if (at < 0) return makeOwner(key, MAIN_RUN_KEY);
-    return makeOwner(key.slice(0, at), key.slice(at + 1));
-  }
-  var LEGACY_LAST_ACTIVE_ACTIONS = /* @__PURE__ */ new Set([
-    "snapshot",
-    "get_html",
-    "click",
-    "fill",
-    "select",
-    "wait_for",
-    "extract_text",
-    "extract_table",
-    "scroll",
-    "keyboard",
-    "start_recording",
-    "stop_recording"
-  ]);
-  var OWNER_CURRENT_TAB_ACTIONS = /* @__PURE__ */ new Set(["get_html"]);
-  var TAB_TARGETED_ACTIONS = /* @__PURE__ */ new Set([
-    "screenshot",
-    "screenshot_full_page",
-    "navigate",
-    "execute_js",
-    "snapshot",
-    "get_html",
-    "click",
-    "fill",
-    "select",
-    "find",
-    "wait_for",
-    "extract_text",
-    "extract_table",
-    "scroll",
-    "keyboard",
-    "get_dialog",
-    "handle_dialog",
-    "start_recording",
-    "stop_recording",
-    // T5/T6 — both name a tab, so both must resolve an owner-scoped target
-    // before they run. `download`'s isolation depends on it twice over: the tab
-    // it clicks in AND the task the resulting file is filed under.
-    "upload_file",
-    "download"
-  ]);
-  var NO_ACTIVE_TAB_MESSAGE = "No active browser tab is available. Call get_tabs and pass tabId.";
-  function staleTabMessage(tabId2) {
-    return `Browser tab ${tabId2} is no longer open \u2014 it was closed, or the id is not a live tab. Call get_tabs to see the tabs you have now.`;
-  }
-  function crossConversationMessage(tabId2, holder) {
-    return `Browser tab ${tabId2} belongs to another conversation's task (${holder.conversationId}). Call get_tabs to see the tabs you have now, and act on one this task already uses.`;
-  }
-  var NO_CLAIMED_TAB_MESSAGE = "This task has not acted on any browser tab yet, so there is no tab to fall back on. Call get_tabs and pass an explicit tabId.";
-  function missingTabIdMessage(action2) {
-    return `Missing tabId for browser action "${action2}". Call get_tabs and pass the target tabId.`;
-  }
-  function explicitTabId(payload2) {
-    const raw = payload2.tabId;
-    if (raw === void 0 || raw === null || raw === "") return void 0;
-    const numeric = Number(raw);
-    return Number.isInteger(numeric) ? numeric : void 0;
-  }
-  async function resolveTargetTab(store, action2, payload2, deps) {
-    const owner = ownerFromPayload(payload2);
-    const explicit = explicitTabId(payload2);
-    if (isLegacyOwner(owner)) {
-      if (explicit !== void 0) return explicit;
-      if (!LEGACY_LAST_ACTIVE_ACTIONS.has(action2)) throw new Error(missingTabIdMessage(action2));
-      const fallback = deps.lastActiveTabId();
-      if (fallback === null) throw new Error(NO_ACTIVE_TAB_MESSAGE);
-      return fallback;
-    }
-    if (explicit !== void 0) {
-      if (!await deps.tabExists(explicit)) {
-        store.releaseTab(explicit);
-        throw new Error(staleTabMessage(explicit));
-      }
-      const holder = store.holderOf(explicit);
-      if (!holder) {
-        store.claim(explicit, owner, deps.now());
-      } else if (holder.key !== owner.key) {
-        if (holder.conversationId !== owner.conversationId) {
-          throw new Error(crossConversationMessage(explicit, holder));
-        }
-        deps.log?.(
-          `cross-run tab access: run ${owner.runKey} acting on tab ${explicit} owned by run ${holder.runKey} of the same conversation (explicit tabId hand-over)`
-        );
-      }
-      store.touch(explicit, owner);
-      return explicit;
-    }
-    if (!OWNER_CURRENT_TAB_ACTIONS.has(action2)) throw new Error(missingTabIdMessage(action2));
-    const current = store.currentTabOf(owner);
-    if (current === null) throw new Error(NO_CLAIMED_TAB_MESSAGE);
-    if (!await deps.tabExists(current)) {
-      store.releaseTab(current);
-      throw new Error(staleTabMessage(current));
-    }
-    return current;
-  }
-  var NO_OWNERSHIP = /* @__PURE__ */ new Map();
-  function tabListingFor(store, owner, liveTabIds, legacyCurrentTab) {
-    if (isLegacyOwner(owner)) {
-      return { currentTabId: legacyCurrentTab(), ownership: NO_OWNERSHIP };
-    }
-    const live = new Set(liveTabIds);
-    const ownership = /* @__PURE__ */ new Map();
-    for (const tabId2 of live) {
-      const holder = store.holderOf(tabId2);
-      if (!holder) continue;
-      ownership.set(tabId2, holder.key === owner.key ? "you" : "other");
-    }
-    const current = store.currentTabOf(owner);
-    return {
-      currentTabId: current !== null && live.has(current) ? current : null,
-      ownership
-    };
-  }
-  function classifyInbound(raw) {
-    const message = raw ?? {};
-    if (typeof message.type !== "string") return { kind: "request" };
-    if (message.type === "cancel") {
-      return { kind: "cancel", requestId: String(message.requestId ?? "") };
-    }
-    if (message.type === "release" && typeof message.ownerId === "string") {
-      return {
-        kind: "release",
-        ownerId: message.ownerId,
-        runId: typeof message.runId === "string" ? message.runId : void 0
-      };
-    }
-    return { kind: "unknown", type: message.type };
-  }
-
   // src/background/index.ts
   function clampDownloadWait(value) {
     const n = Number(value);
@@ -821,6 +888,7 @@
     }
   });
   var tabClaims = createTabClaimStore();
+  var claimLifecycle = createClaimLifecycle(tabClaims);
   var tabResolution = {
     tabExists: async (tabId2) => {
       try {
@@ -945,7 +1013,8 @@
           return;
         }
         const request2 = parsed;
-        const response = await handleRequest(request2);
+        const finish = claimLifecycle.beginRequest(ownerFromPayload(request2.payload));
+        const response = await handleRequest(request2).finally(finish);
         logOp(request2.action, response.success);
         socket.send(JSON.stringify(response));
       } catch (err) {
@@ -963,7 +1032,7 @@
       console.log(`[abu-ext] Disconnected (code: ${event.code})`);
       state.connected = false;
       ws = null;
-      tabClaims.releaseAll();
+      claimLifecycle.releaseAll();
       scheduleReconnect();
     };
     socket.onerror = (err) => {
@@ -972,10 +1041,11 @@
   }
   function handleControlMessage(inbound) {
     if (inbound.kind === "release") {
-      const dropped = tabClaims.releaseOwner(inbound.ownerId, inbound.runId);
-      if (dropped > 0) {
-        console.log(`[abu-ext] Released ${dropped} tab claim(s) for ${inbound.ownerId}`);
-      }
+      claimLifecycle.releaseOwner(inbound.ownerId, inbound.runId);
+      return;
+    }
+    if (inbound.kind === "conversation-deleted") {
+      claimLifecycle.deleteConversation(inbound.ownerId);
       return;
     }
     if (inbound.kind === "cancel") {
@@ -1441,29 +1511,33 @@
     const namedFrame = payload2.frameId !== void 0;
     const chromeFrameId = namedFrame ? await frameStore.resolve(tabId2, payload2.frameId) : 0;
     const doSend = (frameId, actionName = action2, body = payload2) => new Promise((resolve, reject) => {
+      const finish = claimLifecycle.beginTabOperation(tabId2);
       const timer = setTimeout(() => {
         reject(new Error(`Content script did not respond within ${CONTENT_SCRIPT_TIMEOUT / 1e3}s (action: ${actionName})`));
       }, CONTENT_SCRIPT_TIMEOUT);
-      chrome.tabs.sendMessage(
-        tabId2,
-        // `__abuFrameId` tells that copy of the runtime which frame it is, so
-        // the refs it mints carry the handle a later call can route on. It is
-        // stamped HERE, in the worker: the model's payload cannot name it (the
-        // bridge builds payloads field by field from the tool schema) and a
-        // page cannot see it (isolated world).
-        { action: actionName, payload: { ...body, __abuFrameId: hostFrameStamp(frameId) } },
-        { frameId },
-        (response) => {
-          clearTimeout(timer);
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else if (response && response.error) {
-            reject(new Error(response.error));
-          } else {
-            resolve(response?.data ?? response);
+      try {
+        chrome.tabs.sendMessage(
+          tabId2,
+          // The worker stamps the frame identity in the isolated world.
+          { action: actionName, payload: { ...body, __abuFrameId: hostFrameStamp(frameId) } },
+          { frameId },
+          (response) => {
+            clearTimeout(timer);
+            finish();
+            if (chrome.runtime.lastError) {
+              reject(new Error(chrome.runtime.lastError.message));
+            } else if (response && response.error) {
+              reject(new Error(response.error));
+            } else {
+              resolve(response?.data ?? response);
+            }
           }
-        }
-      );
+        );
+      } catch (error) {
+        clearTimeout(timer);
+        finish();
+        throw error;
+      }
     });
     const send = async (frameId) => {
       try {

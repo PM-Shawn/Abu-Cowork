@@ -204,6 +204,23 @@ describe('sendToExtension abort handling', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
     expect(fakeExtension.send).not.toHaveBeenCalled();
   });
+
+  it('forwards conversation deletion and refuses late requests from every run', async () => {
+    const { sendToExtension } = await import('./wsServer.js');
+    const { registerRunSettledHandler } = await import('./runSettled.js');
+    const target: NotificationFallbackTarget = {};
+    registerRunSettledHandler(target);
+    await target.fallbackNotificationHandler!({
+      method: 'notifications/abu/conversationDeleted', params: { ownerId: 'deleted' },
+    });
+    expect(fakeExtension.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fakeExtension.send.mock.calls[0][0] as string))
+      .toEqual({ type: 'conversation-deleted', ownerId: 'deleted' });
+    for (const runId of [undefined, 'child']) {
+      await expect(sendToExtension('click', { ownerId: 'deleted', runId, tabId: 1 })).rejects.toThrow('deleted');
+    }
+    expect(fakeExtension.send).toHaveBeenCalledTimes(1);
+  });
 });
 
 /**

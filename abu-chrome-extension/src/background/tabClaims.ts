@@ -511,6 +511,7 @@ export type BridgeInbound =
   | { kind: 'request' }
   | { kind: 'cancel'; requestId: string }
   | { kind: 'release'; ownerId: string; runId?: string }
+  | { kind: 'conversation-deleted'; ownerId: string }
   | { kind: 'unknown'; type: string };
 
 export function classifyInbound(raw: unknown): BridgeInbound {
@@ -518,6 +519,9 @@ export function classifyInbound(raw: unknown): BridgeInbound {
   if (typeof message.type !== 'string') return { kind: 'request' };
   if (message.type === 'cancel') {
     return { kind: 'cancel', requestId: String(message.requestId ?? '') };
+  }
+  if (message.type === 'conversation-deleted' && typeof message.ownerId === 'string' && message.ownerId.trim()) {
+    return { kind: 'conversation-deleted', ownerId: message.ownerId };
   }
   if (message.type === 'release' && typeof message.ownerId === 'string') {
     return {

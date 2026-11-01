@@ -17,13 +17,11 @@ import type { InboundMessage } from './adapters/types';
 /** Active adapter instances keyed by channelId. */
 const connections = new Map<string, WeChatInboundAdapter>();
 
-function onMessage(msg: InboundMessage): void {
+function onMessage(channelId: string, adapter: WeChatInboundAdapter, msg: InboundMessage): void {
+  if (connections.get(channelId) !== adapter) return;
   // Special sentinel: auth expired — update channel status, don't dispatch
   if (msg.replyContext.extra?.type === 'auth_expired') {
-    const channelId = findChannelIdByAdapter();
-    if (channelId) {
-      useIMChannelStore.getState().setChannelStatus(channelId, 'error', '微信登录已过期，请重新扫码绑定');
-    }
+    useIMChannelStore.getState().setChannelStatus(channelId, 'auth_expired');
     return;
   }
 
@@ -32,18 +30,11 @@ function onMessage(msg: InboundMessage): void {
   dispatchDirect('wechat', msg.raw as Record<string, unknown>, msg.images, msg.message.content);
 }
 
-function findChannelIdByAdapter(): string | undefined {
-  for (const [channelId, adapter] of connections.entries()) {
-    if (adapter.getStatus() === 'error') return channelId;
-  }
-  return undefined;
-}
-
 async function startChannel(channel: IMChannel): Promise<void> {
   if (connections.has(channel.id)) return; // already running
 
   const adapter = new WeChatInboundAdapter();
-  adapter.onMessage(onMessage);
+  adapter.onMessage((msg) => onMessage(channel.id, adapter, msg));
   connections.set(channel.id, adapter);
 
   try {

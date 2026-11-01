@@ -507,7 +507,7 @@ function PlatformBadge({ platform }: { platform: IMPlatform }) {
 
 function StatusDot({ status }: { status: string }) {
   if (status === 'connected') return <StatusIcon tone="success" size="sm" />;
-  if (status === 'error') return <StatusIcon tone="danger" size="sm" />;
+  if (status === 'error' || status === 'auth_expired') return <StatusIcon tone="danger" size="sm" />;
   return <span className="size-2 shrink-0 rounded-full border border-control-border" />;
 }
 
@@ -584,7 +584,7 @@ function TagInput({
 /**
  * WeChat-specific connection rows inside the expanded channel card.
  *
- * Shows bound account ID + status. If the session has expired (status=error),
+ * Shows bound account ID + status. If the session has expired (status=auth_expired),
  * surfaces an inline QR panel for re-binding without leaving the settings page.
  */
 function WeChatConnectionRows({
@@ -597,7 +597,7 @@ function WeChatConnectionRows({
   const { t } = useI18n();
   const [showRebind, setShowRebind] = useState(false);
 
-  const isExpired = channel.status === 'error';
+  const isExpired = channel.status === 'auth_expired';
 
   return (
     <>

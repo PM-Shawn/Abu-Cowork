@@ -163,7 +163,7 @@ test('keeps the source and its draft through a real write denial and retry', asy
   await delay(TOAST_SETTLE_MS);
   await notices.getByRole('button', { name: '重试', exact: true }).click();
   await assertCreated(page);
-  await page.getByRole('button', { name: '分支自《Reliability source》', exact: true }).click();
+  await page.getByRole('button', { name: '从聊天中继续', exact: true }).click();
   await expect(page.getByPlaceholder(CHAT_PLACEHOLDER)).toHaveValue('UNSENT-SOURCE-DRAFT');
 });
 

@@ -166,8 +166,21 @@ function ptySpawn({ id, cols, rows, cwd }) {
 
   sessions.set(id, ptyProcess);
   let exited = false;
-  const completion = new Promise(resolve => ptyProcess.onExit(() => { exited = true; resolve(); }));
-  ownedChildProcesses.trackCompletion(completion, () => { if (!exited) ptyProcess.kill(); });
+  let stopTimer;
+  const completion = new Promise(resolve => ptyProcess.onExit(() => {
+    exited = true;
+    clearTimeout(stopTimer);
+    resolve();
+  }));
+  ownedChildProcesses.trackCompletion(completion, () => {
+    if (exited || stopTimer) return;
+    ptyProcess.kill();
+    if (process.platform !== 'win32') {
+      stopTimer = setTimeout(() => {
+        if (!exited) ptyProcess.kill('SIGKILL');
+      }, 5000);
+    }
+  }, `terminal ${ptyProcess.pid}`);
 
   ptyProcess.onData((chunk) => {
     // encoding: null makes node-pty forward raw Buffer chunks; Array.from

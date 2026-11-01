@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { exists, mkdir, readDir, readTextFile, remove, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { loadConversationWriterFixtures, replayWriterFixture } from '@/test/conversationWriterFixtures';
@@ -39,6 +39,10 @@ function installMemoryFs(): Map<string, string> {
 
 describe('conversationStorage writes the bytes the shared fixtures record', () => {
   let files: Map<string, string>;
+
+  beforeAll(async () => {
+    await import('./conversationStorage');
+  });
 
   beforeEach(() => {
     files = installMemoryFs();

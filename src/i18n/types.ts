@@ -307,8 +307,6 @@ export interface TranslationDict {
       incomplete: string;
       title: string;
       source: string;
-      boundary: string;
-      currentFiles: string;
       sourceDeleted: string;
       sourceUnavailable: string;
       sourceInaccessible: string;
@@ -3964,6 +3962,12 @@ export interface TranslationDict {
     verifying: string;
     installing: string;
     restartToInstall: string;
+    preparingRestart: string;
+    restartFailed: string;
+    restartCancelled: string;
+    restartTimeout: string;
+    exitTimeout: string;
+    preparationTimeout: string;
     downloadFailed: string;
     retry: string;
     viewOnGitHub: string;

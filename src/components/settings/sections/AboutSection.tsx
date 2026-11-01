@@ -17,6 +17,7 @@ import { OFFICIAL_WEBSITE_URL } from '@/utils/helpDocs';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { checkForUpdate, downloadAndInstallUpdate, restartApp, refreshUpdateNotes } from '@/core/updates/checker';
 import { getUpdateProgressPresentation } from '@/core/updates/progress';
+import { updateErrorMessage } from '@/core/updates/errorMessage';
 import { useI18n } from '@/i18n';
 
 type CheckResult = 'idle' | 'just-checked' | 'error';
@@ -30,9 +31,11 @@ export default function AboutSection() {
   const updaterUnsupported = useSettingsStore((s) => s.updaterUnsupported);
   const downloadProgress = useSettingsStore((s) => s.updateDownloadProgress);
   const updateInstalling = useSettingsStore((s) => s.updateInstalling);
+  const updateRestarting = useSettingsStore((s) => s.updateRestarting);
+  const updateRestartError = useSettingsStore((s) => s.updateRestartError);
+  const downloadError = useSettingsStore((s) => s.updateDownloadError);
   const { t, locale } = useI18n();
   const [checkResult, setCheckResult] = useState<CheckResult>('idle');
-  const [downloadError, setDownloadError] = useState<string | null>(null);
   const [idCopied, setIdCopied] = useState(false);
 
   // The release notes are resolved in whatever language was active at check
@@ -106,11 +109,10 @@ export default function AboutSection() {
   const handleDownload = useCallback(async () => {
     // The settings window stays on the page while it fades out; a key press there starts nothing.
     if (!useSettingsStore.getState().systemSettingsOpen) return;
-    setDownloadError(null);
     try {
       await downloadAndInstallUpdate();
     } catch (err) {
-      setDownloadError(err instanceof Error ? err.message : String(err));
+      console.error('Failed to download update:', err);
     }
   }, []);
 
@@ -252,14 +254,22 @@ export default function AboutSection() {
               action={<Button variant="plain" size="sm" onClick={handleDownload}>{t.updates.retry}</Button>}
             >
               {t.updates.downloadFailed}
+              <div>{updateErrorMessage(downloadError, t.updates)}</div>
+            </InlineMessage>
+          )}
+
+          {updateRestartError && (
+            <InlineMessage tone="danger">
+              {t.updates.restartFailed}
+              <div>{updateErrorMessage(updateRestartError, t.updates)}</div>
             </InlineMessage>
           )}
 
           {/* Action buttons: one at a time, so the page never shows two filled buttons. */}
           {updateInstalling ? (
             <div className="flex justify-end">
-              <Button variant="primary" icon={AppIcons.restart} onClick={handleRestart}>
-                {t.updates.restartToInstall}
+              <Button variant="primary" icon={AppIcons.restart} busy={updateRestarting} onClick={handleRestart}>
+                {updateRestarting ? t.updates.preparingRestart : updateRestartError ? t.updates.retry : t.updates.restartToInstall}
               </Button>
             </div>
           ) : !downloadProgress && !downloadError && (
@@ -278,7 +288,7 @@ export default function AboutSection() {
           variant="secondary"
           icon={AppIcons.retry}
           onClick={handleCheckUpdate}
-          disabled={updateChecking || !!downloadProgress}
+          disabled={updateChecking || !!downloadProgress || updateInstalling || updateRestarting}
         >
           {t.updates.checkForUpdates}
         </Button>

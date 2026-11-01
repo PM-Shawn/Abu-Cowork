@@ -2,10 +2,12 @@ import { useState } from 'react';
 import type { ConversationBranchOrigin } from '@/types';
 import { useChatStore } from '@/stores/chatStore';
 import { useSettingsStore } from '@/stores/settingsStore';
-import { useI18n, format } from '@/i18n';
+import { useI18n } from '@/i18n';
 import { Pressable } from '@/components/ds/pressable';
+import { Icon } from '@/components/ds/icon';
+import { AppIcons } from '@/components/ds/icons';
 
-export function ConversationBranchOrigin({ origin, workspacePath }: { origin: ConversationBranchOrigin; workspacePath?: string | null }) {
+export function ConversationBranchOrigin({ origin }: { origin: ConversationBranchOrigin }) {
   const { t } = useI18n();
   const sourceMeta = useChatStore(state => state.conversationIndex[origin.sourceConversationId]);
   const source = useChatStore(state => state.conversations[origin.sourceConversationId]);
@@ -30,11 +32,12 @@ export function ConversationBranchOrigin({ origin, workspacePath }: { origin: Co
       await useChatStore.getState().switchConversation(origin.sourceConversationId);
     } finally { unsubscribe(); unsubscribeView(); setReading(false); }
   };
-  return <div className="my-3 flex flex-col items-start gap-1 border-t border-separator pt-3 text-ui-sm text-label-secondary" data-testid="branch-origin">
-    {status ? <span>{status}</span> : <Pressable className="text-link" aria-disabled={reading} onClick={() => { void open(); }}>
-      {format(t.chat.branch.source, { title: sourceMeta?.title ?? origin.sourceTitle })}
+  return <div className="my-3 flex items-center gap-3 text-ui-sm text-label-secondary" data-testid="branch-origin">
+    <span className="flex-1 border-t border-separator" aria-hidden="true" />
+    {status ? <span className="inline-flex items-center gap-2"><Icon icon={AppIcons.branch} size="sm" />{status}</span> : <Pressable className="inline-flex items-center gap-2 text-link" aria-disabled={reading} onClick={() => { void open(); }}>
+      <Icon icon={AppIcons.branch} size="sm" className="text-label-secondary" />
+      {t.chat.branch.source}
     </Pressable>}
-    <span>{t.chat.branch.boundary}</span>
-    {workspacePath && <span>{t.chat.branch.currentFiles}</span>}
+    <span className="flex-1 border-t border-separator" aria-hidden="true" />
   </div>;
 }

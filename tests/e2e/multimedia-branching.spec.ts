@@ -88,7 +88,9 @@ test('image branches retain comparison and editing after deleting their ancestor
     expect(fs.existsSync(path.join(appData, 'media/jobs', hash(childId)))).toBe(false);
     await turn.hover();
     await turn.getByRole('button', { name: '分支到新聊天', exact: true }).click();
-    await expect(page.getByRole('button', { name: '分支自《Media source · 分支》', exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect.poll(() => Object.keys(readIndex()).find(id => readIndex()[id].branchOrigin?.sourceConversationId === childId), { timeout: READY_TIMEOUT }).toBeTruthy();
+    await expect(page.getByRole('main').getByText('Media source · 分支 · 分支', { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expect(page.getByTestId('branch-origin').getByRole('button', { name: '从聊天中继续', exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
     const grandchildId = Object.keys(readIndex()).find(id => readIndex()[id].branchOrigin?.sourceConversationId === childId)!;
     expect(grandchildId).toBeTruthy();
     for (const id of [conversationId, childId]) {

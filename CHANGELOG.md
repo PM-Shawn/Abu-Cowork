@@ -7,6 +7,31 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.61.1 · 2026-11-01
+
+**Root cause**: macOS updates could wait indefinitely for background processes to close, and the restart action could become available before native update verification finished.
+
+**Fix**:
+- Show update verification and restart preparation states while the app is working.
+- Limit the background-process shutdown wait to 10 seconds and offer a clear error with a retry when preparation fails.
+- Wait for native update preparation before enabling restart, and preserve the prepared update when retrying.
+
+Full Changelog: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.61.0...v0.61.1
+
+## v0.61.0 · 2026-10-31
+
+### Features
+
+- **Continue a conversation in a new branch.** Choose the branch icon on an assistant reply to start an independent chat with the history through that reply. The branch keeps its attachments and can continue after the original chat is deleted. Select “Continue from chat” to return to the original reply.
+- **Branch from interrupted and completed work.** Stopped, failed, tool-only and older replies can be used as starting points. A running reply becomes available after it finishes or is stopped.
+
+### Fixes
+
+- **Images remain available in branched chats.** Saved tool-result images are preserved when conversation history is saved again and when a branch is branched again.
+- **Branch creation handles slower startup.** The app allows up to 30 seconds for the native helper to start and offers a retry if creation cannot finish.
+
+Full Changelog: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.60.2...v0.61.0
+
 ## v0.60.2 · 2026-10-29
 
 ### Improvements

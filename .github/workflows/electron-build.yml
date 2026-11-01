@@ -255,11 +255,10 @@ jobs:
           echo "APPLE_API_KEY=$KEY_PATH" >> "$GITHUB_ENV"
           echo "APPLE_API_KEY_ID=$APPLE_API_KEY_ID_SECRET" >> "$GITHUB_ENV"
 
-      - name: Configure Intel notarization transport
-        if: ${{ matrix.runner == 'macos-15-intel' }}
+      - name: Configure macOS notarization transport
         shell: bash
-        # actions/runner-images#14924: Apple ticket delivery needs HTTPS/TCP
-        # on Intel runners. Keep the system's rules and load one CI anchor.
+        # actions/runner-images#14924: Apple ticket delivery uses HTTPS/TCP.
+        # Keep the system's rules and load one CI anchor on each macOS runner.
         run: |
           set -euo pipefail
           PF_ANCHOR="com.apple/abu-ci-stapler"
@@ -361,8 +360,7 @@ jobs:
           node scripts/verify-electron-runtimes.mjs \
             --resource-root "$APP/Contents/Resources"
 
-      - name: Inspect Intel notarization transport
-        if: ${{ matrix.runner == 'macos-15-intel' }}
+      - name: Inspect macOS notarization transport
         run: sudo pfctl -a com.apple/abu-ci-stapler -vvsr
 
       - name: Refresh DMG metadata after stapling

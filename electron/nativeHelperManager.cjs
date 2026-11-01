@@ -124,7 +124,9 @@ const HELPER_EVENT_TYPES = new Set([
 ]);
 
 function resolveHelperCallTimeoutMs(method) {
-  if (method === 'hello' || method === 'health' || method === 'ping') return 5_000;
+  // The initial handshake includes OS executable validation and process startup.
+  if (method === 'hello') return 30_000;
+  if (method === 'health' || method === 'ping') return 5_000;
   if (
     method === 'ax_snapshot'
     || method === 'capture_screen'

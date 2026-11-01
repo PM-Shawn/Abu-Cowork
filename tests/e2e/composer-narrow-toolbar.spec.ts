@@ -85,7 +85,7 @@ const SINGLE_ROW_MAX_HEIGHT = 44;
 const TEAM_NAME = 'zz网页开发专家团';
 
 async function seedTeam(page: Page): Promise<void> {
-  await page.evaluate(() => {
+  await page.addInitScript(() => {
     window.localStorage.setItem('abu-team', JSON.stringify({
       state: {
         teams: [{

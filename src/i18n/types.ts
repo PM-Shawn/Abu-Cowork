@@ -307,8 +307,6 @@ export interface TranslationDict {
       incomplete: string;
       title: string;
       source: string;
-      boundary: string;
-      currentFiles: string;
       sourceDeleted: string;
       sourceUnavailable: string;
       sourceInaccessible: string;

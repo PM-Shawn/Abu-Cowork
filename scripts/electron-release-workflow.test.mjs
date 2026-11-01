@@ -569,11 +569,11 @@ test('Electron build uses native runners for all three release targets', () => {
   );
 });
 
-test('Intel notarization uses an isolated PF anchor before packaging and keeps native validation', () => {
+test('macOS notarization uses an isolated PF anchor before packaging and keeps native validation', () => {
   const steps = workflow('electron-build.yml').jobs['build-mac'].steps;
-  const configure = steps.find((step) => step.name === 'Configure Intel notarization transport');
-  assert.ok(configure, 'Intel notarization transport must be configured');
-  assert.equal(configure.if, "${{ matrix.runner == 'macos-15-intel' }}");
+  const configure = steps.find((step) => step.name === 'Configure macOS notarization transport');
+  assert.ok(configure, 'macOS notarization transport must be configured');
+  assert.equal(configure.if, undefined);
   assert.equal(configure.shell, 'bash');
   assert.notEqual(configure['continue-on-error'], true);
   assert.match(configure.run, /^set -euo pipefail/m);
@@ -605,7 +605,7 @@ test('Intel notarization uses an isolated PF anchor before packaging and keeps n
   ]) {
     assert.ok(validation.run.includes(required), `native validation must retain ${required}`);
   }
-  const counters = steps.find((step) => step.name === 'Inspect Intel notarization transport');
+  const counters = steps.find((step) => step.name === 'Inspect macOS notarization transport');
   assert.equal(counters.if, configure.if);
   assert.equal(counters.run, 'sudo pfctl -a com.apple/abu-ci-stapler -vvsr');
   assert.ok(steps.indexOf(counters) > steps.indexOf(validation));

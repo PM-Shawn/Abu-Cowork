@@ -406,17 +406,6 @@ describe('Agent Pipeline Integration', () => {
   });
 
   beforeEach(() => {
-    // chatStore.scheduleFlush() batches streamed tokens behind
-    // requestAnimationFrame. This file runs under the `node` environment, which
-    // has no such global, so the first streamed token threw and every turn that
-    // emitted text ended in `error` instead of `completed` — invisibly, because
-    // the assertions only checked that messages existed. Same synchronous stub
-    // subagentMultimodalHandoff.integration.test.ts already uses: no timers, no
-    // clock, flush order stays deterministic.
-    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
-      cb(0);
-      return 0;
-    });
     delegatedMediaBytes.clear();
     useChatStore.setState({
       conversations: {},

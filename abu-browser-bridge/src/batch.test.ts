@@ -32,6 +32,7 @@ interface Harness {
   concurrency: string[][];
   /** The transport deadline each page action was dispatched with. */
   timeouts: Array<number | undefined>;
+  payloads: Array<Record<string, unknown>>;
 }
 
 interface HarnessOptions {
@@ -51,6 +52,7 @@ function harness(options: HarnessOptions = {}): Harness {
   const actions: string[] = [];
   /** Transport deadline each non-probe action was dispatched with. */
   const timeouts: Array<number | undefined> = [];
+  const payloads: Array<Record<string, unknown>> = [];
   const concurrency: string[][] = [];
   const inFlight = new Map<number, string>();
   let probe = 0;
@@ -62,7 +64,7 @@ function harness(options: HarnessOptions = {}): Harness {
       clock += options.tick ?? 1;
       return clock;
     },
-    send: async (action, _payload, timeoutMs) => {
+    send: async (action, payload, timeoutMs) => {
       sent.push(action);
       if (action === 'get_tabs') {
         const url = urls[Math.min(probe, urls.length - 1)];
@@ -71,6 +73,7 @@ function harness(options: HarnessOptions = {}): Harness {
       }
       const nth = actions.length;
       actions.push(action);
+      payloads.push(payload);
       timeouts.push(timeoutMs);
       const id = key++;
       inFlight.set(id, action);
@@ -84,7 +87,7 @@ function harness(options: HarnessOptions = {}): Harness {
       return { success: true, data: options.resultFor?.(action, nth) ?? { success: true, message: 'ok' } };
     },
   };
-  return { deps, sent, actions, concurrency, timeouts };
+  return { deps, sent, actions, concurrency, timeouts, payloads };
 }
 
 function steps(...list: Array<BatchStep['action']>): BatchStep[] {
@@ -108,6 +111,25 @@ function steps(...list: Array<BatchStep['action']>): BatchStep[] {
 }
 
 describe('runBatch — ordering and completion', () => {
+  it.each(['fill', 'select'] as const)('passes an empty %s value to the page', async (action) => {
+    const h = harness();
+    const parsed = parseBatchSteps([{ action, locator: { css: '#field' }, value: '' }]);
+    const result = await runBatch(h.deps, TAB, parsed);
+    expect(result.completedSteps).toHaveLength(1);
+    expect(h.payloads[0]).toMatchObject({ locator: { css: '#field' }, value: '' });
+    for (const value of [undefined, null, 0, false]) {
+      expect(() => parseBatchSteps([{ action, locator: { css: '#field' }, value }])).toThrow(/value/);
+    }
+  });
+
+  it('rejects batch wait durations above the single-action ceiling', () => {
+    for (const timeout of [120_001, 3_600_000]) {
+      expect(() => parseBatchSteps([
+        { action: 'wait_for', condition: { type: 'urlContains', pattern: '/ready' }, timeout },
+      ])).toThrow(/120000/);
+    }
+  });
+
   it('runs every step in order and reports nothing left', async () => {
     const h = harness();
     const result = await runBatch(h.deps, TAB, steps('fill', 'fill', 'click', 'wait_for'));
@@ -392,6 +414,7 @@ describe('runBatch — bounds', () => {
     // +5000 is the transport headroom; the wait itself is clamped to what was
     // left of the run's budget.
     expect(h.timeouts[0]).toBeLessThanOrEqual(MAX_BATCH_DURATION_MS + 5_000);
+    expect(h.payloads[0].timeout).toBe(h.timeouts[0]! - 5_000);
   });
 
   it('gives a later step only what is LEFT of the budget, not the whole of it', async () => {
@@ -406,6 +429,7 @@ describe('runBatch — bounds', () => {
     const waitTimeout = h.timeouts[1];
     expect(waitTimeout).toBeDefined();
     expect(waitTimeout!).toBeLessThan(MAX_BATCH_DURATION_MS);
+    expect(h.payloads[1].timeout).toBe(waitTimeout! - 5_000);
   });
 
   it('refuses a timeout that is not a positive finite number, instead of passing it through', async () => {

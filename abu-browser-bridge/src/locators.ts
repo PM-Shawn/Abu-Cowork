@@ -44,6 +44,9 @@ export const FIND_QUERY_KEYS = ['role', 'name', 'text', 'css', 'testId', 'label'
 
 export const WAIT_CONDITION_TYPES = ['appear', 'disappear', 'enabled', 'textContains', 'urlContains'];
 
+export const DEFAULT_WAIT_TIMEOUT_MS = 30_000;
+export const MAX_WAIT_TIMEOUT_MS = 120_000;
+
 /**
  * The modifier keys `keyboard` accepts — the ONE list, read by both paths.
  *

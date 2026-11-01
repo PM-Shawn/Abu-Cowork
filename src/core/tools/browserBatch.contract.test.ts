@@ -44,6 +44,10 @@ function runnerAccepts(steps: unknown): boolean {
 }
 
 const CASES: Array<{ label: string; steps: unknown; accepted: boolean }> = [
+  { label: 'clearing a form field', steps: [
+    { action: 'fill', locator: { ref: 'e1' }, value: '' },
+    { action: 'select', locator: { ref: 'e2' }, value: '' },
+  ], accepted: true },
   { label: 'a plain form fill', steps: [
     { action: 'fill', locator: { css: '#a' }, value: '1' },
     { action: 'click', locator: { css: '#go' } },

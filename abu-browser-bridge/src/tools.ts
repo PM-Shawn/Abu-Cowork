@@ -9,8 +9,10 @@ import { MAX_BATCH_STEPS, parseBatchSteps, runBatch, type BatchDeps } from './ba
 import {
   clampDownloadWait,
   DOWNLOAD_ACTIONS,
+  DEFAULT_WAIT_TIMEOUT_MS,
   KEYBOARD_MODIFIERS,
   MAX_DOWNLOAD_WAIT_MS,
+  MAX_WAIT_TIMEOUT_MS,
   parseApprovedUploadFiles,
   parseCondition,
   parseFindQuery,
@@ -938,7 +940,9 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
 - { "type": "textContains", "locator": { "css": "#status" }, "text": "完成" } — wait for text content
 - { "type": "urlContains", "pattern": "/success" } — wait for URL change`
       ),
-      timeout: z.coerce.number().optional().default(30000).describe('Maximum wait time in ms (default: 30000)'),
+      timeout: z.coerce.number().positive().max(MAX_WAIT_TIMEOUT_MS)
+        .optional().default(DEFAULT_WAIT_TIMEOUT_MS)
+        .describe(`Maximum wait time in ms (default: ${DEFAULT_WAIT_TIMEOUT_MS}, maximum: ${MAX_WAIT_TIMEOUT_MS})`),
       frameId: z.string()
         .regex(FRAME_HANDLE, 'frameId must be a frame handle like "f0" or "f3", from a snapshot\'s `frames` list.')
         .optional().describe(FrameIdDescription),

@@ -44,6 +44,8 @@ import type {
   BatchStopReason,
 } from './types.js';
 import {
+  DEFAULT_WAIT_TIMEOUT_MS,
+  MAX_WAIT_TIMEOUT_MS,
   validateCondition,
   validateFindQuery,
   validateFrameId,
@@ -59,15 +61,8 @@ export const MAX_BATCH_STEPS = 25;
  * sit on 25 × 30s of timeouts under a single approval while the user watches
  * nothing happen.
  *
- * Enforced in TWO places, because between-steps alone was not a ceiling (F4,
- * 2026-09-06 review): the loop checks it before each step, AND a `wait_for`
- * step's own deadline is clamped to what is left of it. Without the clamp a
- * single `{action:'wait_for', timeout: 3_600_000}` ran for an hour under this
- * constant's own promise — the between-steps check never fired, because there
- * was no next step for it to run before. The single-action `wait_for` tool has
- * no upper bound on its `timeout`; that is its own pre-existing behaviour and
- * its own approval. What this fixes is a BATCH advertising a bound it did not
- * have.
+ * Checked before each step. A wait also receives the remaining budget as its
+ * page-side timeout, with transport headroom for delivering the result.
  */
 export const MAX_BATCH_DURATION_MS = 120_000;
 
@@ -164,16 +159,19 @@ export function parseBatchSteps(raw: unknown): BatchStep[] {
   });
 }
 
-function requireString(value: unknown, field: string): string {
-  if (typeof value !== 'string' || value === '') {
-    throw new Error(`\`${field}\` must be a non-empty string.`);
+function requireString(value: unknown, field: string, allowEmpty = false): string {
+  if (typeof value !== 'string' || (!allowEmpty && value === '')) {
+    throw new Error(`\`${field}\` must be a ${allowEmpty ? 'string' : 'non-empty string'}.`);
   }
   return value;
 }
 
-function requirePositiveNumber(value: unknown, field: string): number {
+function requireWaitTimeout(value: unknown, field: string): number {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     throw new Error(`\`${field}\` must be a positive number of milliseconds.`);
+  }
+  if (value > MAX_WAIT_TIMEOUT_MS) {
+    throw new Error(`\`${field}\` must be no greater than ${MAX_WAIT_TIMEOUT_MS} milliseconds.`);
   }
   return value;
 }
@@ -211,7 +209,7 @@ function validateStep(raw: unknown): BatchStep {
         action: type,
         ...inFrame,
         locator: validateLocator(step.locator) as BatchStep['locator'],
-        value: requireString(step.value, 'value'),
+        value: requireString(step.value, 'value', true),
       };
     case 'click':
       return { action: type, ...inFrame, locator: validateLocator(step.locator) as BatchStep['locator'] };
@@ -235,7 +233,7 @@ function validateStep(raw: unknown): BatchStep {
         // `timeout + 5000` — one as an infinite transport deadline, the other
         // as a NaN one.
         ...(step.timeout !== undefined
-          ? { timeout: requirePositiveNumber(step.timeout, 'timeout') }
+          ? { timeout: requireWaitTimeout(step.timeout, 'timeout') }
           : {}),
       };
     case 'find':
@@ -690,19 +688,19 @@ async function runStep(
 ): Promise<BatchStepOutcome> {
   const action = BATCH_STEP_ACTIONS[step.action];
   const startedAt = deps.now();
-  // A wait owns its own deadline — but not one longer than the run it is part
-  // of (F4). Clamped to the remaining budget, so the 120s ceiling this module
-  // advertises is one a single step cannot step over; the +5000 is the same
-  // transport headroom the single-action `wait_for` tool gives it.
-  const timeoutMs = step.action === 'wait_for'
-    ? Math.min(typeof step.timeout === 'number' ? step.timeout : 30_000, budgetLeftMs) + 5_000
+  // The DOM wait and its transport use the same remaining budget.
+  const waitTimeoutMs = step.action === 'wait_for'
+    ? Math.min(step.timeout ?? DEFAULT_WAIT_TIMEOUT_MS, budgetLeftMs)
     : undefined;
+  const timeoutMs = waitTimeoutMs === undefined ? undefined : waitTimeoutMs + 5_000;
   try {
     // A framed step is pinned to ITS OWN region's approved origin; a step on
     // the main document carries none here and inherits the batch's page-level
     // pin from the owner fields the caller merges in.
     const stepPin = step.frameId !== undefined ? pinnedFrames[step.frameId] : undefined;
-    const res = await deps.send(action, batchStepPayload(step, tabId, stepPin), timeoutMs);
+    const payload = batchStepPayload(step, tabId, stepPin);
+    if (waitTimeoutMs !== undefined) payload.timeout = waitTimeoutMs;
+    const res = await deps.send(action, payload, timeoutMs);
     const durationMs = deps.now() - startedAt;
     if (!res.success) {
       return { index, action: step.action, ok: false, durationMs, error: res.error ?? 'Unknown error' };

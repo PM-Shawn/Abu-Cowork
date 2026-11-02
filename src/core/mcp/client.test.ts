@@ -424,3 +424,42 @@ describe('browser bridge run-settled notification', () => {
     expect(mockNotification).not.toHaveBeenCalled();
   });
 });
+
+// screenshotDelivery threading: the loop's executor stamps `file` when the
+// active model cannot consume images (see registry.ts's screenshot dispatch),
+// and callTool() carries it into `_meta` under the key the bridge's screenshot
+// tools read. An absent flag keeps the exact pre-existing `_meta` shape.
+describe('screenshotDelivery threading into MCP _meta', () => {
+  let manager: MCPClientManager;
+  let mockCallTool: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    manager = new MCPClientManager();
+    mockCallTool = vi.fn().mockResolvedValue({ content: [{ type: 'text', text: 'ok' }] });
+    const fakeServer: FakeConnectedServer = {
+      config: { name: 'test-server' },
+      client: { callTool: mockCallTool },
+      transport: {},
+      appTools: new Map(),
+      tools: new Map(),
+    };
+    (manager as unknown as { servers: Map<string, FakeConnectedServer> }).servers.set(
+      'test-server',
+      fakeServer
+    );
+  });
+
+  it('carries screenshotDelivery:"file" into _meta under the abu/ key', async () => {
+    await manager.callTool('test-server', 'screenshot', { tabId: 7 }, { screenshotDelivery: 'file' });
+
+    const params = mockCallTool.mock.calls[0][0];
+    expect(params._meta).toEqual({ 'abu/screenshotDelivery': 'file' });
+  });
+
+  it('keeps _meta undefined when no screenshotDelivery is passed', async () => {
+    await manager.callTool('test-server', 'screenshot', { tabId: 7 });
+
+    const params = mockCallTool.mock.calls[0][0];
+    expect(params._meta).toBeUndefined();
+  });
+});

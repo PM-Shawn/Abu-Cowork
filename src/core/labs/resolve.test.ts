@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { resolveLabsFlag, isLabsFlagOn } from './resolve';
-import { LABS_PET } from './registry';
+import { LABS_PET, LABS_STATE_PRESERVING_COMPRESSION } from './registry';
 import { useSettingsStore } from '@/stores/settingsStore';
 
 // Uses LABS_PET as the sample registered experiment (todos-inbox is held back
@@ -22,6 +22,12 @@ describe('resolveLabsFlag', () => {
 
   it('resolves unknown/orphan ids to false (graduated/held-back experiment left a stale key)', () => {
     expect(resolveLabsFlag('graduated-old-exp', { 'graduated-old-exp': true })).toBe(false);
+  });
+
+  it('resolves a missing stored map to the registry default instead of throwing', () => {
+    // A settings snapshot (or sidecar mirror) seeded before `labs` existed.
+    expect(resolveLabsFlag(LABS_PET, undefined)).toBe(false);
+    expect(resolveLabsFlag(LABS_STATE_PRESERVING_COMPRESSION, undefined)).toBe(false);
   });
 });
 

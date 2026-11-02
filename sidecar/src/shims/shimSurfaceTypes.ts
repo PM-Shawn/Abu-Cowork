@@ -104,6 +104,8 @@ import type * as realPlatformRun from '@/utils/platform';
 import type * as shimPlatformRun from './platformRun';
 import type * as realNotificationsRun from '@/utils/notifications';
 import type * as shimNotificationsRun from './notificationsRun';
+import type * as realLabsResolveRun from '@/core/labs/resolve';
+import type * as shimLabsResolveRun from './labsResolveRun';
 import type * as realPermissionBridgeRun from '@/core/agent/permissionBridge';
 import type * as shimPermissionBridgeRun from './permissionBridgeRun';
 import type * as realComputerUseStatusRun from '@/core/agent/computerUseStatus';
@@ -257,6 +259,9 @@ export type PlatformRunReturns = NoDrift<ReturnDrift<typeof realPlatformRun, typ
 
 export type NotificationsRunParams = NoDrift<ParamDrift<typeof realNotificationsRun, typeof shimNotificationsRun>>;
 export type NotificationsRunReturns = NoDrift<ReturnDrift<typeof realNotificationsRun, typeof shimNotificationsRun>>;
+
+export type LabsResolveRunParams = NoDrift<ParamDrift<typeof realLabsResolveRun, typeof shimLabsResolveRun>>;
+export type LabsResolveRunReturns = NoDrift<ReturnDrift<typeof realLabsResolveRun, typeof shimLabsResolveRun>>;
 
 export type PermissionBridgeRunParams = NoDrift<ParamDrift<typeof realPermissionBridgeRun, typeof shimPermissionBridgeRun>>;
 export type PermissionBridgeRunReturns = NoDrift<ReturnDrift<typeof realPermissionBridgeRun, typeof shimPermissionBridgeRun>>;

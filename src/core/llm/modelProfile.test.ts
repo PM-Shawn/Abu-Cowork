@@ -209,8 +209,13 @@ describe('resolveModelProfile', () => {
       expect(resolveModelProfile({ modelId: 'deepseek-v4-flash' }).harness.editToolStyle).toBe('replace');
     });
 
-    it('the text-only end-turn nudge is off everywhere until an evaluation turns it on per model', () => {
-      for (const id of ['claude-opus-5-5', 'gpt-5.5', 'deepseek-v4-flash', 'kimi-k2.6', 'qwen3-max', 'glm-5', 'x']) {
+    it('the text-only end-turn nudge is on for the OpenAI-compatible families, off for claude/gpt', () => {
+      // guardsRepair 家族（含 other：未知/网关模型都在这里）开着——空响应静默收尾
+      // 的续推护栏；claude/gpt 走 guardsOff 保持关闭。
+      for (const id of ['deepseek-v4-flash', 'kimi-k2.6', 'qwen3-max', 'glm-5', 'x']) {
+        expect(resolveModelProfile({ modelId: id }).harness.guards.textOnlyEndTurnNudge).toBe(true);
+      }
+      for (const id of ['claude-opus-5-5', 'gpt-5.5']) {
         expect(resolveModelProfile({ modelId: id }).harness.guards.textOnlyEndTurnNudge).toBe(false);
       }
     });

@@ -134,3 +134,23 @@ for (const accepted of [false, true]) {
     }
   });
 }
+
+// B3（2026-10-27）：blob: 下载弹窗的 URL 白名单门。内层 http/https 放行
+// （origin 比对交给 popupPolicy），内层不是 http/https 照旧拒绝。
+test('popup admits a blob: URL with an http(s) inner origin (B3)', (t) => {
+  const { source, created } = loadHost(t);
+  const response = source.openWindow({ url: 'blob:https://source.example/generated.xlsx' });
+  assert.equal(response.action, 'allow');
+  assert.equal(response.outlivesOpener, true);
+  const nativeChild = Object.assign(new EventEmitter(), { id: 601 });
+  assert.equal(response.createWindow({ webContents: nativeChild, webPreferences: response.overrideBrowserWindowOptions.webPreferences }), nativeChild);
+  assert.equal(created.length, 3, 'the blob child is adopted like any manual popup');
+});
+
+for (const url of ['blob:file:///tmp/x', 'blob:data:text/html,x', 'blob:javascript:alert(1)']) {
+  test(`popup refuses ${JSON.stringify(url)} (B3)`, (t) => {
+    const { source, created } = loadHost(t);
+    assert.deepEqual(source.openWindow({ url }), { action: 'deny' });
+    assert.equal(created.length, 2, 'a refused blob popup must not create a view');
+  });
+}

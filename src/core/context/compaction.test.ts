@@ -159,6 +159,53 @@ describe('compactHistory', () => {
     })).rejects.toThrow('provider down');
   });
 
+  it('appends the [kept anchors] block when keepAnchors is on', async () => {
+    const anchored = msg('assistant', {
+      content: '开始处理。\n- [ ] 扫描 d:/00malong/aiworkspace/测试目录 的文件\n- [ ] 按 spec 分组',
+      toolCalls: [{ id: 'tc-a', name: 'run_command', input: {}, result: 'ok' }] as ToolCall[],
+    });
+    const marker = await compactHistory({
+      history: [msg('user'), anchored, step()],
+      inputBudget: 100_000,
+      retainTokens: 0,
+      source: 'auto',
+      summary: summaryRequest as never,
+      keepAnchors: true,
+      readFile: vi.fn(),
+      now: () => 1,
+    });
+    const summaryText = marker!.compactBoundary!.summaryText;
+    expect(summaryText.startsWith('SUMMARY')).toBe(true);
+    expect(summaryText).toContain('[kept anchors]');
+    expect(summaryText).toContain('- [ ] 扫描 d:/00malong/aiworkspace/测试目录 的文件');
+    expect(summaryText).toContain('- [ ] 按 spec 分组');
+  });
+
+  it('keeps the summary bare when keepAnchors is off or nothing matches', async () => {
+    const markerOff = await compactHistory({
+      history: [msg('user'), msg('assistant', { content: '- [ ] 锚点步骤' }), step()],
+      inputBudget: 100_000,
+      retainTokens: 0,
+      source: 'auto',
+      summary: summaryRequest as never,
+      readFile: vi.fn(),
+      now: () => 1,
+    });
+    expect(markerOff!.compactBoundary!.summaryText).toBe('SUMMARY');
+
+    const markerNoMatch = await compactHistory({
+      history: [msg('user'), msg('assistant', { content: '普通叙述，没有锚点。' }), step()],
+      inputBudget: 100_000,
+      retainTokens: 0,
+      source: 'auto',
+      summary: summaryRequest as never,
+      keepAnchors: true,
+      readFile: vi.fn(),
+      now: () => 1,
+    });
+    expect(markerNoMatch!.compactBoundary!.summaryText).toBe('SUMMARY');
+  });
+
   it('leaves the history unchanged when a partial summary is cancelled', async () => {
     const controller = new AbortController();
     const history = [msg('user'), step(), step()];

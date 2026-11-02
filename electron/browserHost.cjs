@@ -107,6 +107,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { sendBrowserKey } = require('./browserKeyboard.cjs');
 const { createBrowserPopupPolicy, POPUP_BLOCKED } = require('./browserPopupPolicy.cjs');
+// B4（2026-10-27）：browser_download 遇到弹窗型下载被拦时的可操作指引。
+// LLM-facing，英文；跨域新窗口下载是真实攻击面，拦截保持，模型需要的是出路。
+const DOWNLOAD_POPUP_BLOCKED = 'The download opens in a new window that browser automation cannot '
+  + 'follow (a new window on a different origin, or the one-shot popup allowance was already spent). '
+  + 'Options: tell the user to download this file manually, or check whether the site offers a '
+  + 'same-page export. Do not retry the same click.';
 const nativePopupViews = new Set();
 const popupGuardReady = new Map();
 const popupGuardPending = new Set();
@@ -946,7 +952,12 @@ function backoffDelayForLevel(level) {
  */
 function normalizedOriginOf(urlString) {
   try {
-    const parsed = new URL(String(urlString || ''));
+    let raw = String(urlString || '');
+    // blob: 下载链接取内层 origin 做 origin 比对（2026-10-27 B3）：前端生成
+    // 文件后 window.open(blobUrl) 的下载形态，内层就是创建它的页面 origin。
+    // 只影响 origin 比对；导航白名单（allowedAutomationUrl）另有自己的检查。
+    if (raw.startsWith('blob:')) raw = raw.slice('blob:'.length);
+    const parsed = new URL(raw);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
     const hostname = parsed.hostname.endsWith('.')
       ? parsed.hostname.slice(0, -1)
@@ -1408,7 +1419,7 @@ function configureBrowserView(id, view) {
   const automationTabId = contents.id;
   contents.setWindowOpenHandler(({ url: targetUrl, postBody }) => {
     let safeUrl;
-    try { safeUrl = allowedAutomationUrl(targetUrl); } catch {
+    try { safeUrl = allowedAutomationUrl(targetUrl, { allowBlob: true }); } catch {
       popupPolicy.deny(contents);
       return { action: 'deny' };
     }
@@ -1906,12 +1917,18 @@ async function automationTabs(owner = LEGACY_OWNER, createIfEmpty = true, signal
   return tabs;
 }
 
-function allowedAutomationUrl(value) {
+function allowedAutomationUrl(value, { allowBlob = false } = {}) {
   let parsed;
   try {
     parsed = new URL(String(value || ''));
   } catch {
     throw new Error('Invalid URL. Only http: and https: URLs are allowed.');
+  }
+  // 弹窗路径放行 blob:（下载型弹窗的一种，2026-10-27 B3）：内层必须是
+  // http/https。navigate 动作不放开 —— blob: URL 离开创建它的文档语义不可靠。
+  if (parsed.protocol === 'blob:' && allowBlob) {
+    allowedAutomationUrl(String(value).slice('blob:'.length)); // 内层不合法则抛
+    return String(value).trim();
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error('Invalid URL scheme. Only http: and https: URLs are allowed.');
@@ -2059,7 +2076,106 @@ async function navigateAutomationTab(view, payload, beforeNavigate, signal) {
 }
 
 
-async function screenshotAutomation(view, fullPage) {
+/** `20261026-190301` — a filename clock, not a clock source. */
+function screenshotTimestamp() {
+  const now = new Date();
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-` +
+    `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+}
+
+/** `shot.png` becomes `shot-2.png` while the name is taken — never overwrite. */
+function uniqueScreenshotPath(candidate) {
+  if (!fs.existsSync(candidate)) return candidate;
+  const ext = path.extname(candidate);
+  const stem = ext ? candidate.slice(0, -ext.length) : candidate;
+  for (let n = 2; n < 1000; n += 1) {
+    const next = `${stem}-${n}${ext}`;
+    if (!fs.existsSync(next)) return next;
+  }
+  return candidate;
+}
+
+/**
+ * The PNG header carries the pixel size at a fixed offset (IHDR): 8 signature
+ * bytes, 8 length+type bytes, then width/height as big-endian uint32. Read
+ * from the bytes rather than a second CDP round trip — the capture is already
+ * in hand, and the page can change size between two calls.
+ */
+function pngDimensions(buffer) {
+  const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (buffer.length < 24 || !buffer.subarray(0, 8).equals(signature)) return null;
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+/** The per-task folder a screenshot lands in when the caller named no path. */
+function taskScreenshotDir(owner) {
+  const { conversationId, runKey } = parseOwnerKey(owner.key);
+  return path.join(
+    browserDownloadRoot(),
+    safePathSegment(conversationId, 'shared'),
+    safePathSegment(runKey, 'main'),
+    'screenshots',
+  );
+}
+
+/**
+ * Where a saveMode screenshot goes, before conflict resolution.
+ *
+ * No `savePath` ⇒ the task's own screenshot folder under a name derived here
+ * (tab id + timestamp), same ownership rule as a download: one task's captures
+ * never sit in another's folder. An explicit `savePath` is honored as given —
+ * a directory (trailing separator, or an existing directory, possibly relative
+ * to the task folder) gets the derived name inside it, a file path is used as
+ *-is with a missing `.png` appended. The model only ever expresses WHERE in
+ * the shapes above; the name it cannot dictate is the one nothing else can
+ * collide with.
+ */
+function resolveScreenshotSavePath(payload, owner, tabId) {
+  const requested = typeof payload?.savePath === 'string' ? payload.savePath.trim() : '';
+  const derivedName = `screenshot-${tabId}-${screenshotTimestamp()}.png`;
+  if (!requested) {
+    return path.join(taskScreenshotDir(owner), derivedName);
+  }
+  let target = requested;
+  if (!path.isAbsolute(target)) {
+    target = path.join(taskScreenshotDir(owner), target);
+  }
+  const isDirectory = /[\\/]$/.test(requested)
+    || (fs.existsSync(target) && fs.statSync(target).isDirectory());
+  if (isDirectory) {
+    return path.join(target, derivedName);
+  }
+  if (!path.extname(target)) target += '.png';
+  return target;
+}
+
+/**
+ * Write a saveMode capture to disk and describe it in the shape
+ * `abu-browser-bridge`'s `formatSavedScreenshot` turns into model-visible text.
+ *
+ * Conflict resolution runs AFTER the parent directories exist: a fresh
+ * directory reports nothing occupied, and an existing file is suffixed `-2`,
+ * `-3`, … rather than overwritten — the file at that path may be the one the
+ * user was shown.
+ */
+function writeScreenshotFile(base64, payload, owner, tabId) {
+  const desired = resolveScreenshotSavePath(payload, owner, tabId);
+  fs.mkdirSync(path.dirname(desired), { recursive: true });
+  const target = uniqueScreenshotPath(desired);
+  const bytes = Buffer.from(base64, 'base64');
+  fs.writeFileSync(target, bytes);
+  const dimensions = pngDimensions(bytes);
+  return {
+    saved: true,
+    path: target,
+    width: dimensions ? dimensions.width : null,
+    height: dimensions ? dimensions.height : null,
+    bytes: bytes.length,
+  };
+}
+
+async function screenshotAutomation(view, fullPage, payload, owner) {
   const debug = view.webContents.debugger;
   const alreadyAttached = debug.isAttached();
   try {
@@ -2070,6 +2186,9 @@ async function screenshotAutomation(view, fullPage) {
         fromSurface: true,
         captureBeyondViewport: false,
       });
+      if (payload?.saveMode) {
+        return writeScreenshotFile(capture.data, payload, owner, view.webContents.id);
+      }
       return `data:image/png;base64,${capture.data}`;
     }
     const metrics = await debug.sendCommand('Page.getLayoutMetrics');
@@ -2086,6 +2205,9 @@ async function screenshotAutomation(view, fullPage) {
         scale: 1,
       },
     });
+    if (payload?.saveMode) {
+      return writeScreenshotFile(capture.data, payload, owner, view.webContents.id);
+    }
     return `data:image/png;base64,${capture.data}`;
   } finally {
     if (!alreadyAttached && debug.isAttached()) debug.detach();
@@ -3655,10 +3777,16 @@ async function runBrowserAutomation(action, payload, signal, scope) {
   // Wrapped so an action that OPENS a dialog answers with the dialog instead of
   // hanging in the suspended renderer until its transport timeout.
   const sourceUrl = view.webContents.getURL();
-  const popupEligible = ['click', 'keyboard'].includes(action) && !payload.frameId
+  // download 也在白名单里（2026-10-27 B1）：站点用新窗口承载下载（target="_blank"
+  // 表单、导出按钮 window.open）时，专用下载动作此前必被弹窗策略拦死。租约
+  // origin 仍是 shell 盖章的页面 origin，跨域弹窗照样拒绝。
+  const popupEligible = ['click', 'keyboard', 'download'].includes(action) && !payload.frameId
     && payload.popupOrigin && payload.popupOrigin === payload.expectedOrigin
     && (action !== 'keyboard' || (view.webContents.focusedFrame
       && view.webContents.focusedFrame === view.webContents.mainFrame));
+  // B2 不变量：租约在这里创建，在 performBrowserAutomation 的 finally 里销毁，
+  // 而 download 动作的整个「点击 → 等待认领」窗口都在这次 await 内 —— 租约
+  // 天然覆盖下载等待期。若把 end() 提前或改为每动作自管，这里会破。
   scope.popupLease = popupPolicy.beginAction(view.webContents, {
     owner, origin: popupEligible ? payload.popupOrigin : null, signal,
     isCurrent: () => views.get(match.id) === view && view.webContents.getURL() === sourceUrl
@@ -3683,8 +3811,8 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     // runtime the Chrome extension drives.
     if (action === 'upload_file') return uploadAutomation(view, payload, assertPageCurrent);
     if (action === 'download') return downloadAutomation(view, payload, owner, signal, assertPageCurrent);
-    if (action === 'screenshot') return screenshotAutomation(view, false);
-    if (action === 'screenshot_full_page') return screenshotAutomation(view, true);
+    if (action === 'screenshot') return screenshotAutomation(view, false, payload, owner);
+    if (action === 'screenshot_full_page') return screenshotAutomation(view, true, payload, owner);
     if (action === 'keyboard') return sendBrowserKey(view.webContents, payload, {
       beforeDispatch: assertPageCurrent,
     });
@@ -3696,7 +3824,11 @@ async function runBrowserAutomation(action, payload, signal, scope) {
     return scope.nativeWork;
   });
   scope.controlLease.assert({ allowExternalAbort: action === 'download' && result?.complete === false });
-  if (scope.popupLease.blocked) throw new Error(scope.popupLease.message);
+  if (scope.popupLease.blocked) {
+    // B4：download 动作被弹窗策略拦下时，给模型可操作的指引（站点用跨域新窗口
+    // 承载下载是真实攻击面，拦截本身保持），而不是泛化的 POPUP_BLOCKED。
+    throw new Error(action === 'download' ? DOWNLOAD_POPUP_BLOCKED : scope.popupLease.message);
+  }
   return result;
 }
 
@@ -4201,6 +4333,9 @@ module.exports = {
      */
     approvedFileId,
     sameFileId,
+    /** B3（2026-10-27）：blob: 内层 origin 提取与弹窗 URL 白名单，供单测直测。 */
+    normalizedOriginOf,
+    allowedAutomationUrl,
     /** Swap the takeover backoff's clock; pass nothing to restore wall time. */
     setClock(next) { clock = next || REAL_CLOCK; },
     /**

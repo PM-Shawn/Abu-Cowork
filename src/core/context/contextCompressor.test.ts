@@ -59,6 +59,19 @@ describe('writeCompactionSummary', () => {
     expect((options as { volatileContextTail?: string }).volatileContextTail).toBeUndefined();
   });
 
+  it('appends the anchor section to the instruction only when preserveAnchors is on', async () => {
+    const withoutAnchors = replying({ type: 'text', text: 's' }, { type: 'done', stopReason: 'end_turn' });
+    const withAnchors = replying({ type: 'text', text: 's' }, { type: 'done', stopReason: 'end_turn' });
+
+    await writeCompactionSummary(conversation, request(withoutAnchors));
+    await writeCompactionSummary(conversation, request(withAnchors, { preserveAnchors: true }));
+
+    const off = (withoutAnchors.mock.calls[0][0] as Message[]).at(-1)!;
+    const on = (withAnchors.mock.calls[0][0] as Message[]).at(-1)!;
+    expect(String(off.content)).not.toContain('Kept anchors');
+    expect(String(on.content)).toContain('10. Kept anchors — copy verbatim every plan-step line, file path and URL');
+  });
+
   it('retries a transient provider error and returns the summary of the attempt that succeeded', async () => {
     vi.useFakeTimers();
     const chat = vi.fn()

@@ -2292,8 +2292,8 @@ describe('runAgentLoop 模型档案的两条护栏', () => {
     }
   });
 
-  it('档案关闭续推时（首批所有型号），只说不做的一轮照常结束', async () => {
-    const { conversationId, chat, emit, messagesOf, restore } = await setup('deepseek-chat');
+  it('档案关闭续推时（claude/gpt 走 guardsOff），只说不做的一轮照常结束', async () => {
+    const { conversationId, chat, emit, messagesOf, restore } = await setup('claude-sonnet-4-5');
     chat.mockImplementationOnce(emit(readWithStringLimit)).mockImplementation(emit(textOnly('Next I will edit the file.')));
     try {
       const result = await runAgentLoop(conversationId, 'edit the file');

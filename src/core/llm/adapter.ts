@@ -454,6 +454,23 @@ function isSpendingLimitReached(rawBody: string): boolean {
   return code === 'quota_exceeded';
 }
 
+/**
+ * Free-prose quota wording inside an error body. Kept narrow on purpose —
+ * "quota" in the provider's own phrasing plus a spent/exceeded verb — so an
+ * unrelated 500 that merely quotes a user string containing "quota" is not
+ * misclassified. Structured `error.code === 'quota_exceeded'` bodies are
+ * handled by `isSpendingLimitReached` before this is consulted.
+ */
+export function isQuotaProseMessage(message: string): boolean {
+  return /exceed(?:ed)?\s+(?:the\s+)?(?:\w+\s+)?quota|quota\s+(?:limit|exceeded|exhausted)|insufficient\s+(?:quota|balance|credit)/i
+    .test(message);
+}
+
+/** A quota failure whose budget is spent: retrying the same provider is pointless. */
+export function isQuotaError(err: unknown): err is LLMError {
+  return err instanceof LLMError && err.code === 'quota_exceeded';
+}
+
 function isContentPolicyRejection(rawBody: string): boolean {
   const records = providerErrorRecords(rawBody);
   const errorType = firstBoundedString(records, ['error_type', 'errorType'], UPSTREAM_ERROR_IDENTIFIER_MAX_CHARS);
@@ -620,8 +637,17 @@ export function classifyError(
     });
   }
 
-  // Server errors (retryable)
+  // Server errors (retryable) — unless the prose says the upstream quota is
+  // spent. Gateways vary in which status they pick for a spent budget (429 or
+  // 502) and do not always carry a structured `error.code` field, so the prose
+  // is the only carrier (e.g. "ZCode did not stream: exceed quota limit" on
+  // HTTP 502). Retrying a spent budget only burns the same request again.
   if (statusCode === 500 || statusCode === 502) {
+    if (isQuotaProseMessage(rawMessage)) {
+      return new LLMError(message, 'quota_exceeded', {
+        retryable: false, statusCode, rawBody: stored, upstream,
+      });
+    }
     return new LLMError(message, 'server_error', {
       retryable: true, retryAfterMs: 2000, statusCode, rawBody: stored, upstream,
     });

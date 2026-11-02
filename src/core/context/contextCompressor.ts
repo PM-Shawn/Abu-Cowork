@@ -29,6 +29,13 @@ export interface SummaryRequest {
   conversationId: string | null;
   providerInstanceId: string;
   signal?: AbortSignal;
+  /**
+   * Anchor preservation (labs: state-preserving-compression, read by the
+   * caller through compressionTuning). The instruction then asks the summary
+   * to copy task anchors verbatim; compactHistory additionally appends the
+   * deterministic `[kept anchors]` block.
+   */
+  preserveAnchors?: boolean;
 }
 
 const SUMMARY_INSTRUCTION = `Stop working on the task for a moment. The conversation is close to the context limit, so write a summary that another assistant will continue the task from. The summary replaces every message above, so include everything needed to carry on.
@@ -47,6 +54,13 @@ Do not call any tools. Reply with the summary only, in Markdown, with these sect
 
 If an earlier summary appears above, merge it into this one. If the assistant said it could not do something or lacked a tool, do not record that as a fact: tools may have been installed since.`;
 
+// Appended to SUMMARY_INSTRUCTION when anchor preservation is on: the summary
+// itself must carry the anchors, on top of the deterministic block
+// compactHistory appends regardless of what the summary model kept.
+const SUMMARY_INSTRUCTION_ANCHORS = `
+
+10. Kept anchors — copy verbatim every plan-step line, file path and URL that appears in the conversation above, exactly as written.`;
+
 export async function writeCompactionSummary(
   messages: Message[],
   request: SummaryRequest,
@@ -55,7 +69,7 @@ export async function writeCompactionSummary(
   const instruction: Message = {
     id: 'compaction-instruction',
     role: 'user',
-    content: SUMMARY_INSTRUCTION,
+    content: SUMMARY_INSTRUCTION + (request.preserveAnchors ? SUMMARY_INSTRUCTION_ANCHORS : ''),
     timestamp: 0,
   };
   const requestedMessages = [...messages, instruction];

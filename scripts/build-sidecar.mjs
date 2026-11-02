@@ -147,6 +147,13 @@ export const SHIM_TARGETS = [
   { real: path.resolve(srcDir, 'utils/platform.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/platformRun.ts') },
   // Real forwarding shim — OS notifications via shell.notifyTask.
   { real: path.resolve(srcDir, 'utils/notifications.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/notificationsRun.ts') },
+  // Real forwarding shim — Labs flag reads via the shared settings mirror.
+  // The real resolve.ts statically imports @/stores/settingsStore (React
+  // hook), which first reached the sidecar bundle when the context-compression
+  // tuning (core/context/compressionTuning.ts) started reading labs flags.
+  // Pure resolution semantics are shared verbatim via core/labs/resolveCore.ts;
+  // see labsResolveRun.ts.
+  { real: path.resolve(srcDir, 'core/labs/resolve.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/labsResolveRun.ts') },
   // Mixed shim (drain*/setLoopContext real, requestCommandConfirmation/requestFilePermission throwing-dead) — see permissionBridgeRun.ts.
   { real: path.resolve(srcDir, 'core/agent/permissionBridge.ts'), shim: path.resolve(__dirname, '../sidecar/src/shims/permissionBridgeRun.ts') },
   // Real forwarding shim (cu.setState) + sidecar-local isSessionWindowHidden mirror — see computerUseStatusRun.ts (documented drift finding).

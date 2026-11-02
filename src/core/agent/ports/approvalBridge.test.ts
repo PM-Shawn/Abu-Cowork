@@ -226,51 +226,36 @@ describe('approvalBridge — file-permission: single active + FIFO queue + deque
   });
 });
 
-describe('approvalBridge — workspace: single active, NO queue (overwrite), 60s timeout', () => {
+describe('approvalBridge — workspace: single active, NO queue (overwrite), no timeout', () => {
   it('a second concurrent request overwrites the first — the first promise is abandoned', async () => {
-    vi.useFakeTimers();
-    let firstSettled = false;
     const p1 = request('workspace', { conversationId: 'c1', payload: { reason: 'r1' } });
-    void p1.then(() => { firstSettled = true; });
-
     const p2 = request('workspace', { conversationId: 'c2', payload: { reason: 'r2' } });
     expect(getSnapshot('workspace')?.conversationId).toBe('c2'); // overwritten, not queued
 
     resolveActive('workspace', '/picked');
     expect(await p2).toBe('/picked');
 
-    // The first request's own 60s timeout fires but no-ops (identity check
-    // fails — it's no longer the active entry) — it stays pending forever.
-    await vi.advanceTimersByTimeAsync(60_000 + 100);
-    expect(firstSettled).toBe(false);
-
-    // p1 never settles — avoid an unhandled-rejection / hang by not awaiting it further.
+    // p1 is abandoned and never settles — avoid an unhandled-rejection / hang by not awaiting it.
     void p1;
   });
 
-  it('auto-resolves to null after 60s when left untouched', async () => {
+  it('has no timeout — stays pending indefinitely until answered or drained', async () => {
     vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let settled = false;
     const p = request('workspace', { conversationId: 'c1', payload: { reason: 'r1' } });
-    await vi.advanceTimersByTimeAsync(60_000 + 100);
-    expect(await p).toBeNull();
-    expect(warnSpy).toHaveBeenCalledWith('[AgentLoop] Workspace request timed out, auto-cancelling');
-    warnSpy.mockRestore();
-  });
-
-  it('resolving before the timeout clears the timer (no late no-op warning)', async () => {
-    vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const p = request('workspace', { conversationId: 'c1', payload: { reason: 'r1' } });
+    void p.then(() => { settled = true; });
+    // A long wait with nothing settling — the dialog must NOT vanish on its own.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    expect(settled).toBe(false);
+    expect(getSnapshot('workspace')?.conversationId).toBe('c1');
+    // Settles only on the user's explicit answer.
     resolveActive('workspace', '/picked');
     await p;
-    await vi.advanceTimersByTimeAsync(60_000 + 100);
-    expect(warnSpy).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
+    expect(settled).toBe(true);
   });
 });
 
-describe('approvalBridge — user-question: many concurrent, addressed by id, 10min timeout', () => {
+describe('approvalBridge — user-question: many concurrent, addressed by id, no timeout', () => {
   it('supports multiple simultaneously-active entries (no single-slot contention)', async () => {
     const p1 = request('user-question', { id: 'tc-1', conversationId: 'c1', payload: { payload: { questions: [] } } });
     const p2 = request('user-question', { id: 'tc-2', conversationId: 'c2', payload: { payload: { questions: [] } } });
@@ -285,14 +270,16 @@ describe('approvalBridge — user-question: many concurrent, addressed by id, 10
     expect(await p1).toBeNull();
   });
 
-  it('auto-resolves to null after 10 minutes when left untouched', async () => {
+  it('has no timeout — stays pending until answered or drained, even after 10 minutes', async () => {
     vi.useFakeTimers();
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const p = request('user-question', { id: 'tc-timeout', conversationId: 'c1', payload: { payload: { questions: [] } } });
-    await vi.advanceTimersByTimeAsync(10 * 60 * 1000 + 100);
-    expect(await p).toBeNull();
-    expect(warnSpy).toHaveBeenCalledWith('[permissionBridge] UserQuestion timed out, auto-cancelling', 'tc-timeout');
-    warnSpy.mockRestore();
+    let settled = false;
+    const p = request('user-question', { id: 'tc-long', conversationId: 'c1', payload: { payload: { questions: [] } } });
+    void p.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000); // 1 hour — nothing should auto-resolve
+    expect(settled).toBe(false);
+    resolve('user-question', 'tc-long', { answers: [] });
+    await p;
+    expect(settled).toBe(true);
   });
 });
 

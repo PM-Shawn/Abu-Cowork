@@ -57,12 +57,28 @@ export const LABS_PET = 'pet';
  */
 export const LABS_APPS = 'apps';
 
+/**
+ * Stable id for the state-preserving context-compression experiment: when on,
+ * long-run context management compresses earlier and keeps task anchors
+ * (plan steps, file paths, URLs) in compacted summaries. See
+ * compressionTuning.ts / compaction.ts for the gates.
+ */
+export const LABS_STATE_PRESERVING_COMPRESSION = 'state-preserving-compression';
+
 export const LABS_EXPERIMENTS: readonly LabsExperiment[] = [
   {
     id: LABS_APPS,
     title: () => getI18n().settings.labsExpAppsTitle,
     description: () => getI18n().settings.labsExpAppsDesc,
     locationHint: () => getI18n().settings.labsExpAppsWhere,
+    defaultEnabled: false,
+    expiresAfter: '2027-01-31',
+  },
+  {
+    id: LABS_STATE_PRESERVING_COMPRESSION,
+    title: () => getI18n().settings.labsExpStateCompressionTitle,
+    description: () => getI18n().settings.labsExpStateCompressionDesc,
+    locationHint: () => getI18n().settings.labsExpStateCompressionWhere,
     defaultEnabled: false,
     expiresAfter: '2027-01-31',
   },

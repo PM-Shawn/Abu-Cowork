@@ -8,7 +8,6 @@ import { parseNamespacedToolName } from '../mcp/toolName';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import {
   checkReadPath,
-  checkConversationResultRead,
   checkWritePath,
   checkListPath,
   authorizeWorkspace,
@@ -619,6 +618,13 @@ interface BrowserActionTarget {
    * authorization.
    */
   frameUnverified?: true;
+  /**
+   * Why `origin` came back null (2026-10-27 无人值守可自救方案). The gate's
+   * `origin-unverified` refusal appends the matching guidance sentence, so a
+   * model can act on the refusal instead of replaying it — the same refusal
+   * was replayed 8 times in conversation mvo1nv4cdjj5y7 before this existed.
+   */
+  unresolvedReason?: 'reload-unknowable' | 'unparseable-url' | 'probe-failed' | 'tab-not-listed' | 'frame-unverified';
 }
 
 /** Only the one value the gate acts on; anything else is treated as absent. */
@@ -642,22 +648,43 @@ async function resolveBrowserActionTarget(
   const { serverName, toolName } = parsed;
 
   if (toolName === 'navigate' || (serverName === 'abu-browser' && toolName === 'create_tab')) {
-    // Only `goto` actually navigates to `input.url`. For back/forward/reload
-    // the executor ignores `url` entirely, so trusting it here would let a
-    // decoy url ride an allowed-site verdict while the browser goes somewhere
-    // else (history/reload). Destination is unknowable → null → ask.
+    // `goto` navigates to `input.url` — its destination IS the input, so the
+    // origin comes from there. For back/forward/reload the executor ignores
+    // `url` entirely, so trusting it here would let a decoy url ride an
+    // allowed-site verdict while the browser goes somewhere else.
+    //
+    // reload/back/forward (2026-10-27): the landing point stays inside this
+    // tab's session history — every entry was admitted when the tab first
+    // reached it, and reload's landing point IS the current page. So the
+    // target origin is the tab's CURRENT origin, resolved from the same
+    // get_tabs probe below; the site verdict, high-risk check and login wall
+    // all apply to it exactly as they do to any other action. A tab whose
+    // address does not parse (about:blank, chrome-error) still resolves null.
     const action = toolName === 'create_tab' ? 'goto' : (typeof input.action === 'string' ? input.action : 'goto');
-    if (action !== 'goto') return { origin: null, url: null, authState: null };
-    const url = typeof input.url === 'string' ? input.url : undefined;
-    const origin = url ? normalizeBrowserOrigin(url) : null;
-    // The url is reported only when it resolved to a real http(s) origin, so a
-    // `javascript:`/`about:` string never reaches the high-risk classifier as
-    // if it were a page address.
-    return { origin, url: origin !== null ? (url ?? null) : null, authState: null };
+    if (action === 'goto') {
+      const url = typeof input.url === 'string' ? input.url : undefined;
+      const origin = url ? normalizeBrowserOrigin(url) : null;
+      // The url is reported only when it resolved to a real http(s) origin, so a
+      // `javascript:`/`about:` string never reaches the high-risk classifier as
+      // if it were a page address.
+      return { origin, url: origin !== null ? (url ?? null) : null, authState: null, ...(origin === null ? { unresolvedReason: 'unparseable-url' as const } : {}) };
+    }
+    if (action !== 'reload' && action !== 'back' && action !== 'forward') {
+      return { origin: null, url: null, authState: null, unresolvedReason: 'reload-unknowable' };
+    }
+    // Fall through to the tab probe below: history/reload rides the tab's own
+    // admission record, not the (untrustworthy) `url` input.
   }
 
-  const tabId = Number(input.tabId);
-  if (!Number.isFinite(tabId)) return { origin: null, url: null, authState: null };
+  const inputTabId = Number(input.tabId);
+  // query_js 是唯一执行侧支持 tab-less 的工具（host 对 get_html 用本任务最近
+  // 操作的 tab 兜底，browserHost.cjs 的 activeTabIdByOwner）。gate 必须解析
+  // 同一个 tab，否则工具文档承诺的省略写法在 gate 上不可能成立、无人值守必拒
+  // （2026-10-27 修 3）。listing 没有当前 tab 时仍拒，走 tab-not-listed 指引。
+  const tabLessQueryJs = toolName === 'query_js' && !Number.isFinite(inputTabId);
+  if (!Number.isFinite(inputTabId) && !tabLessQueryJs) {
+    return { origin: null, url: null, authState: null, unresolvedReason: 'tab-not-listed' };
+  }
   // Which embedded regions this call names — one for a single action, possibly
   // several for a batch. Read here and not later because it decides whether
   // the listing has to carry the tab's frame tree at all.
@@ -689,16 +716,17 @@ async function resolveBrowserActionTarget(
         // that threading the conversation id closed.
         agentRunId,
         createBrowserTabIfEmpty: false,
-        // The gate's ONLY probe. A frame-targeted action is authorized against
-        // the frame's own origin, and the merged ask needs to know which
-        // regions the page embeds, so the tree has to ride this listing rather
-        // than cost a second round trip.
-        framesForTabId: tabId,
+        // A NaN never matches the host's Number.isFinite check; a tab-less
+        // query_js names no region anyway (its schema has no frameId).
+        ...(Number.isFinite(inputTabId) ? { framesForTabId: inputTabId } : {}),
       }),
       new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
     ]);
-    if (result === null || typeof result !== 'string') return { origin: null, url: null, authState: null };
+    if (result === null || typeof result !== 'string') {
+      return { origin: null, url: null, authState: null, unresolvedReason: 'probe-failed' };
+    }
     const parsed = JSON.parse(result) as {
+      summary?: { currentTabId?: unknown };
       windows?: Array<{
         tabs?: Array<{
           tabId?: number;
@@ -708,6 +736,10 @@ async function resolveBrowserActionTarget(
         }>;
       }>;
     };
+    const tabId = Number.isFinite(inputTabId) ? inputTabId : Number(parsed.summary?.currentTabId);
+    if (!Number.isFinite(tabId)) {
+      return { origin: null, url: null, authState: null, unresolvedReason: 'tab-not-listed' };
+    }
     for (const win of parsed.windows ?? []) {
       for (const tab of win.tabs ?? []) {
         if (tab.tabId !== tabId) continue;
@@ -722,6 +754,7 @@ async function resolveBrowserActionTarget(
             url: topUrl,
             authState,
             ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
+            ...(topOrigin === null ? { unresolvedReason: 'unparseable-url' as const } : {}),
           };
         }
         // Every named region has to resolve to an origin the BROWSER confirmed.
@@ -780,13 +813,13 @@ async function resolveBrowserActionTarget(
           // the run reads a missing pin as `origin-unverifiable`.
           frameOrigins,
           ...(frameUrls.length > 0 ? { frameUrls } : {}),
-          ...(unverified ? { frameUnverified: true as const } : {}),
+          ...(unverified ? { frameUnverified: true as const, unresolvedReason: 'frame-unverified' as const } : {}),
         };
       }
     }
-    return { origin: null, url: null, authState: null };
+    return { origin: null, url: null, authState: null, unresolvedReason: 'tab-not-listed' };
   } catch {
-    return { origin: null, url: null, authState: null };
+    return { origin: null, url: null, authState: null, unresolvedReason: 'probe-failed' };
   }
 }
 
@@ -1402,19 +1435,13 @@ export async function checkToolApproval(
           id,
           { followFinalSymlink: pathInfo.followFinalSymlink },
         )
-        : async (candidate: string, id?: AuthorizationScopeId) => (
-          await checkConversationResultRead(candidate, conversation ? toolContext?.conversationId : undefined)
-          ?? await (pathInfo.listing ? checkListPath : checkReadPath)(candidate, id)
-        );
+        : (pathInfo.listing ? checkListPath : checkReadPath);
 
       const scopeId = teamFileScope ?? toolContext?.authorizationScopeId;
-      const resultRead = pathInfo.capability === 'read'
-        ? await checkConversationResultRead(pathInfo.path, conversation ? toolContext?.conversationId : undefined)
-        : null;
       const fileCeilingDecision = decideFileUnderRunPermissionCeiling(
         runPermissionCeiling,
         pathInfo.capability,
-        resultRead?.allowed === true || isInScopedAuthorizedWorkspace(pathInfo.path, pathInfo.capability, scopeId),
+        isInScopedAuthorizedWorkspace(pathInfo.path, pathInfo.capability, scopeId),
       );
       if (fileCeilingDecision.decision === 'deny') {
         return fileCeilingDecision;
@@ -1423,9 +1450,6 @@ export async function checkToolApproval(
 
       if (!pathCheck.allowed) {
         if (pathCheck.needsPermission && pathCheck.permissionPath) {
-          if (toolContext?.allowPermissionPrompts === false) {
-            return { decision: 'deny', reason: `Error: ${t.toolErrors.needsAuthorization} ${pathCheck.permissionPath}` };
-          }
           // Decide gating based on permission mode.
           const cap = pathCheck.capability || pathInfo.capability;
           let fileDecision = strategy.decideFileAccess(cap, true);
@@ -1865,6 +1889,31 @@ export async function checkToolApproval(
       const browserDenialReasonText = (reason: BrowserDenialReasonCode): string =>
         sharedBrowserDenialReasonText(t, reason);
 
+      // 2026-10-27 无人值守可自救：origin-unverified 按解析失败的原因追加一条
+      // 出路；固定配置类拒绝（重试不会改变结果）统一追加「勿重试」提示 ——
+      // 没有出路的拒绝只会被原样重试（会话 mvo1nv4cdjj5y7 里同一个 reload 被
+      // 原样重试了 8 次，护栏不计数这类拒绝）。交互式拒绝（approval-refused、
+      // user-cancelled）不追加：用户改主意后重试是有意义的。
+      const STANDING_CONFIG_DENIALS: ReadonlySet<BrowserDenialReasonCode> = new Set([
+        'server-disabled', 'master-switch-off', 'site-denied', 'high-risk-site',
+        'policy-denied', 'enterprise-policy-denied', 'capability-denied', 'origin-unverified',
+      ]);
+      const originUnverifiedHintText = target.unresolvedReason
+        ? {
+            'reload-unknowable': t.commandConfirm.browserOriginHintNavigationUnverifiable,
+            'unparseable-url': t.commandConfirm.browserOriginHintNonWebPage,
+            'probe-failed': t.commandConfirm.browserOriginHintProbeFailed,
+            'tab-not-listed': t.commandConfirm.browserOriginHintTabNotListed,
+            'frame-unverified': t.commandConfirm.browserOriginHintFrameUnverified,
+          }[target.unresolvedReason]
+        : null;
+      const denialDetail = (reason: BrowserDenialReasonCode): string => {
+        const parts = [browserDenialReasonText(reason)];
+        if (reason === 'origin-unverified' && originUnverifiedHintText) parts.push(originUnverifiedHintText);
+        if (STANDING_CONFIG_DENIALS.has(reason)) parts.push(t.commandConfirm.browserStandingDenialNoRetry);
+        return parts.join(' ');
+      };
+
       /**
        * ONE evaluation, shared with Settings' 「生效权限预览」 (S12).
        *
@@ -1903,14 +1952,14 @@ export async function checkToolApproval(
       const refuseBrowser = async (
         reason: BrowserDenialReasonCode,
       ): Promise<ToolApprovalDecision> => {
-        if (runMode === 'unattended') return await denyUnattendedBrowser(reason);
+        if (runMode === 'unattended') return await denyUnattendedBrowser(reason, denialDetail(reason));
         recordGateDenial(reason);
         if (reason === 'user-cancelled') {
           return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
         }
         const text = reason === 'approval-refused'
           ? t.commandConfirm.browserDenied
-          : browserDenialReasonText(reason);
+          : denialDetail(reason);
         return { decision: 'deny', reason: `Error: ${text}` };
       };
 
@@ -2278,8 +2327,10 @@ export async function checkToolApproval(
       // pin that is only attached sometimes is a pin whose absence means
       // nothing.
       const popupTool = parseNamespacedToolName(name);
+      // download 在白名单里（2026-10-27 B1）：站点用新窗口承载下载时，专用
+      // 下载动作与 click 同样需要弹窗租约（host 侧 popupEligible 对应放行）。
       const permitsPopup = popupTool?.serverName === 'abu-browser'
-        && ['click', 'keyboard'].includes(popupTool.toolName)
+        && ['click', 'keyboard', 'download'].includes(popupTool.toolName)
         && permissionResource === 'browse' && target.topOrigin === undefined
         && !input.frameId && !target.frameOrigins && origin !== null;
       browserExecutionPin = {
@@ -2604,7 +2655,7 @@ export async function executeAnyTool(
   input: Record<string, unknown>,
   onRequireConfirmation?: CommandConfirmCallback,
   onRequireFilePermission?: FilePermissionCallback,
-  toolContext?: ToolExecutionContext,
+  toolContext?: ToolExecutionContext
 ): Promise<ToolResult> {
   // `apply_patch <<'EOF' … EOF` typed as a shell command becomes an
   // apply_patch call while the patch tool is offered (see applyPatchCommand.ts).
@@ -2691,8 +2742,8 @@ export async function executeAnyTool(
     const result = await toolRegistry.execute(name, executionInput, toolContext);
     await files?.assertCurrent();
     await captureOutputs(result);
-    // File-tool OS-permission errors get a friendly grant-guide.
-    // See applyOSPermissionGuideIfNeeded.
+    // File-tool OS-permission errors get a friendly grant-guide (not
+    // truncated — the raw error is short). See applyOSPermissionGuideIfNeeded.
     return typeof result === 'string' ? applyOSPermissionGuideIfNeeded(name, result) : result;
   }
 
@@ -2766,6 +2817,16 @@ export async function executeAnyTool(
             : {}),
           ...(approval.browserExecution?.runMode === 'unattended'
             ? { unattended: true }
+            : {}),
+          // A non-vision model cannot see a screenshot the image-bound way:
+          // the adapter strips the block on the way out anyway. Ask the host
+          // to write the capture to disk and answer with the path instead —
+          // rides `_meta` like the origin pin, never the tool schema, so the
+          // model can neither read nor forge the capability fact. The tools'
+          // own save arguments cover the case the MODEL wants a file.
+          ...((toolName === 'screenshot' || toolName === 'screenshot_full_page')
+            && toolContext?.supportsVision === false
+            ? { screenshotDelivery: 'file' as const }
             : {}),
         });
       } catch (err) {

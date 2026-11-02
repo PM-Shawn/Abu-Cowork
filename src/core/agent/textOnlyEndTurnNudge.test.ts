@@ -90,4 +90,25 @@ describe('createTextOnlyEndTurnNudge', () => {
     expect(nudge.observeTurn(textTurn)).toBe(true);
     expect(nudge.observeTurn(textTurn)).toBe(false);
   });
+
+  it('nudges an empty response (no text, no tool calls) after a tool turn', () => {
+    // 网关吞内容场景：token 计了但正文没到。空正文不算提问（textAsksUser('')=false），
+    // 应照常续推。
+    const nudge = createTextOnlyEndTurnNudge();
+    nudge.observeTurn(toolTurn);
+    expect(nudge.sawToolCall).toBe(true);
+    expect(nudge.observeTurn({ ...textTurn, text: '' })).toBe(true);
+    expect(nudge.observeTurn({ ...textTurn, text: '' })).toBe(true);
+    expect(nudge.observeTurn({ ...textTurn, text: '' })).toBe(false);
+    expect(nudge.count).toBe(TEXT_ONLY_END_TURN_NUDGE_LIMIT);
+  });
+
+  it('reports sawToolCall only after a turn that carried a tool call', () => {
+    const nudge = createTextOnlyEndTurnNudge();
+    expect(nudge.sawToolCall).toBe(false);
+    nudge.observeTurn(textTurn);
+    expect(nudge.sawToolCall).toBe(false);
+    nudge.observeTurn(toolTurn);
+    expect(nudge.sawToolCall).toBe(true);
+  });
 });

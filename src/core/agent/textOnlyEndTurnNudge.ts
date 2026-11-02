@@ -99,6 +99,8 @@ export interface TextOnlyEndTurnNudge {
   observeTurn(observation: TextOnlyEndTurnObservation): boolean;
   /** How many nudges this run has sent so far. */
   readonly count: number;
+  /** Whether an earlier turn of this run carried a tool call. */
+  readonly sawToolCall: boolean;
 }
 
 export function createTextOnlyEndTurnNudge(): TextOnlyEndTurnNudge {
@@ -108,6 +110,9 @@ export function createTextOnlyEndTurnNudge(): TextOnlyEndTurnNudge {
   return {
     get count() {
       return count;
+    },
+    get sawToolCall() {
+      return sawToolCall;
     },
     observeTurn({ enabled, stopReason, toolCalls, text }) {
       if (toolCalls.length > 0) {

@@ -118,6 +118,23 @@ export const ABU_EXPECTED_FRAME_ORIGINS_META_KEY = 'abu/expectedFrameOrigins';
 export const ABU_APPROVED_UPLOAD_FILES_META_KEY = 'abu/approvedUploadFiles';
 
 /**
+ * MCP `_meta` key telling the screenshot tools to deliver the capture as a
+ * FILE on disk instead of an image block. The host (Abu's client) stamps it
+ * when the active model cannot consume images: a base64 screenshot would be
+ * stripped on the way out anyway (`messageNormalizer`), so the capture is
+ * written to Abu's per-task screenshot folder and returned as TEXT — a path,
+ * pixel size and byte size the model can hand to the user or a later
+ * vision-capable/OCR step.
+ *
+ * Same `_meta`-not-input-schema and duplication rationale as above: an
+ * authorization/capability fact the model must be able to neither read nor
+ * forge. The tool's own `saveToFile`/`savePath` arguments cover the case the
+ * MODEL wants a file; this key covers the case the HOST knows the model can't
+ * look at one.
+ */
+export const ABU_SCREENSHOT_DELIVERY_META_KEY = 'abu/screenshotDelivery';
+
+/**
  * What every DOM-scoped tool says about `frameId`.
  *
  * One sentence, everywhere, because the model has to learn the concept once:
@@ -175,6 +192,16 @@ export interface BrowserTransport {
 
 const BROWSER_EXTENSION_NOT_CONNECTED =
   'Browser extension is not connected. Please install and enable the Abu Browser Extension, then check the connection status in the extension popup.';
+
+/**
+ * The Chrome extension channel is a service worker with NO filesystem (see
+ * `UploadDelivery`), so file delivery can only be honored by the built-in
+ * browser. Said as an instruction, not an apology, so a non-vision model
+ * routed to the extension channel re-routes itself to a read tool.
+ */
+const SCREENSHOT_SAVE_NOT_AVAILABLE =
+  "Error: saving screenshots to disk is only available in Abu's built-in browser. "
+  + 'Read the page with snapshot/extract_text instead.';
 
 const chromeWsTransport: BrowserTransport = {
   // A service worker cannot open a file, so this side reads it. See
@@ -360,6 +387,18 @@ function safeParse(raw: string): unknown {
 function approvedUploadFilesFromExtra(extra: unknown): ApprovedUploadFile[] | null {
   const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
   return parseApprovedUploadFiles(meta?.[ABU_APPROVED_UPLOAD_FILES_META_KEY]);
+}
+
+/**
+ * `true` when the HOST — not the model's own arguments — asked for file
+ * delivery, i.e. the active model cannot view images. The saved-screenshot
+ * text carries a "you cannot view images" note only in this case: a model
+ * that explicitly asked for a file can see images fine and the note would
+ * be a lie.
+ */
+function hostAskedForFileDelivery(extra: unknown): boolean {
+  const meta = (extra as { _meta?: Record<string, unknown> } | undefined)?._meta;
+  return meta?.[ABU_SCREENSHOT_DELIVERY_META_KEY] === 'file';
 }
 
 /**
@@ -555,6 +594,36 @@ function formatResult(response: BrowserTransportResponse): string {
     return response.data;
   }
   return JSON.stringify(response.data, null, 2);
+}
+
+/**
+ * The TEXT a screenshot tool returns when the capture went to disk.
+ *
+ * The path is the whole point — it is what the model hands to the user, or
+ * what a later vision-capable/OCR step reads — so a response without one is
+ * reported verbatim (`formatResult`) rather than dressed up as a success:
+ * an old host that predates `saveMode` answers with a data URL, and
+ * presenting that as "saved to <data URL>" would be worse than the error
+ * shape it actually is.
+ */
+function formatSavedScreenshot(response: BrowserTransportResponse, noVisionNote: boolean): string {
+  if (!response.success) return formatResult(response);
+  const data = response.data as { path?: unknown; width?: unknown; height?: unknown; bytes?: unknown } | undefined;
+  const filePath = typeof data?.path === 'string' ? data.path : '';
+  if (!filePath) return formatResult(response);
+  const parts: string[] = [];
+  if (typeof data?.width === 'number' && typeof data?.height === 'number') {
+    parts.push(`${data.width}x${data.height}`);
+  }
+  if (typeof data?.bytes === 'number') {
+    parts.push(`${Math.max(1, Math.round(data.bytes / 1024))} KB`);
+  }
+  const note = noVisionNote
+    ? ' The current model cannot view images; the file is available to the user, '
+      + 'and can be attached to a vision-capable model or read by OCR tooling.'
+    : '';
+  const detail = parts.length > 0 ? ` (${parts.join(', ')})` : '';
+  return `Screenshot saved: ${filePath}${detail}.${note}`;
 }
 
 // Locator / find-query / wait-condition parsing lives in `locators.ts` so
@@ -1097,11 +1166,36 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     'Take a screenshot of the visible area of a tab. Returns a base64-encoded PNG image. Useful for visual confirmation of actions.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
+      saveToFile: z.coerce.boolean().optional().describe(
+        'Save the PNG to disk instead of returning it as an image, and get the file path back as text. '
+        + 'Use this when the result only needs to be a file: the current model cannot view images, '
+        + 'or the user asked for the file itself. Without savePath, the file lands in Abu\'s '
+        + 'screenshot folder for this task.',
+      ),
+      savePath: z.string().optional().describe(
+        'Where to save when saveToFile is true. A directory path (trailing separator, or an existing '
+        + 'directory) gets the default file name generated inside it; a file path is used as-is, a '
+        + 'missing .png extension is appended, and a name conflict gets an incrementing suffix rather '
+        + 'than overwriting. Parent directories are created if missing. Relative paths resolve '
+        + 'against this task\'s screenshot folder.',
+      ),
     },
-    async ({ tabId }, extra) => {
+    async ({ tabId, saveToFile, savePath }, extra) => {
       await ensureConnected(transport);
+      const hostDelivery = hostAskedForFileDelivery(extra);
+      const saveMode = saveToFile === true || savePath !== undefined || hostDelivery;
+      if (saveMode && options.backend !== 'built-in') {
+        return { content: [{ type: 'text' as const, text: SCREENSHOT_SAVE_NOT_AVAILABLE }] };
+      }
       const owner = ownerPayloadFromExtra(extra);
-      const res = await sendWithSignal(transport, 'screenshot', { tabId, ...owner }, extra);
+      const res = await sendWithSignal(transport, 'screenshot', {
+        tabId,
+        ...(saveMode ? { saveMode: true, ...(savePath ? { savePath } : {}) } : {}),
+        ...owner,
+      }, extra);
+      if (saveMode) {
+        return { content: [{ type: 'text' as const, text: formatSavedScreenshot(res, hostDelivery) }] };
+      }
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{
@@ -1121,12 +1215,37 @@ CHROME EXTENSION CHANNEL: a dialog cannot be held open there, so this instead AR
     'Take a full-page screenshot by scrolling and stitching the entire page content. Returns a base64-encoded PNG image of the complete page. Use this when the user asks for a "long screenshot" or wants to capture content beyond the visible viewport. This is slower than a regular screenshot.',
     {
       tabId: z.coerce.number().describe('Tab ID from get_tabs'),
+      saveToFile: z.coerce.boolean().optional().describe(
+        'Save the PNG to disk instead of returning it as an image, and get the file path back as text. '
+        + 'Use this when the result only needs to be a file: the current model cannot view images, '
+        + 'or the user asked for the file itself. Without savePath, the file lands in Abu\'s '
+        + 'screenshot folder for this task.',
+      ),
+      savePath: z.string().optional().describe(
+        'Where to save when saveToFile is true. A directory path (trailing separator, or an existing '
+        + 'directory) gets the default file name generated inside it; a file path is used as-is, a '
+        + 'missing .png extension is appended, and a name conflict gets an incrementing suffix rather '
+        + 'than overwriting. Parent directories are created if missing. Relative paths resolve '
+        + 'against this task\'s screenshot folder.',
+      ),
     },
-    async ({ tabId }, extra) => {
+    async ({ tabId, saveToFile, savePath }, extra) => {
       await ensureConnected(transport);
+      const hostDelivery = hostAskedForFileDelivery(extra);
+      const saveMode = saveToFile === true || savePath !== undefined || hostDelivery;
+      if (saveMode && options.backend !== 'built-in') {
+        return { content: [{ type: 'text' as const, text: SCREENSHOT_SAVE_NOT_AVAILABLE }] };
+      }
       const owner = ownerPayloadFromExtra(extra);
       // Full-page capture needs more time: scroll + multiple captures + stitch
-      const res = await sendWithSignal(transport, 'screenshot_full_page', { tabId, ...owner }, extra, 120_000);
+      const res = await sendWithSignal(transport, 'screenshot_full_page', {
+        tabId,
+        ...(saveMode ? { saveMode: true, ...(savePath ? { savePath } : {}) } : {}),
+        ...owner,
+      }, extra, 120_000);
+      if (saveMode) {
+        return { content: [{ type: 'text' as const, text: formatSavedScreenshot(res, hostDelivery) }] };
+      }
       if (res.success && typeof res.data === 'string') {
         return {
           content: [{

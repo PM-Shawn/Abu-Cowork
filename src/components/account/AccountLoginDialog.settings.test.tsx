@@ -351,8 +351,7 @@ describe('AccountLoginDialog opened from the settings window', () => {
         expectStillSigningIn(status);
       }
 
-      it.each(['awaiting_browser', 'exchanging'] as const)('keeps a sign-in that is %s when a workspace request times out under the approval', (status) => {
-        vi.useFakeTimers();
+      it.each(['awaiting_browser', 'exchanging'] as const)('keeps a sign-in that is %s when a workspace request is denied under the approval', async (status) => {
         useAccountStore.setState({ status });
         const view = render(<Page approval={false} />);
         view.rerender(<Page approval />);
@@ -365,8 +364,12 @@ describe('AccountLoginDialog opened from the settings window', () => {
         expect(window).toHaveAttribute('hidden');
         expectStillSigningIn(status);
 
-        // Nobody answers the workspace request: it answers itself after 60 seconds.
-        act(() => { vi.advanceTimersByTime(60_000); });
+        // Approvals have no timeout: the request leaves only when it is
+        // answered. Deny it and the sign-in stays aside until the approval
+        // stack above it is answered.
+        act(() => { resolveWorkspaceRequest(null); });
+        await act(async () => {});
+        expect(answers).toEqual([null]);
         expect(getPendingWorkspaceRequest()).toBeNull();
         expect(loginWindow()).toBe(window);
         expect(window).toHaveAttribute('hidden');
@@ -772,8 +775,7 @@ describe('AccountLoginDialog opened from the settings window', () => {
       expect(useAccountStore.getState().status).toBe(status);
     });
 
-    it('goes on with a sign-in while a workspace request is shown and answers itself after 60 seconds', async () => {
-      vi.useFakeTimers();
+    it('goes on with a sign-in while a workspace request is shown and is denied', async () => {
       useAccountStore.setState({ status: 'awaiting_browser' });
       render(<><ChatGrants /><AccountLoginDialog /></>, { wrapper: DesignSystemProvider });
 
@@ -784,7 +786,8 @@ describe('AccountLoginDialog opened from the settings window', () => {
       expect(screen.getByRole('alertdialog', { name: '工作区访问权限' })).toBeInTheDocument();
       expect(shownLoginWindow()).toBeNull();
 
-      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      // Approvals have no timeout: the request leaves only when it is answered.
+      await act(async () => { resolveWorkspaceRequest(null); });
       expect(answers).toEqual([null]);
       expect(screen.queryByRole('alertdialog', { name: '工作区访问权限' })).toBeNull();
       expect(shownLoginWindow()).not.toBeNull();

@@ -106,3 +106,52 @@ test('AI cannot borrow a previously manual child to open or navigate another ori
   assert.equal(policy.permitsRequest(3, `${origin}/checkout`), false);
   assert.equal(policy.permitsRequest(3, `${origin}/article`), true);
 });
+
+// B3/B5（2026-10-27）：blob: 下载弹窗与 blocked 标记清除。
+// 这个 fixture 的 originOf 镜像宿主 normalizedOriginOf 的 blob 剥离行为。
+function blobFixture() {
+  const origin = 'https://example.com';
+  const source = Object.assign(new EventEmitter(), { id: 1, getURL: () => `${origin}/source`, isDestroyed: () => false });
+  const owner = { key: 'conversation:calling-run' };
+  const policy = createBrowserPopupPolicy({ originOf(url) {
+    let raw = String(url);
+    if (raw.startsWith('blob:')) raw = raw.slice('blob:'.length);
+    try { const u = new URL(raw); return /^https?:$/.test(u.protocol) ? u.origin : null; } catch { return null; }
+  } });
+  const controller = new AbortController();
+  const begin = (overrides = {}) => policy.beginAction(source, { owner, origin, signal: controller.signal, isCurrent: () => true, ...overrides });
+  return { source, owner, policy, controller, begin, origin };
+}
+
+test('a blob: download popup compares against its inner origin (B3)', () => {
+  const { source, policy, begin, origin } = blobFixture();
+  const lease = begin();
+  const ticket = policy.request(source, `blob:${origin}/generated.xlsx`);
+  assert.equal(ticket.origin, origin, 'the ticket pins the inner origin');
+  assert.equal(lease.blocked, false);
+  lease.end();
+});
+
+test('a blob: popup whose inner URL is high risk is refused even when origins match (B3)', () => {
+  const { source, policy, begin } = blobFixture();
+  // 高风险内层（paypal.com）与租约 origin 相同 —— 不剥内层的话
+  // isHighRiskUrl(blob:...) 恒为 false，这条弹窗会被放行。
+  const lease = begin({ origin: 'https://paypal.com' });
+  assert.equal(policy.request(source, 'blob:https://paypal.com/withdraw/xlsx'), null);
+  assert.equal(lease.blocked, true);
+  lease.end();
+});
+
+test('a successful adoption clears the source page sticky blocked flag (B5)', () => {
+  const { source, policy, begin, origin } = fixture();
+  const first = begin();
+  assert.equal(policy.request(source, 'https://other.example/'), null);
+  assert.equal(policy.wasBlocked(source), true);
+  first.end();
+  const second = begin();
+  const ticket = policy.request(source, `${origin}/download.xlsx`);
+  const child = Object.assign(new EventEmitter(), { id: 9, getURL: () => `${origin}/download.xlsx`, isDestroyed: () => false });
+  policy.attach(child, ticket);
+  assert.equal(policy.wasBlocked(source), false, 'the stale notice must not outlive a successful adoption');
+  second.end();
+});

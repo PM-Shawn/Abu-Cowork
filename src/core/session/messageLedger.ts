@@ -46,6 +46,7 @@
  */
 
 import type { Message } from '@/types';
+import { parseMessageMedia } from '@/types/media';
 
 /** Ledger event kinds. Absent `lk` means `msg.put`. */
 export type LedgerKind = 'msg.put' | 'msg.tomb' | 'msg.truncate' | 'msg.loopDrop';
@@ -198,6 +199,7 @@ export function createLedgerFold(): LedgerFold {
 
       switch (kind) {
         case LEDGER_KIND_PUT: {
+          Object.assign(line, parseMessageMedia(line));
           // Note the map key is `line.id` verbatim, so every id-less line
           // collapses onto one shared `undefined` key — the behaviour the
           // pre-ledger dedup had and both ports deliberately mirror.

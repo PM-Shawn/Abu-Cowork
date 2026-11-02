@@ -38,6 +38,9 @@ import { useBatchProgressStore } from '@/stores/batchProgressStore';
 import { makeWorkProcessFoldKey, useWorkProcessFoldStore } from '@/stores/workProcessFoldStore';
 import { extractWorkflowSteps, extractFileOutputs, extractFilePathsFromText, parsePlanSteps } from '@/utils/workflowExtractor';
 import { collectPresentedFiles } from '@/utils/presentedFiles';
+import { isVideoFile } from '@/core/media/mediaTypes';
+import VideoPreview from '@/components/preview/VideoPreview';
+import { ImageEditStatus } from './ImageEditStatus';
 import { collectTurnFilePaths, resolveFileMention } from '@/utils/turnFileMentions';
 import { usePresentFilesOnDisk } from '@/hooks/usePresentFilesOnDisk';
 import { parseSearchResults, stripSourcesBlock, parseSourcesFromText } from '@/utils/searchParser';
@@ -1067,7 +1070,6 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     ? format(t.chat.workingFor, { duration: formatWorkDuration(runElapsedMs) })
     : t.chat.working;
   const foldMode = foldEntry?.mode ?? 'auto';
-  const workExpanded = foldMode === 'expanded' || (foldMode === 'auto' && !(foldEntry?.autoCollapseHandled ?? false));
   const hasFinalAnswerOutsideFold = workFoldEnd !== null && workFoldEnd < segments.length && segments[workFoldEnd]?.kind === 'text';
   const canAutoCollapseFold =
     foldMode === 'auto'
@@ -1084,6 +1086,12 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     && batchRollup.running === 0
     && batchRollup.queued === 0
     && batchRollup.unknown === 0;
+
+  // Completed history is measured in its settled state from the first commit.
+  // A running group keeps the focus-aware completion transition below.
+  const [initiallyAutoCollapsed] = useState(canAutoCollapseFold);
+  const workExpanded = foldMode === 'expanded'
+    || (foldMode === 'auto' && !initiallyAutoCollapsed && !(foldEntry?.autoCollapseHandled ?? false));
 
   useEffect(() => {
     if (!canAutoCollapseFold) return;
@@ -1288,7 +1296,7 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
       {userMsg && <MessageErrorBoundary><MessageBubble message={userMsg} /></MessageErrorBoundary>}
 
       {/* Multiple assistant messages grouped with single avatar */}
-      {(assistantMsgs.length > 0 || isStopped) && (
+      {(assistantMsgs.length > 0 || isStopped || userMsg?.imageEditRequest) && (
         <div className="flex gap-3 w-full overflow-hidden group">
           {/* ABU Avatar - only shown once for the group (the leader's in a team conversation) */}
           <AssistantRowAvatar avatar={teamLeader ? <AgentAvatar agent={teamLeader.leader} size="md" round /> : undefined} name={teamLeader?.leaderName} />
@@ -1487,6 +1495,12 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
             {/* File attachments - show when this group's execution is done.
                 Previous groups always show; last group waits for global status
                 to ensure intermediate scripts are properly filtered out. */}
+            {messages.flatMap(message => message.imageEditRequest && !message.inheritedFromBranch ? [<ImageEditStatus key={message.id} request={message.imageEditRequest} />] : [])}
+            {messages.some(message => message.mediaArtifacts?.length) && <div className="mt-2 flex flex-wrap gap-3">
+              {messages.flatMap(message => message.mediaArtifacts ?? []).map(artifact => artifact.kind === 'video'
+                ? <VideoPreview key={artifact.id} filePath={artifact.fileRef.originalPath} conversationId={conversationId} inline />
+                : <ImagePreviewCard key={artifact.id} filePath={artifact.fileRef.originalPath} conversationId={conversationId} />)}
+            </div>}
             {fileOutputs.length > 0 && isGroupDone && (() => {
               const imageFiles = fileOutputs.filter((f) => isImageFile(f.path));
               const otherFiles = fileOutputs.filter((f) => !isImageFile(f.path));
@@ -1495,14 +1509,16 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                   {imageFiles.length > 0 && (
                     <div className="flex flex-wrap gap-3 mt-2">
                       {imageFiles.map((file) => (
-                        <ImagePreviewCard key={file.path} filePath={file.path} />
+                        <ImagePreviewCard key={file.path} filePath={file.path} conversationId={conversationId} />
                       ))}
                     </div>
                   )}
                   {otherFiles.length > 0 && (
                     <div className="flex flex-wrap gap-2 mt-2">
                       {otherFiles.map((file) => (
-                        <FileAttachment key={file.path} filePath={file.path} operation={file.operation} />
+                        isVideoFile(file.path)
+                          ? <VideoPreview key={file.path} filePath={file.path} conversationId={conversationId} inline />
+                          : <FileAttachment key={file.path} filePath={file.path} operation={file.operation} />
                       ))}
                     </div>
                   )}
@@ -1517,8 +1533,10 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
                 <div className="flex flex-wrap gap-2 mt-2">
                   {(allFilesShown ? onDiskFiles : onDiskFiles.slice(0, MAX_FILE_CARDS_SHOWN)).map((file) => (
                     isImageFile(file.path)
-                      ? <ImagePreviewCard key={file.path} filePath={file.path} />
-                      : <FileAttachment key={file.path} filePath={file.path} description={file.description} declared />
+                      ? <ImagePreviewCard key={file.path} filePath={file.path} conversationId={conversationId} />
+                      : isVideoFile(file.path)
+                        ? <VideoPreview key={file.path} filePath={file.path} conversationId={conversationId} inline />
+                        : <FileAttachment key={file.path} filePath={file.path} description={file.description} declared />
                   ))}
                 </div>
                 {onDiskFiles.length > MAX_FILE_CARDS_SHOWN && (

@@ -12,6 +12,12 @@ import { Button, IconButton } from '@/components/ds/button';
 import { Pressable } from '@/components/ds/pressable';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons, type AppIconName } from '@/components/ds/icons';
+import { activateImageEditing } from '@/core/media/imageEditing';
+import { useEnterpriseStore } from '@/stores/enterpriseStore';
+import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode } from '@/stores/composerDraftStore';
+import { save as saveDialog } from '@tauri-apps/plugin-dialog';
+import { savePreviewCopy } from '@/components/panel/previewFileActions';
+import { invokeElectronMedia } from '@/utils/electronHost';
 
 type AppIcon = (typeof AppIcons)[AppIconName];
 
@@ -425,11 +431,24 @@ function fitThumbnail(size: { w: number; h: number }): { width: number; height: 
   return { width: Math.round(size.w * scale), height: Math.round(size.h * scale) };
 }
 
-// Compact image preview card for generated images. Memoized: its reveal button carries a
-// tooltip, and finished message groups re-render with every streamed token of a later reply.
-export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { filePath: string }) {
+// Finished image cards keep their render while later replies stream.
+export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath, conversationId: ownerConversationId }: { filePath: string; conversationId?: string }) {
   const openPreview = usePreviewStore((s) => s.openPreview);
   const { t } = useI18n();
+  const conversationId = useChatStore(state => ownerConversationId ?? state.activeConversationId);
+  const reportError = (error: unknown) => useToastStore.getState().addToast({ type: 'error', title: t.media.editUnavailable, message: error instanceof Error ? error.message : String(error) });
+  const editImage = async () => {
+    if (!conversationId) return;
+    const scope = getComposerDraftScopeForEnterpriseMode(useEnterpriseStore.getState().mode);
+    await activateImageEditing({ conversationId, composerKey: getComposerDraftKey(conversationId, scope), scope, filePath });
+    openPreview(filePath);
+  };
+  const saveImage = async () => {
+    const destinationPath = await saveDialog({ defaultPath: getBaseName(filePath) });
+    if (!destinationPath) return;
+    if (conversationId) await invokeElectronMedia('save-image', { conversationId, fileRef: { originalPath: filePath }, destinationPath });
+    else await savePreviewCopy({ sourcePath: filePath, destinationPath });
+  };
   const fileName = getBaseName(filePath);
   const [imgUrl, setImgUrl] = useState<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -466,15 +485,6 @@ export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { f
     }
   }, [filePath]);
 
-  const handleReveal = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    e.preventDefault();
-    try {
-      const { revealItemInDir } = await import('@tauri-apps/plugin-opener');
-      await revealItemInDir(filePath);
-    } catch { /* ignore in non-Tauri env */ }
-  };
-
   return (
     <div className="group/card relative inline-block overflow-hidden rounded-panel border border-separator bg-surface align-bottom transition-colors duration-fast hover:border-control-border">
       {/* Image-first: the thumbnail IS the card, no persistent filename/size
@@ -506,23 +516,13 @@ export const ImagePreviewCard = memo(function ImagePreviewCard({ filePath }: { f
           </span>
         )}
       </Pressable>
-      {/* Hover overlay: filename + dimensions + reveal-in-Finder, as small raised chips
-          over the image. Clicks outside the reveal button fall through to the preview. */}
       {imgUrl && (
         <div className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center gap-1 p-1 opacity-0 transition-opacity duration-fast group-hover/card:opacity-100 group-focus-within/card:opacity-100">
-          <span className="flex min-w-0 flex-1 items-center gap-1 rounded-control bg-raised px-2 py-1 text-caption text-label shadow-float">
-            <span className="min-w-0 flex-1 truncate font-medium">{fileName}</span>
-            {dimensions && (
-              <span className="shrink-0 text-label-secondary">{dimensions.w}×{dimensions.h}</span>
-            )}
+          <span className="min-w-0 truncate rounded-control bg-surface/90 px-2 py-1 text-caption text-label">
+            {fileName}
           </span>
-          <IconButton
-            icon={AppIcons.folderOpen}
-            label={t.chat.openInFinder}
-            size="sm"
-            onClick={handleReveal}
-            className="pointer-events-auto bg-raised text-label shadow-float hover:bg-raised"
-          />
+          <Pressable aria-label={t.media.editImage} title={t.media.editImage} onClick={() => void editImage().then(undefined, reportError)} className="pointer-events-auto ml-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-control bg-surface/90 text-label hover:bg-raised"><Icon icon={AppIcons.rename} size="sm" /></Pressable>
+          <Pressable aria-label={t.panel.saveAs} title={t.panel.saveAs} onClick={() => void saveImage().then(undefined, error => useToastStore.getState().addToast({ type: 'error', title: t.panel.saveAsFailed, message: String(error) }))} className="pointer-events-auto flex h-7 w-7 shrink-0 items-center justify-center rounded-control bg-surface/90 text-label hover:bg-raised"><Icon icon={AppIcons.download} size="sm" /></Pressable>
         </div>
       )}
     </div>

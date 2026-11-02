@@ -3097,6 +3097,7 @@ const zhCN: TranslationDict = {
   },
 
   imChannel: {
+    outputChannelDisabled: '结果推送频道已关闭。',
     title: '频道',
     description: '连接 IM 平台，让用户通过 @Abu 或私聊直接使用 Abu 的能力',
     addChannel: '添加频道',

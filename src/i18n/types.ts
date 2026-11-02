@@ -651,6 +651,15 @@ export interface TranslationDict {
     noProgressStopped: string;
     // Agent loop semantic guard (well-formed but repetitive/meta-only calls)
     semanticLoopStopped: string;
+    // Semantic-loop rescue: visible marker appended when a case is skipped and
+    // the run continues ({reason} = one of semanticLoopReasons).
+    semanticLoopCaseSkipped: string;
+    /** Human-readable names of the three semantic loop reasons, keyed by reason code. */
+    semanticLoopReasons: {
+      repeated_call: string;
+      periodic_cycle: string;
+      meta_only: string;
+    };
     // Agent loop runtime status / errors + subagent result strings (P4-C)
     /** Error: no API key configured (keep the literal "API Key" substring). */
     configureApiKey: string;
@@ -708,6 +717,8 @@ export interface TranslationDict {
     ollamaForbidden: string;
     /** Provider account balance/resource-package exhausted. */
     insufficientBalance: string;
+    /** Streamed-inline notice when a spent quota switched the run to another model (from/to are provider/model labels). */
+    modelFailoverSwitched: string;
     /** Streamed-inline notice while compacting an oversized context (includes markdown; ends with a paragraph break so the retried reply starts its own paragraph). */
     /** Latest user message cannot fit within the model's safe context budget. */
     contextInputTooLarge: string;
@@ -715,6 +726,12 @@ export interface TranslationDict {
     contextFixedTooLarge: string;
     /** Same as contextFixedTooLarge, plus where to raise the length on a local server. {service} */
     contextFixedTooLargeLocal: string;
+    /** Same as contextFixedTooLarge, stating the numbers: the instructions need {needed} tokens but the model's window is {window}. */
+    contextFixedTooLargeWithNumbers: string;
+    /** Same as contextFixedTooLargeWithNumbers, plus where to raise the length on a local server. {service} */
+    contextFixedTooLargeWithNumbersLocal: string;
+    /** Streamed-inline notice when Abu raised the Ollama context length by itself and is retrying (to is a formatted token count). */
+    ollamaContextRaised: string;
     /** The model failed to send an operation even after one quiet rewrite. */
     malformedToolCall: string;
     /** A local model server gave no first output within its 10-minute wait; nothing retries it. */
@@ -1532,6 +1549,9 @@ export interface TranslationDict {
     labsExpTodosInboxWhere: string;
     labsExpPetWhere: string;
     labsExpPetDesc: string;
+    labsExpStateCompressionTitle: string;
+    labsExpStateCompressionDesc: string;
+    labsExpStateCompressionWhere: string;
     labsExpAppsTitle: string;
     labsExpAppsDesc: string;
     labsExpAppsWhere: string;
@@ -4112,6 +4132,14 @@ export interface TranslationDict {
     /** Unattended run whose target site could not be determined (the browser
      *  host did not answer, or the action names no resolvable page). */
     browserUnattendedOriginUnverified: string;
+    /** 2026-10-27 无人值守可自救：origin-unverified 按解析失败原因追加的出路句。 */
+    browserOriginHintNavigationUnverifiable: string;
+    browserOriginHintNonWebPage: string;
+    browserOriginHintProbeFailed: string;
+    browserOriginHintTabNotListed: string;
+    browserOriginHintFrameUnverified: string;
+    /** 固定配置类拒绝统一追加的「勿重试」提示。 */
+    browserStandingDenialNoRetry: string;
     /** Unattended run on a URL `highRiskSites.ts` classified as money
      *  movement / government. Denied outright — nobody can answer for a wire
      *  transfer. */

@@ -81,6 +81,18 @@ const ABU_EXPECTED_ORIGIN_META_KEY = 'abu/expectedOrigin';
 const ABU_UNATTENDED_META_KEY = 'abu/unattended';
 
 /**
+ * MCP request `_meta` key telling the browser server's screenshot tools to
+ * deliver the capture as a FILE on disk (text answer with the path) instead
+ * of an image block. Stamped by the agent loop's executor when the active
+ * model has no vision: the image would be stripped on the way out anyway, so
+ * the capture lands in Abu's per-task screenshot folder and the model gets a
+ * path it can hand to the user or a later vision-capable/OCR step. Mirrors
+ * `ABU_SCREENSHOT_DELIVERY_META_KEY` in `abu-browser-bridge/src/tools.ts`
+ * (same duplication rationale as above).
+ */
+const ABU_SCREENSHOT_DELIVERY_META_KEY = 'abu/screenshotDelivery';
+
+/**
  * MCP request `_meta` key asking the browser server's `get_tabs` to include
  * ONE tab's frame tree. The gate's only probe is `get_tabs`, and a
  * frame-targeted action is authorized against the FRAME's origin — so the gate
@@ -1297,6 +1309,13 @@ export class MCPClientManager {
       popupOrigin?: string;
       unattended?: boolean;
       /**
+       * Browser servers' `screenshot` / `screenshot_full_page` only: deliver
+       * the capture as a file on disk (text answer) instead of an image block,
+       * stamped when the active model cannot consume images. See
+       * `ABU_SCREENSHOT_DELIVERY_META_KEY`.
+       */
+      screenshotDelivery?: 'file';
+      /**
        * Only meaningful for the browser server's `get_tabs`: include this
        * tab's frame tree in the listing, so the gate can resolve a
        * frame-targeted action's origin without a second probe.
@@ -1405,6 +1424,13 @@ export class MCPClientManager {
       // and the host reads "absent ⇒ attended ⇒ no pin enforcement".
       if (opts?.unattended === true) {
         meta[ABU_UNATTENDED_META_KEY] = true;
+      }
+      // Only when the loop knows the model cannot consume images. An attended
+      // vision-capable call keeps its exact pre-existing `_meta` shape, and
+      // the tools' own `saveToFile`/`savePath` arguments cover the case the
+      // MODEL wants a file.
+      if (opts?.screenshotDelivery === 'file') {
+        meta[ABU_SCREENSHOT_DELIVERY_META_KEY] = 'file';
       }
       if (typeof opts?.framesForTabId === 'number' && Number.isFinite(opts.framesForTabId)) {
         meta[ABU_FRAMES_FOR_TAB_META_KEY] = opts.framesForTabId;

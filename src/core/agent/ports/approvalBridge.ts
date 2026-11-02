@@ -34,15 +34,20 @@
  *   - workspace:        single active, NO queue — a second concurrent
  *                        request silently OVERWRITES the first. The first
  *                        request's promise is then abandoned (never resolved
- *                        by user action; only its own 60s timeout can settle
- *                        it, and even that no-ops once overwritten — see
- *                        `settle()`). This is a pre-existing quirk of the
+ *                        by user action). This is a pre-existing quirk of the
  *                        original singleton, not something this refactor
  *                        fixes; it is reproduced verbatim.
  *   - user-question:    many concurrently active (across conversations, and
  *                        in principle within one — callers serialize that),
- *                        addressed by id (= toolCallId), 10-minute timeout
- *                        per entry.
+ *                        addressed by id (= toolCallId).
+ *
+ * ── No approval times out ──
+ * Every kind settles ONLY on the user's explicit answer, or on a drain/abort
+ * (`drainAll` / `cancelById`). A live desktop user may take any time to read
+ * an approval; a run that ends while one is open drains it, so nothing hangs.
+ * (The workspace 60s and user-question 10-minute auto-timeouts were removed —
+ * they let a consent dialog vanish and fail the task before the user had
+ * answered.)
  *
  * ── useSyncExternalStore discipline ──
  * `getSnapshot()` must return a referentially STABLE value until the kind's
@@ -206,15 +211,16 @@ const KIND_CONFIGS: Record<ApprovalKind, KindConfig> = {
   },
   workspace: {
     mode: 'overwrite',
-    timeoutMs: 60_000, // WORKSPACE_REQUEST_TIMEOUT_MS in the original singleton
+    // No timeout — an approved/denied request settles only on the user's
+    // explicit answer (a live desktop user may read a workspace ask at their
+    // own pace). The abort path still drains it via `drainAll('workspace')`,
+    // so a cancelled run never leaks a pending entry.
     cancelledResult: null,
-    onTimeout: () => console.warn('[AgentLoop] Workspace request timed out, auto-cancelling'),
   },
   'user-question': {
     mode: 'multi',
-    timeoutMs: 10 * 60 * 1000, // USER_QUESTION_TIMEOUT_MS in the original singleton
+    // No timeout — waits for the user's explicit answer, like every other kind.
     cancelledResult: null,
-    onTimeout: (id) => console.warn('[permissionBridge] UserQuestion timed out, auto-cancelling', id),
   },
 };
 

@@ -19,6 +19,7 @@ import {
   ABU_CREATE_IF_EMPTY_META_KEY,
   ABU_EXPECTED_ORIGIN_META_KEY,
   ABU_RUN_META_KEY,
+  ABU_SCREENSHOT_DELIVERY_META_KEY,
   registerTools,
   type BrowserTransport,
 } from './tools.js';
@@ -881,5 +882,81 @@ describe('batch', () => {
       expect(call.payload).toMatchObject({ ownerId: 'conv-1', runId: 'run-2' });
     }
     expect(sent.some((s) => s.action === 'get_tabs' && s.payload.createIfEmpty === false)).toBe(true);
+  });
+});
+
+describe('screenshot file delivery', () => {
+  const DATA_URL = 'data:image/png;base64,AAAA';
+  const SAVED = { success: true, data: { saved: true, path: 'C:/shots/screenshot-7-20261026-190301.png', width: 1280, height: 800, bytes: 20480 } };
+
+  function screenshotTool(name: 'screenshot' | 'screenshot_full_page' = 'screenshot', backend: 'chrome' | 'built-in' = 'built-in') {
+    const { registered, transport } = collectTools(backend);
+    return { tool: registered.find((tool) => tool.name === name)!, transport };
+  }
+
+  it('returns the image when neither the model nor the host asked for a file', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => ({ success: true, data: DATA_URL }));
+    const result = await tool.handler({ tabId: 7 }, {}) as { content: Array<{ type: string }> };
+    expect(transport.send).toHaveBeenCalledWith('screenshot', { tabId: 7 }, undefined, { signal: undefined });
+    expect(result.content[0].type).toBe('image');
+  });
+
+  it('saveToFile:true sends saveMode and answers with the path as text', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => SAVED);
+    const result = await tool.handler({ tabId: 7, saveToFile: true }, {}) as { content: Array<{ type: string; text: string }> };
+    expect(transport.send).toHaveBeenCalledWith('screenshot', { tabId: 7, saveMode: true }, undefined, { signal: undefined });
+    expect(result.content[0].type).toBe('text');
+    expect(result.content[0].text).toContain('Screenshot saved: C:/shots/screenshot-7-20261026-190301.png');
+    expect(result.content[0].text).toContain('(1280x800, 20 KB)');
+    // The model chose to save; the no-vision note would be a lie here.
+    expect(result.content[0].text).not.toContain('cannot view images');
+  });
+
+  it('savePath alone (saveToFile omitted) still saves, and forwards the path', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => SAVED);
+    const result = await tool.handler({ tabId: 7, savePath: 'D:/out' }, {}) as { content: Array<{ type: string; text: string }> };
+    expect(transport.send).toHaveBeenCalledWith('screenshot', { tabId: 7, saveMode: true, savePath: 'D:/out' }, undefined, { signal: undefined });
+    expect(result.content[0].text).toContain('Screenshot saved: ');
+  });
+
+  it('the host delivery _meta saves without model arguments and adds the no-vision note', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => SAVED);
+    const result = await tool.handler({ tabId: 7 }, { _meta: { [ABU_SCREENSHOT_DELIVERY_META_KEY]: 'file' } }) as { content: Array<{ type: string; text: string }> };
+    expect(transport.send).toHaveBeenCalledWith('screenshot', { tabId: 7, saveMode: true }, undefined, { signal: undefined });
+    expect(result.content[0].text).toContain('The current model cannot view images');
+  });
+
+  it('the chrome extension channel refuses file delivery with a redirect to read tools', async () => {
+    const { tool, transport } = screenshotTool('screenshot', 'chrome');
+    const result = await tool.handler({ tabId: 7, saveToFile: true }, {}) as { content: Array<{ type: string; text: string }> };
+    expect(transport.send).not.toHaveBeenCalled();
+    expect(result.content[0].type).toBe('text');
+    expect(result.content[0].text).toContain("only available in Abu's built-in browser");
+  });
+
+  it('a host that predates saveMode is reported verbatim, not dressed up as saved', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => ({ success: true, data: DATA_URL }));
+    const result = await tool.handler({ tabId: 7, saveToFile: true }, {}) as { content: Array<{ type: string; text: string }> };
+    expect(result.content[0].type).toBe('text');
+    expect(result.content[0].text).not.toContain('Screenshot saved:');
+  });
+
+  it('a failed save reports the error', async () => {
+    const { tool, transport } = screenshotTool();
+    transport.send = vi.fn(async () => ({ success: false, error: 'could not create the screenshot folder: EACCES' }));
+    const result = await tool.handler({ tabId: 7, saveToFile: true }, {}) as { content: Array<{ type: string; text: string }> };
+    expect(result.content[0].text).toContain('Error: could not create the screenshot folder');
+  });
+
+  it('screenshot_full_page keeps its longer timeout in file mode', async () => {
+    const { tool, transport } = screenshotTool('screenshot_full_page');
+    transport.send = vi.fn(async () => SAVED);
+    await tool.handler({ tabId: 7, saveToFile: true }, {});
+    expect(transport.send).toHaveBeenCalledWith('screenshot_full_page', { tabId: 7, saveMode: true }, 120000, { signal: undefined });
   });
 });

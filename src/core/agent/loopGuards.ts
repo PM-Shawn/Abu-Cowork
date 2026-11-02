@@ -235,3 +235,38 @@ export function shouldContinueTruncatedToolCalls(
 ): boolean {
   return stopReason === 'max_tokens' && toolCalls.some((tc) => !('_parse_error' in tc.input));
 }
+
+/**
+ * How many times one agent run may inject the semantic-loop rescue prompt before
+ * the guard falls back to its hard stop. Each rescue asks the model to mark the
+ * current unit of work (e.g. one test case in a single-conversation batch run)
+ * as SKIPPED and move to the next one, so one degenerate case doesn't take the
+ * whole run down with it. Budget spans the whole run — capped, so the rescue can
+ * never become a new unbounded loop.
+ */
+export const MAX_SEMANTIC_LOOP_RESCUES = 2;
+
+/**
+ * System prompt injected when the semantic loop guard fires and rescue budget
+ * remains. LLM-facing (English per the prompt-language convention); the
+ * user-visible marker is a separate i18n string appended to the assistant
+ * message. Writing the skip decision into the transcript keeps the run going
+ * instead of letting one stuck case end it.
+ */
+export const SEMANTIC_LOOP_RESCUE_MESSAGE = [
+  'Semantic loop detected: the last tool calls made no progress',
+  '(pattern: {reason}). Do not repeat them.',
+  'Mark the current unit of work as SKIPPED with this reason,',
+  'then continue with the next unit of work.',
+  'If there is no next unit of work, finish with a per-unit summary',
+  '(passed / failed / skipped with reasons) and stop for user review.',
+].join(' ');
+
+/** Map a semantic loop reason to its English phrase for the rescue prompt. */
+export function semanticLoopReasonPhrase(reason: SemanticToolLoopReason): string {
+  switch (reason) {
+    case 'repeated_call': return 'same tool, same input, same result three times';
+    case 'periodic_cycle': return 'a repeating cycle of tool calls';
+    case 'meta_only': return 'only meta/discovery calls (tool search, skill reading)';
+  }
+}

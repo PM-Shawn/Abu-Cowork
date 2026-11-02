@@ -54,6 +54,25 @@ vi.mock('../context/contextManager', async (importOriginal) => ({
 }));
 vi.mock('../observability/langfuse', () => ({ startSubagentSpan: vi.fn().mockReturnValue({ end: vi.fn() }) }));
 
+// The quota-failover guard ships ON for every family; the guard-off case below
+// uses a sentinel model whose profile is computed for real, then stripped.
+vi.mock('../llm/modelProfile', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../llm/modelProfile')>();
+  return {
+    ...real,
+    resolveModelProfile: (input: Parameters<typeof real.resolveModelProfile>[0]) => {
+      const profile = real.resolveModelProfile(input);
+      if (input.modelId === 'no-failover-model') {
+        return {
+          ...profile,
+          harness: { ...profile.harness, guards: { ...profile.harness.guards, quotaFailover: false } },
+        };
+      }
+      return profile;
+    },
+  };
+});
+
 const mockEmitHook = vi.fn((event: unknown) => event);
 vi.mock('./lifecycleHooks', () => ({
   emitHook: (event: unknown) => mockEmitHook(event),
@@ -1881,5 +1900,133 @@ describe('subagent max_tokens recovery (integration)', () => {
       expect(systemPrompt).not.toContain('## Working notes for this model');
       expect(systemPrompt.indexOf('sys')).toBeLessThan(systemPrompt.indexOf('## Safety Rules'));
     });
+  });
+});
+
+// ── Quota failover (L4 port) ────────────────────────────────────────────────
+// The subagent run must survive a quota_exceeded from its model by switching
+// to the next candidate for its remaining turns — the same rescue the main
+// loop got. The guard-off case uses a sentinel model whose profile the
+// modelProfile mock strips the guard from (no shipped family has it off).
+
+const failoverSettingsSnapshot = {
+  providers: [{
+    id: 'p1', enabled: true, apiFormat: 'anthropic', baseUrl: undefined,
+    models: [{ id: 'claude-opus-4-8' }, { id: 'candidate-model' }],
+  }],
+  favoriteModels: [{ providerId: 'p1', modelId: 'candidate-model' }],
+  recentModels: [],
+  activeModel: { providerId: 'p1', modelId: 'claude-opus-4-8' },
+} as never;
+
+function readerWithFavorites() {
+  return { getSnapshot: () => failoverSettingsSnapshot };
+}
+
+function throwQuota() {
+  throw new LLMError('quota spent for this period', 'quota_exceeded', { retryable: false });
+}
+
+function failoverProgressEvents(progress: ReturnType<typeof vi.fn>) {
+  const events = progress.mock.calls.map((c) => c[0] as { type: string; id: string; toolName: string; result?: string; error?: boolean });
+  return {
+    starts: events.filter((e) => e.type === 'tool-start' && e.toolName === 'model_failover'),
+    ends: events.filter((e) => e.type === 'tool-end' && e.toolName === 'model_failover'),
+  };
+}
+
+describe('subagent quota failover (integration)', () => {
+  beforeEach(() => {
+    // Sibling describe: the max_tokens suite's resets don't reach here. Copy
+    // them so call counts and defaults start clean in every failover case.
+    mockClaudeChat.mockReset();
+    mockOpenAIChat.mockReset();
+    mockExecuteAnyTool.mockReset();
+    mockExecuteAnyTool.mockResolvedValue('tool output');
+    mockGetAllTools.mockReturnValue(
+      ['noop', 'do_work', 'computer', 'read_file'].map((name) => ({
+        name,
+        description: name,
+        inputSchema: { type: 'object', properties: {} },
+        execute: vi.fn(),
+      })),
+    );
+    mockGetActiveProvider.mockReset();
+    mockGetActiveProvider.mockReturnValue({ id: 'p1', apiFormat: 'anthropic', baseUrl: undefined, models: [] });
+    mockReadDelegatedMedia.mockReset();
+    mockEnforceContextBudget.mockClear();
+    mockEnforceContextBudget.mockImplementation((msgs: unknown[]) => ({
+      messages: msgs,
+      tokensBefore: 1,
+      tokensAfter: 1,
+      inputBudget: 100000,
+      safetyMarginTokens: 1000,
+      strategy: 'unchanged',
+    }));
+    mockResolveAgentModel.mockReturnValue('claude-opus-4-8');
+  });
+
+  it('switches to the next candidate on a quota error and replays the turn', async () => {
+    const progress = vi.fn();
+    mockClaudeChat
+      .mockImplementationOnce(throwQuota)
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'recovered answer' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    const result = await runSubagentLoop({
+      agent, task: 'task', onProgress: progress, settingsReader: readerWithFavorites(),
+    });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect((mockClaudeChat.mock.calls[1][1] as { model: string }).model).toBe('candidate-model');
+    expect(result.stopReason).toBe('completed');
+    expect(result.text).toContain('recovered answer');
+  });
+
+  it('notifies the parent with a PAIRED model_failover step', async () => {
+    const progress = vi.fn();
+    mockClaudeChat
+      .mockImplementationOnce(throwQuota)
+      .mockImplementationOnce(emits([
+        { type: 'text', text: 'ok' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+
+    await runSubagentLoop({ agent, task: 'task', onProgress: progress, settingsReader: readerWithFavorites() });
+
+    const { starts, ends } = failoverProgressEvents(progress);
+    expect(starts).toHaveLength(1);
+    expect(ends).toHaveLength(1);
+    expect(starts[0].id).toBe(ends[0].id);
+    expect(ends[0].error).toBe(false);
+    expect(ends[0].result).toContain('candidate-model');
+  });
+
+  it('keeps the run on the failing model when the guard is off', async () => {
+    mockResolveAgentModel.mockReturnValue('no-failover-model');
+    mockClaudeChat.mockImplementationOnce(throwQuota);
+
+    const result = await runSubagentLoop({
+      agent, task: 'task', onProgress: vi.fn(), settingsReader: readerWithFavorites(),
+    });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+    expect(result.stopReason).toBe('error');
+  });
+
+  it('ends with the last error when the candidate chain is exhausted', async () => {
+    mockClaudeChat
+      .mockImplementationOnce(throwQuota)
+      .mockImplementationOnce(throwQuota);
+
+    const result = await runSubagentLoop({
+      agent, task: 'task', onProgress: vi.fn(), settingsReader: readerWithFavorites(),
+    });
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+    expect((mockClaudeChat.mock.calls[1][1] as { model: string }).model).toBe('candidate-model');
+    expect(result.stopReason).toBe('error');
   });
 });

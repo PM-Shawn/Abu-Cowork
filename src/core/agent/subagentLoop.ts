@@ -46,17 +46,23 @@ import { resolveModelProfile } from '../llm/modelProfile';
 import { familyNotesFor } from './prompts/variants';
 import { selectToolsForProfile } from '../tools/toolSelection';
 import { repairToolCallsForProfile } from './toolArgumentRepair';
+import {
+  buildFailoverChain,
+  createFailoverState,
+  failoverModelLabel,
+  isFailoverWorthyError,
+  nextFailoverCandidate,
+} from './modelFailover';
 import { getCapsPort, type CapsPort } from './ports/capsPort';
 import { getWorkspaceReader, type WorkspaceReader } from './ports/workspaceReader';
 import { computeInputBudget, enforceContextBudget, trimOldScreenshots } from '../context/contextManager';
 import { estimateMessageTokens, estimateTokens, estimateToolSchemaTokens } from '../context/tokenEstimator';
 import { buildContextFromBoundary } from '../context/compactBoundary';
 import {
-  COMPACTION_TRIGGER_RATIO,
-  RETAINED_TAIL_RATIO,
   compactHistory,
   readFileThroughTool,
 } from '../context/compaction';
+import { compactionTriggerRatio, retainedTailRatio, anchorPreservationEnabled } from '../context/compressionTuning';
 import { measureInputTokens, usageContext, type UsageAnchor } from '../context/contextMeasure';
 import { boundToolResult } from '../context/toolResultSpill';
 import { writeToolResultFile } from '../session/sessionMemory';
@@ -704,12 +710,18 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     (options.liveSettingsReader ?? getSettingsReader()).getSnapshot(),
   );
   if (modelFailure) return modelFailure;
-  const effectiveModelId = resolveAgentModel(agent.model, settings);
+  // Quota failover rebinds these mid-run; every model-bound input rebuilds
+  // from them at the top of each turn (provider, caps, window, creds,
+  // chatOptions, compaction). Run-scoped like the main loop: the user's
+  // activeModel setting is not written back.
+  const startupModelId = resolveAgentModel(agent.model, settings);
+  let effectiveModelId = startupModelId;
+  let subSettings = settings;
   const startupCreds = (() => {
     try { return resolveEffectiveLlmCreds(getActiveApiKey(settings), undefined); } catch { return null; }
   })();
   const startupProvider = getActiveProvider(settings);
-  const adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
+  let adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
   const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
   const startupProfile = resolveModelProfile({
@@ -717,6 +729,17 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     provider: startupProvider,
     declared: startupDeclared,
   });
+  // Quota failover: candidates this member run may switch to when the current
+  // model's budget is spent. Same guard and chain as the main loop, built from
+  // the parent run's entry snapshot — the same source `resolveAgentModel`
+  // reads — so the candidate set matches what the leader could have started.
+  const failoverGuardOn = startupProfile.harness.guards.quotaFailover;
+  const failoverState = createFailoverState(
+    failoverGuardOn
+      ? buildFailoverChain(settings, { providerId: startupProvider?.id ?? '', modelId: startupModelId })
+      : [],
+  );
+  let failoverSwitchCount = 0;
   // 子代理自己的模型能不能看图、电脑操控走哪一档（与主循环同一算法）
   const agentCapabilities = resolveDelegatedModelCapabilities(agent.model, settings);
   const delegatedPreflight = preflightDelegatedMedia(
@@ -899,8 +922,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     // Enterprise mode always uses OpenAI-compatible adapter (LiteLLM exposes that interface).
     // selectChatAdapter routes through the sidecar transport when it's healthy
     // ('running'), else falls back to the local in-process adapter — the
-    // kind-choosing condition itself is unchanged (P1-1).
-    const adapter: LLMAdapter = selectChatAdapter(adapterKind);
+    // kind-choosing condition itself is unchanged (P1-1). Rebound on a quota
+    // failover — the candidate may sit on a provider with another apiFormat.
+    let adapter: LLMAdapter = selectChatAdapter(adapterKind);
 
     // 5. Initialize local messages
     const userContent = await buildInitialSubagentUserContent({
@@ -989,10 +1013,19 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // Resolve budget + reasoning controls for the subagent's model. Overlay any
       // runtime-discovered limits/reasoning status, then reserve a content floor so
       // reasoning can't starve the answer (the cause of "代理未返回任何结果").
-      const provider = getActiveProvider(settings);
+      // `subSettings` (not `settings`) so a quota failover's rebound activeModel
+      // is what these read; the two differ only after a switch.
+      const provider = getActiveProvider(subSettings);
       const declared = resolveDelegatedDeclaredCapabilities(provider, effectiveModelId);
       const discovered = provider ? capsPort.get(provider.id, effectiveModelId) : undefined;
       const baseCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), declared);
+      // The profile the CURRENT model is on this turn: repair and parallel-tool
+      // semantics follow a failover switch, exactly like the main loop.
+      const turnProfile = resolveModelProfile({
+        modelId: effectiveModelId,
+        provider,
+        declared,
+      });
       const subagentCaps: ModelCapabilities = {
         ...baseCaps,
         ...(discovered?.maxOutputTokens ? { maxOutputTokens: discovered.maxOutputTokens } : {}),
@@ -1039,8 +1072,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
 
       // Resolve apiKey + baseUrl — enterprise gateway overrides personal creds.
       const subChatCreds = resolveEffectiveLlmCreds(
-        getActiveApiKey(settings),
-        getActiveProvider(settings)?.baseUrl || undefined,
+        getActiveApiKey(subSettings),
+        getActiveProvider(subSettings)?.baseUrl || undefined,
       )
       const chatOptions = {
         model: effectiveModelId,
@@ -1082,17 +1115,27 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         estimateTokens(systemPrompt) + toolSchemaTokens + estimateMessageTokens(trimOldScreenshots(view))
       );
       const measurementContext = () => usageContext(effectiveModelId, systemPrompt, tools, messages);
+      // Assigned inside the try (the budget gate runs there); read by the
+      // instruction-receipt block after the try/catch, which is reachable only
+      // when the turn completed. Empty is unreachable.
+      let preparedMessages: Message[] = [];
+      // The try spans compaction AND the chat request: a compaction summary
+      // call can throw its own LLM error, and a quota error must fail over
+      // wherever in the turn it surfaced. Replay-safe — a failed summary
+      // writes no boundary marker into `messages`, and a failed chat request
+      // leaves the dispatch instructions unconfirmed in the shell outbox.
+      try {
       // Compaction shrinks only the history: when the system prompt and tools
       // alone fill the budget, the budget gate below reports that instead.
       if (
         estimateTokens(systemPrompt) + toolSchemaTokens < inputBudget
         && measureInputTokens(estimateView(buildContextFromBoundary(messages)), measurementContext(), usageAnchor)
-          >= inputBudget * COMPACTION_TRIGGER_RATIO
+          >= inputBudget * compactionTriggerRatio()
       ) {
         const marker = await compactHistory({
           history: messages,
           inputBudget,
-          retainTokens: Math.floor(inputBudget * RETAINED_TAIL_RATIO),
+          retainTokens: Math.floor(inputBudget * retainedTailRatio()),
           source: 'auto',
           fitSummaryInput: (summaryMessages) => enforceContextBudget(
             summaryMessages, systemPrompt, contextWindowSize, maxOutputTokens, toolSchemaTokens,
@@ -1103,7 +1146,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
             conversationId: options.parentConversationId ?? null,
             providerInstanceId: provider?.id ?? 'unknown',
             signal,
+            preserveAnchors: anchorPreservationEnabled(),
           },
+          keepAnchors: anchorPreservationEnabled(),
           readFile: readFileThroughTool(
             async (input, context) => toolInvoker.toolResultToString(
               await toolInvoker.executeAnyTool(TOOL_NAMES.READ_FILE, input, async () => false, async () => false, context),
@@ -1138,7 +1183,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         maxOutputTokens,
         toolSchemaTokens,
       );
-      const preparedMessages = budgetResult.messages;
+      preparedMessages = budgetResult.messages;
       if (budgetResult.strategy !== 'unchanged') {
         logger.info('Context budget gate applied', {
           tokensBefore: budgetResult.tokensBefore,
@@ -1241,6 +1286,47 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         { maxRetries: 2, baseDelayMs: 1000, maxDelayMs: 15000 },
         signal,
       );
+      } catch (turnErr) {
+        // Quota failover: switch the run to the next candidate model for its
+        // remaining turns. Same guard, chain and run-scoped rebind as the main
+        // loop's quota branch; the user's activeModel setting is untouched.
+        // The notice goes to the parent as a PAIRED progress step — a lone
+        // tool-start would leave a ghost step in the child-step UI.
+        const candidate = isFailoverWorthyError(turnErr) && !signal?.aborted && failoverGuardOn
+          ? nextFailoverCandidate(failoverState)
+          : null;
+        if (!candidate) throw turnErr;
+        logger.warn('Quota failover: switching subagent run to the next candidate model', {
+          from: `${getActiveProvider(subSettings)?.id ?? 'unknown'}/${effectiveModelId}`,
+          to: `${candidate.providerId}/${candidate.modelId}`,
+          code: turnErr instanceof LLMError ? turnErr.code : String(turnErr),
+        });
+        failoverSwitchCount += 1;
+        const noticeId = `model-failover-${failoverSwitchCount}`;
+        onProgress?.({ type: 'tool-start', id: noticeId, toolName: 'model_failover', toolInput: {} });
+        onProgress?.({
+          type: 'tool-end',
+          id: noticeId,
+          toolName: 'model_failover',
+          error: false,
+          result: format(getI18n().chat.modelFailoverSwitched, {
+            from: failoverModelLabel({ providerId: getActiveProvider(subSettings)?.id ?? 'unknown', modelId: effectiveModelId }),
+            to: failoverModelLabel(candidate),
+          }),
+        });
+        effectiveModelId = candidate.modelId;
+        subSettings = { ...settings, activeModel: candidate };
+        const candidateCreds = resolveEffectiveLlmCreds(
+          getActiveApiKey(subSettings),
+          getActiveProvider(subSettings)?.baseUrl || undefined,
+        );
+        adapterKind = adapterKindFor(getActiveProvider(subSettings), candidateCreds?.forceOpenAiCompatible === true);
+        adapter = selectChatAdapter(adapterKind);
+        // 探测到的窗口属于旧模型，不能带给新模型
+        probedContextWindow = undefined;
+        turn -= 1;
+        continue;
+      }
 
       // A successful request carrying the full instruction is the receipt.
       // If budget trimming dropped it, or the request failed, the shell outbox
@@ -1540,8 +1626,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         };
       // 按工具的 inputSchema 修复写错形状的参数（档案打开该护栏时）；修不好的
       // 原样交给工具，由工具把错误返回给模型
-      const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, startupProfile, logger);
-      const toolResults = startupProfile.capabilities.parallelToolCalls
+      const dispatchToolCalls = repairToolCallsForProfile(collectedToolCalls, tools, turnProfile, logger);
+      const toolResults = turnProfile.capabilities.parallelToolCalls
         ? await Promise.allSettled(dispatchToolCalls.map(runToolCall))
         : await settleSequentially(dispatchToolCalls, runToolCall);
 

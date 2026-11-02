@@ -10,6 +10,7 @@ import {
   planStepCompaction,
 } from './compactBoundary';
 import { writeCompactionSummary, type SummaryRequest } from './contextCompressor';
+import { extractAnchorLines, formatKeptAnchors } from './anchorPreservation';
 import { estimateMessageTokens, estimateTokens } from './tokenEstimator';
 import type { Message, RestoredFile, ToolExecutionContext, ToolResultContent } from '@/types';
 
@@ -107,6 +108,14 @@ export async function compactHistory(params: {
   loopId?: string;
   summary: SummaryRequest;
   /**
+   * Anchor preservation (labs: state-preserving-compression, read by the
+   * caller through compressionTuning). Appends the pattern-extracted
+   * `[kept anchors]` block of the compacted steps to the summary, so plan
+   * steps, file paths and URLs survive compaction whatever the summary
+   * model kept.
+   */
+  keepAnchors?: boolean;
+  /**
    * Fits the complete summary request, including its instruction, into the window.
    * Needed after the provider refused a request as too long: the view up to
    * the tail is then about as long as the refused request.
@@ -122,7 +131,8 @@ export async function compactHistory(params: {
   });
   if (!plan) return null;
   const summarize = textOnly(plan.summarize);
-  const summaryText = await writeCompactionSummary(summarize, params.summary, params.fitSummaryInput);
+  const summaryBase = await writeCompactionSummary(summarize, params.summary, params.fitSummaryInput);
+  const summaryText = summaryBase + (params.keepAnchors ? formatKeptAnchors(extractAnchorLines(summarize)) : '');
   params.summary.signal?.throwIfAborted();
   const restoredFiles = await restoreFiles(plan.readFilePaths, params.readFile, params.inputBudget, params.summary.signal);
   params.summary.signal?.throwIfAborted();

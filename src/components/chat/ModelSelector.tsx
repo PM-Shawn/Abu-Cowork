@@ -63,8 +63,10 @@ function ModelRow({
       onKeyDown={handleKeyDown}
     >
       <span className="min-w-0 flex-1 truncate">{name}</span>
-      {canSeeImages && <Tag>{t.chat.modelCanSeeImages}</Tag>}
-      {selected && <Icon icon={AppIcons.done} size="sm" />}
+      {canSeeImages && <span className="shrink-0 whitespace-nowrap"><Tag>{t.chat.modelCanSeeImages}</Tag></span>}
+      <span aria-hidden="true" className="flex w-3.5 shrink-0 items-center justify-center">
+        {selected && <Icon icon={AppIcons.done} size="sm" />}
+      </span>
       <IconButton
         size="sm"
         icon={AppIcons.favorite}

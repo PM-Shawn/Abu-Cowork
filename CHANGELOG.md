@@ -7,6 +7,25 @@ All notable changes to Abu are documented here. Format based on [Keep a Changelo
 > [`CHANGELOG.zh-CN.md`](./CHANGELOG.zh-CN.md); keep both in sync per release (see
 > `RELEASING.md`). Entries before v0.31.0 predate this split and remain bilingual.
 
+## v0.62.0 · 2026-11-03
+
+### Features
+
+- **Play videos in conversations.** Open MP4 and WebM files directly in Abu to review media alongside the conversation that produced it.
+- **Edit images without leaving the conversation.** Add text, annotations and drawings, keep an editing draft, and undo changes while preparing the image.
+- **Edit selected areas with Seedream 5.0 Pro and Flash.** Brush over one or more parts of the image and describe the change. Your selections stay in the draft when you switch image services.
+- **Compare and save image edits.** Review the original and edited image together before saving the result, so you can check the changes before using it.
+- **Keep media when branching a conversation.** New branches retain the images, videos and editing materials needed to continue the work independently.
+
+### Fixes
+
+- **Model capability badges stay in one column.** A reserved checkmark position keeps image-capable labels aligned when the selected model changes.
+- **Approval modes use concise descriptions.** Each option explains its behavior in one sentence.
+- **Completed conversation history opens in position.** The work process is measured in its collapsed state from the first frame, keeping the history from jumping as it opens.
+- **macOS updates show verification and restart preparation.** Background-process shutdown waits up to 10 seconds; preparation failures offer a retry, and restart becomes available after native update preparation finishes.
+
+Full Changelog: https://github.com/PM-Shawn/Abu-Cowork/compare/v0.61.0...v0.62.0
+
 ## v0.61.1 · 2026-11-01
 
 **Root cause**: macOS updates could wait indefinitely for background processes to close, and the restart action could become available before native update verification finished.

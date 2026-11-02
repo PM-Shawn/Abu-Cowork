@@ -58,12 +58,20 @@ test('security settings dropdown saves modes and keeps protection confirmations'
   await page.reload();
   const initialWindow = await app.browserWindow(page);
   await initialWindow.evaluate(win => win.setContentSize(1198, 796));
+  await page.getByRole('button', { name: '请求批准', exact: true }).click();
+  await expect(page.getByRole('menuitemradio', { name: '请求批准', exact: true }))
+    .toHaveAccessibleDescription('修改外部文件或操作电脑时询问你');
+  await expect(page.getByRole('menuitemradio', { name: '替我审批', exact: true }))
+    .toHaveAccessibleDescription('由 AI 审核风险，必要时请求你批准');
+  await expect(page.getByRole('menuitemradio', { name: '完全自主', exact: true }))
+    .toHaveAccessibleDescription('自动执行任务，敏感操作仍会询问你');
+  await page.keyboard.press('Escape');
   await openSecurity(page);
   await page.locator('[data-abu-settings-dialog]').screenshot({ path: testInfo.outputPath('security-light.png') });
 
   const selector = page.getByRole('combobox', { name: '默认权限模式' });
   await selector.click();
-  await expect(page.getByText(/越界操作交 AI 审核/)).toBeVisible();
+  await expect(page.getByText('由 AI 审核风险，必要时请求你批准', { exact: true })).toBeVisible();
   await page.locator('[data-abu-settings-dialog]').screenshot({ path: testInfo.outputPath('security-menu.png') });
   await page.getByRole('option', { name: '替我审批', exact: true }).click();
   await expect.poll(() => savedMode(page)).toBe('smart');

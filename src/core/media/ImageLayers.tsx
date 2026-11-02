@@ -11,7 +11,7 @@ export function ImageLayers({ width, height, markup, comments, region, mode, mas
   markup: ImageMarkup[];
   comments: ImageComment[];
   region: ImageRegionStroke[];
-  mode: 'preview' | 'markup' | 'mask';
+  mode: 'preview' | 'markup' | 'mask' | 'reference';
   maskId: string;
 }) {
   const scale = Math.min(width, height);
@@ -24,7 +24,7 @@ export function ImageLayers({ width, height, markup, comments, region, mode, mas
   if (mode === 'mask') return <><defs>{regionMask(false)}</defs><rect width={width} height={height} fill="white" mask={`url(#${maskId})`} /></>;
   return (
     <>
-      {mode === 'preview' && region.length > 0 && <><defs>{regionMask(true)}</defs><rect width={width} height={height} fill="var(--ds-info)" opacity="0.28" mask={`url(#${maskId})`} /></>}
+      {(mode === 'preview' || mode === 'reference') && region.length > 0 && <><defs>{regionMask(true)}</defs><rect width={width} height={height} fill={mode === 'preview' ? 'var(--ds-info)' : '#2563eb'} opacity="0.28" mask={`url(#${maskId})`} /></>}
       {markup.map(item => {
         const line = { stroke: item.color, strokeWidth: item.width * scale, fill: 'none', strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const };
         if (item.kind === 'pen') return <path key={item.id} d={pointsPath(item.points, width, height)} {...line} />;

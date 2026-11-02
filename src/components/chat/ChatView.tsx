@@ -903,8 +903,7 @@ export default function ChatView({
         useToastStore.getState().addToast({ type: 'error', title: t.media.serviceUnavailable });
         return false;
       }
-      if ((imageEditDraft.comments.length && !capability.comments) || (imageEditDraft.markup.length && !capability.markup)
-        || (imageEditDraft.region.length && !capability.region)) {
+      if ((imageEditDraft.comments.length && !capability.comments) || (imageEditDraft.markup.length && !capability.markup)) {
         useToastStore.getState().addToast({ type: 'error', title: t.media.instructionsUnsupported });
         return false;
       }

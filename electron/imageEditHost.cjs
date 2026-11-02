@@ -12,12 +12,13 @@ const { writeImageAtomically } = require('./imageSaveHost.cjs');
 const MAX_RESPONSE_BYTES = 70 * 1024 * 1024;
 const MAX_EDIT_DATA_BYTES = 4 * 1024 * 1024;
 
-function editPrompt(request, hasReference) {
+function editPrompt(request, hasReference, referenceSelection = false) {
   return [request.prompt,
     ...request.comments.flatMap((comment, index) => comment.text.trim()
       ? [`Comment ${index + 1} at (${comment.point.x}, ${comment.point.y}) in normalized source coordinates: ${comment.text}`] : []),
     'Apply the requested edit to the first image. Annotation marks only describe edit instructions; exclude them from the finished image.',
     ...(hasReference ? ['The second image is an annotated reference of the first image. Use it to understand the requested changes.'] : []),
+    ...(referenceSelection ? ['The blue highlighted area in the second image selects where to apply the edit. Preserve the rest of the first image. Remove the blue selection tint and all annotation marks from the finished image.'] : []),
   ].join('\n');
 }
 
@@ -87,8 +88,10 @@ function createImageEditHost({ root, scope, captures, assertConversation, assert
     if (!backend) throw new Error('Image service must be selected again');
     const capability = imageEditCapabilities(backend);
     if (!capability.whole || capability.profileVersion !== request.capabilityVersion) throw new Error('Image editing is unavailable for this service');
+    const seedream = backend.vendor === 'volcengine';
     const attachments = [];
     for (const attachment of request.attachmentRefs) {
+      if (seedream && attachment.kind === 'mask') continue;
       const read = await captures.read(request.conversationId, attachment.fileRef);
       if (read.bytes.length > capability.maxBytes) throw new Error('Image attachment exceeds the service limit');
       attachments.push({ kind: attachment.kind, image_url: `data:image/png;base64,${read.bytes.toString('base64')}` });
@@ -97,10 +100,9 @@ function createImageEditHost({ root, scope, captures, assertConversation, assert
     const reference = attachments.find(item => item.kind === 'reference');
     const mask = attachments.find(item => item.kind === 'mask');
     const markup = attachments.find(item => item.kind === 'markup');
-    const prompt = editPrompt(request, Boolean(reference));
+    const prompt = editPrompt(request, Boolean(reference), seedream && request.attachmentRefs.some(attachment => attachment.kind === 'mask'));
     if (prompt.length > 32000) throw new Error('Image instructions exceed the service limit');
     assertConversation(request.conversationId);
-    const seedream = backend.vendor === 'volcengine';
     const body = seedream ? {
       model: backend.model, prompt, image: [source, ...(reference ? [reference] : [])].map(item => item.image_url),
       output_format: 'png', response_format: 'b64_json', size: '2K',
@@ -143,8 +145,7 @@ function createImageEditHost({ root, scope, captures, assertConversation, assert
       if (!/^[\x21-\x7e]+$/.test(backend.apiKey)) throw new Error('Image service credentials contain unsupported characters');
       const capability = imageEditCapabilities(backend);
       if (!capability.whole || !backend.apiKey) throw new Error('Image editing requires a configured supported service');
-      if ((input.comments.length && !capability.comments) || (input.markup.length && !capability.markup)
-        || (input.region.length && !capability.region)) throw new Error('The image service does not support these editing instructions');
+      if ((input.comments.length && !capability.comments) || (input.markup.length && !capability.markup)) throw new Error('The image service does not support these editing instructions');
       if (input.source.kind !== 'source' || input.sourceCaptureId !== input.source.fileRef.captureId || input.sourceDigest !== input.source.fileRef.contentDigest) throw new Error('Image source does not match its capture');
       const existing = jobs.find(input.conversationId, input.id);
       if (existing) {
@@ -169,7 +170,6 @@ function createImageEditHost({ root, scope, captures, assertConversation, assert
       if (backend.vendor === 'volcengine' && (width <= 14 || height <= 14 || width / height < 1 / 16 || width / height > 16)) {
         throw new Error('Image dimensions are outside the service limits');
       }
-      const hasMarks = input.markup.length > 0 || input.comments.length > 0;
       let prepared = false;
       try {
       let mask;
@@ -178,9 +178,12 @@ function createImageEditHost({ root, scope, captures, assertConversation, assert
         const stats = await sharp(bytes).ensureAlpha().stats();
         if (stats.channels[3].min < 255) mask = bytes;
       }
-      if (editPrompt(input, hasMarks && Boolean(mask || capability.markupTransport === 'reference')).length > 32000) throw new Error('Image instructions exceed the service limit');
+      if (mask && !capability.region) throw new Error('The image service does not support these editing instructions');
+      const hasMarks = input.markup.length > 0 || input.comments.length > 0
+        || (Boolean(mask) && capability.markupTransport === 'reference');
+      if (editPrompt(input, hasMarks && Boolean(mask || capability.markupTransport === 'reference'), capability.markupTransport === 'reference' && Boolean(mask)).length > 32000) throw new Error('Image instructions exceed the service limit');
       if (hasMarks) {
-        const overlay = await sharp(Buffer.from(imageLayerSvg(base, 'markup'))).png().toBuffer();
+        const overlay = await sharp(Buffer.from(imageLayerSvg(base, capability.markupTransport === 'reference' ? 'reference' : 'markup'))).png().toBuffer();
         const useReference = mask || capability.markupTransport === 'reference';
         const bytes = useReference ? await sharp(source.bytes).composite([{ input: overlay }]).png().toBuffer() : overlay;
         attachments.push(captures.store(input.conversationId, input.source.fileRef.originalPath, useReference ? 'reference' : 'markup', bytes, width, height));

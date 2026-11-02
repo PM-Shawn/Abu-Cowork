@@ -3207,6 +3207,9 @@ export interface TranslationDict {
     commentPlaceholder: string;
     markup: string;
     region: string;
+    regionEdited: string;
+    regionUnavailable: string;
+    regionDraftUnavailable: string;
     pen: string;
     arrow: string;
     rectangle: string;

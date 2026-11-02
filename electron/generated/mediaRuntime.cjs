@@ -50265,11 +50265,11 @@ var zhCN = {
     contentGuardDisableTitle: "关闭内容安全扫描？",
     contentGuardDisableMessage: "关闭后阿布自发创建的技能和记忆不会被扫描，可能写入包含危险指令的内容。只在明确需要调试误报时关闭，测试完请立即打开。",
     permissionModeStandard: "请求批准",
-    permissionModeStandardDesc: "工作区内自由读写；越界写入、危险命令及电脑操控首次操作每个应用都需确认",
+    permissionModeStandardDesc: "修改外部文件或操作电脑时询问你",
     permissionModeSmart: "替我审批",
-    permissionModeSmartDesc: "越界操作交 AI 审核；电脑操控先确认本任务，再自动放行已识别的普通应用，浏览器、通讯和未知应用仍问你。可能误判",
+    permissionModeSmartDesc: "由 AI 审核风险，必要时请求你批准",
     permissionModeAutonomous: "完全自主",
-    permissionModeAutonomousDesc: "电脑操控先确认本任务，再自动执行已识别的普通操作；浏览器、通讯和未知应用仍问你，系统红线始终禁止",
+    permissionModeAutonomousDesc: "自动执行任务，敏感操作仍会询问你",
     // ModelConfigSection
     currentConfig: "当前配置",
     configured: "已配置",
@@ -51465,6 +51465,9 @@ var zhCN = {
     commentPlaceholder: "描述这里需要怎样修改",
     markup: "标记",
     region: "选择区域",
+    regionEdited: "已编辑选区",
+    regionUnavailable: "当前图片服务不支持选择区域。",
+    regionDraftUnavailable: "草稿已保留，当前图片服务不支持选择区域。",
     pen: "画笔",
     arrow: "箭头",
     rectangle: "矩形",
@@ -54833,11 +54836,11 @@ var enUS = {
     contentGuardDisableTitle: "Disable content safety scanner?",
     contentGuardDisableMessage: "When off, skills and memories Abu proposes skip the safety scan — they may contain dangerous instructions. Only disable temporarily to debug false positives, then re-enable.",
     permissionModeStandard: "Standard",
-    permissionModeStandardDesc: "Read/write inside the workspace; out-of-bounds writes, dangerous commands, and first use of each app by Computer Use need confirmation",
+    permissionModeStandardDesc: "Ask before editing external files or controlling your computer",
     permissionModeSmart: "Smart Review",
-    permissionModeSmartDesc: "Escalations go to AI review; Computer Use confirms the task first, then auto-allows reviewed ordinary apps while browsers, communications, and unknown apps still ask. May misjudge",
+    permissionModeSmartDesc: "Let AI review risks and ask for approval when needed",
     permissionModeAutonomous: "Full Autonomy",
-    permissionModeAutonomousDesc: "Computer Use confirms the task first, then reviewed ordinary work runs automatically; browsers, communications, and unknown apps still ask, while system red lines remain blocked",
+    permissionModeAutonomousDesc: "Run tasks automatically and ask before sensitive actions",
     // ModelConfigSection
     currentConfig: "Current Config",
     configured: "Configured",
@@ -56032,6 +56035,9 @@ var enUS = {
     commentPlaceholder: "Describe the change here",
     markup: "Draw",
     region: "Select area",
+    regionEdited: "Selection edited",
+    regionUnavailable: "The current image service does not support selecting an area.",
+    regionDraftUnavailable: "Your draft is preserved. The current image service does not support selecting an area.",
     pen: "Pen",
     arrow: "Arrow",
     rectangle: "Rectangle",
@@ -58142,19 +58148,19 @@ function imageEditCapabilities(backend) {
   if (!URL.canParse(backend.baseUrl)) return unsupported;
   const url2 = new URL(backend.baseUrl);
   if (url2.search || url2.hash || url2.username || url2.password) return unsupported;
-  if (backend.vendor === "volcengine" && url2.origin === "https://ark.cn-beijing.volces.com" && /^\/api\/(plan\/)?v3\/images\/generations\/?$/.test(url2.pathname) && /^doubao-seedream-5[.-]0-(lite|flash)(-\d{6})?$/.test(backend.model)) {
+  if (backend.vendor === "volcengine" && url2.origin === "https://ark.cn-beijing.volces.com" && /^\/api\/(plan\/)?v3\/images\/generations\/?$/.test(url2.pathname) && /^doubao-seedream-5[.-]0-(lite|flash|pro)(-\d{6})?$/.test(backend.model)) {
     return {
       whole: true,
       comments: true,
       markup: true,
-      region: false,
+      region: !backend.model.includes("-lite"),
       markupTransport: "reference",
       formats: ["image/png"],
       maxBytes: 30 * 1024 * 1024,
       maxPixels: 36e6,
       canQuery: false,
       canCancel: false,
-      profileVersion: backend.model.includes("-flash") ? "seedream-5-flash-reference-2026-10-30" : "seedream-5-lite-reference-2026-10-30"
+      profileVersion: backend.model.includes("-pro") ? "seedream-5-pro-reference-2026-11-02" : backend.model.includes("-flash") ? "seedream-5-flash-reference-2026-10-30" : "seedream-5-lite-reference-2026-10-30"
     };
   }
   if (backend.vendor !== "openai" || url2.origin !== "https://api.openai.com" || !["", "/", "/v1", "/v1/"].includes(url2.pathname)) return unsupported;
@@ -58194,9 +58200,9 @@ function ImageLayers({ width, height, markup, comments, region, mode, maskId }) 
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { width, height, fill: "white", mask: `url(#${maskId})` })
   ] });
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
-    mode === "preview" && region.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+    (mode === "preview" || mode === "reference") && region.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("defs", { children: regionMask(true) }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { width, height, fill: "var(--ds-info)", opacity: "0.28", mask: `url(#${maskId})` })
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { width, height, fill: mode === "preview" ? "var(--ds-info)" : "#2563eb", opacity: "0.28", mask: `url(#${maskId})` })
     ] }),
     markup.map((item) => {
       const line = { stroke: item.color, strokeWidth: item.width * scale, fill: "none", strokeLinecap: "round", strokeLinejoin: "round" };

@@ -575,7 +575,7 @@ export async function runBatch(
     return finish();
   }
 
-  if (pinned === null) {
+  if (pinned === null || observed === null) {
     stopped = 'origin-unverifiable';
     return finish();
   }

@@ -262,6 +262,62 @@ describe('runBatch — page identity between steps', () => {
     expect(result.stopped).toBeUndefined();
   });
 
+  it.each([
+    ['write', steps('click', 'fill')],
+    ['read', steps('read')],
+    ['parallel reads', steps('find', 'read')],
+    ['wait', steps('wait_for')],
+  ] as Array<[string, BatchStep[]]>)('runs no %s when the approved page has no readable origin at start', async (_name, batchSteps) => {
+    const h = harness({ urls: ['about:blank'] });
+    const result = await runBatch(h.deps, TAB, batchSteps, 'https://erp.example.com');
+
+    expect(h.sent).toEqual(['get_tabs']);
+    expect(result.origin).toBe('https://erp.example.com');
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(result.completedSteps).toEqual([]);
+    expect(result.failedStep).toBeUndefined();
+    expect(result.remainingSteps).toBe(batchSteps.length);
+  });
+
+  it('stops a framed step when its approved frame is readable but the top origin is not', async () => {
+    const sent: string[] = [];
+    const result = await runBatch({
+      now: () => 0,
+      send: async (action) => {
+        sent.push(action);
+        return { success: true, data: { windows: [{ tabs: [{
+          tabId: TAB,
+          url: 'about:blank',
+          frames: [{ frameId: 'f1', origin: 'https://frame.example.com', accessible: true }],
+        }] }] } };
+      },
+    }, TAB, [{ action: 'click', locator: { css: '#submit' }, frameId: 'f1' }],
+    'https://erp.example.com', { f1: 'https://frame.example.com' });
+
+    expect(sent).toEqual(['get_tabs']);
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(result.completedSteps).toEqual([]);
+    expect(result.failedStep).toBeUndefined();
+    expect(result.remainingSteps).toBe(1);
+  });
+
+  it.each([
+    { success: false, error: 'Tab query failed' },
+    { success: true, data: { windows: [{ tabs: [] }] } },
+  ])('stops before step zero when the opening tab query returns $success without the tab', async (reply) => {
+    const sent: string[] = [];
+    const result = await runBatch({
+      now: () => 0,
+      send: async (action) => { sent.push(action); return reply; },
+    }, TAB, steps('read', 'click'), 'https://erp.example.com');
+
+    expect(sent).toEqual(['get_tabs']);
+    expect(result.stopped).toBe('origin-unverifiable');
+    expect(result.completedSteps).toEqual([]);
+    expect(result.failedStep).toBeUndefined();
+    expect(result.remainingSteps).toBe(2);
+  });
+
   it('stops the moment the tab leaves the origin the batch was approved for', async () => {
     const h = harness({
       urls: [

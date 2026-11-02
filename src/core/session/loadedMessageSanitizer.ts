@@ -124,13 +124,14 @@ export function enforceRunErrorState(message: Message): Message {
   return withoutRunError as Message;
 }
 
-/** A non-ghost assistant row: real text, tool activity, or thinking. Shared
+/** A non-ghost assistant row: text, media, tool activity, or thinking. Shared
  * by the ghost filter below and the completed-run inference above it. */
 function isSubstantiveAssistant(msg: Message): boolean {
   if (msg.role !== 'assistant') return false;
   return assistantText(msg).trim().length > 0
     || (msg.toolCalls?.length ?? 0) > 0
     || (msg.toolCallsForContext?.length ?? 0) > 0
+    || (msg.mediaArtifacts?.length ?? 0) > 0
     || !!msg.thinking;
 }
 

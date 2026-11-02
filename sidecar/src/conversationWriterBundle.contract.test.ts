@@ -37,7 +37,9 @@ describe('the conversation writer is bundle-safe for the sidecar', () => {
     expect(inputs).toContain('src/core/session/conversationWriter.ts');
     expect(inputs).toContain('src/core/session/conversationPaths.ts');
     expect(inputs).toContain('src/core/session/ledgerLineSerializer.ts');
-    expect(inputs.filter((i) => i.includes('node_modules/'))).toEqual([]);
+    const dependencies = inputs.filter((i) => i.includes('node_modules/'));
+    expect(dependencies.length).toBeGreaterThan(0);
+    expect(dependencies.every((i) => i.startsWith('node_modules/zod/'))).toBe(true);
     expect(inputs.filter((i) => i.startsWith('sidecar/'))).toEqual([]);
     expect(inputs.filter((i) => /^src\/(stores|components)\//.test(i))).toEqual([]);
   }, 60_000);

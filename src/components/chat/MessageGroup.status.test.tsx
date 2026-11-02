@@ -2,7 +2,7 @@
 /// <reference types="@testing-library/jest-dom" />
 
 import { act, cleanup, fireEvent, render as renderBare, screen, waitFor } from '@testing-library/react';
-import type { ReactElement } from 'react';
+import { useLayoutEffect, useRef, type ReactElement } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import { initLanguage } from '@/i18n';
@@ -59,6 +59,23 @@ describe('MessageGroup summary dividers', () => {
     cleanup();
     useWorkProcessFoldStore.getState().reset();
     vi.useRealTimers();
+  });
+
+  it('mounts a completed work process collapsed before its parent measures the row', () => {
+    const answer: Message = { id: 'first-layout-answer', role: 'assistant', content: 'Finished', timestamp: 3000, loopId: 'summary-loop' };
+    const messages = [userMessage, toolMessage, answer];
+    const conversation: Conversation = { id: 'first-layout', title: 'Completed', messages, createdAt: 1000, updatedAt: 3000, status: 'idle' };
+    setConversationState(conversation);
+    const observations: (string | null)[] = [];
+    function RowProbe() {
+      const row = useRef<HTMLDivElement>(null);
+      useLayoutEffect(() => {
+        observations.push(row.current?.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded') ?? null);
+      }, []);
+      return <div ref={row}><MessageGroup conversationId={conversation.id} messages={messages} isLastGroup /></div>;
+    }
+    render(<RowProbe />);
+    expect(observations).toEqual(['false']);
   });
 
   it('shows progress after the last tool step and removes it on cancellation', () => {

@@ -55,15 +55,15 @@ function collectSourceFiles(dir: string, out: string[] = []): string[] {
 }
 
 describe('source text hygiene', () => {
-  it('no source file contains a raw NUL byte (git would call it binary and hide its diff)', () => {
-    const offenders: string[] = [];
-    for (const dir of SCAN_DIRS) {
-      for (const file of collectSourceFiles(path.join(REPO_ROOT, dir))) {
-        if (fs.readFileSync(file).includes(0)) {
-          offenders.push(path.relative(REPO_ROOT, file));
-        }
-      }
-    }
-    expect(offenders, 'write the escape `\\x00`, never the byte itself').toEqual([]);
+  const files = SCAN_DIRS.flatMap((dir) => collectSourceFiles(path.join(REPO_ROOT, dir)))
+    .sort()
+    .map((file) => ({ file, relative: path.relative(REPO_ROOT, file).split(path.sep).join('/') }));
+
+  it('enumerates source files for the byte checks', () => {
+    expect(files.length).toBeGreaterThan(0);
+  });
+
+  it.each(files)('$relative contains no raw NUL byte', ({ file }) => {
+    expect(fs.readFileSync(file).includes(0), 'write the escape `\\x00`, never the byte itself').toBe(false);
   });
 });

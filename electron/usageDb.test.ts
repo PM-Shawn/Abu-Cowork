@@ -98,18 +98,20 @@ function usageOf(overrides: Partial<UsageAttempt['usage']>): UsageAttempt['usage
   return { ...baseAttempt().usage, ...overrides };
 }
 
-beforeEach(() => {
-  usageDb._internal.resetForTest();
-  caseIndex += 1;
-  appDataRoot = path.join(SCRATCH_ROOT, `case-${caseIndex}`);
-  fs.rmSync(appDataRoot, { recursive: true, force: true });
-  fs.mkdirSync(appDataRoot, { recursive: true });
-});
+function useDatabaseFixture(): void {
+  beforeEach(() => {
+    usageDb._internal.resetForTest();
+    caseIndex += 1;
+    appDataRoot = path.join(SCRATCH_ROOT, `case-${caseIndex}`);
+    fs.rmSync(appDataRoot, { recursive: true, force: true });
+    fs.mkdirSync(appDataRoot, { recursive: true });
+  });
 
-afterAll(() => {
-  usageDb._internal.resetForTest();
-  fs.rmSync(SCRATCH_ROOT, { recursive: true, force: true });
-});
+  afterAll(() => {
+    usageDb._internal.resetForTest();
+    fs.rmSync(SCRATCH_ROOT, { recursive: true, force: true });
+  });
+}
 
 const FULL_RANGE = ['0000-01-01', '9999-12-31'] as const;
 
@@ -118,6 +120,7 @@ function range(): RangeResult {
 }
 
 describe('幂等写入', () => {
+  useDatabaseFixture();
   it('同一条重放 100 次，请求尝试数仍然是 1', () => {
     const one = attempt();
     for (let i = 0; i < 100; i += 1) {
@@ -185,6 +188,7 @@ describe('幂等写入', () => {
 });
 
 describe('汇总口径', () => {
+  useDatabaseFixture();
   beforeEach(() => {
     // 三条：一条各项齐备，一条输入未知，一条只有流内累计快照。
     usageDb.recordUsageAttempt(
@@ -302,6 +306,7 @@ describe('汇总口径', () => {
 });
 
 describe('只存该存的', () => {
+  useDatabaseFixture();
   it('写进库里的 JSON 只有协议里的那些字段', () => {
     usageDb.recordUsageAttempt(fakeApp(), {
       ...attempt(),
@@ -339,6 +344,7 @@ describe('只存该存的', () => {
 });
 
 describe('库出问题时', () => {
+  useDatabaseFixture();
   const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
 
   it('损坏的库：停止写入并上报，聊天路径拿到的是返回值不是异常', () => {
@@ -512,6 +518,7 @@ describe('库出问题时', () => {
 });
 
 describe('库结构往前走', () => {
+  useDatabaseFixture();
   it('旧库缺查询列时打开就补上，已有的记录照样查得出来', () => {
     // 一个只有三列基础字段的库：相当于查询列清单变长之前建出来的库。
     const { DatabaseSync } = require_('node:sqlite') as {
@@ -590,6 +597,7 @@ describe('库结构往前走', () => {
 });
 
 describe('清除账本', () => {
+  useDatabaseFixture();
   const SUFFIXES = ['', '-wal', '-shm'];
 
   function existingFiles(): string[] {
@@ -696,33 +704,40 @@ describe('清除账本', () => {
     }
     expect(range().totals.attempts).toBe(1);
   });
+});
 
-  it('除了账本模块自己，没有任何源码调用它', () => {
-    const SOURCE_DIRS = ['electron', 'src', 'sidecar/src', 'scripts'];
-    const SOURCE_EXTENSIONS = ['.cjs', '.mjs', '.js', '.ts', '.tsx'];
-    const SKIPPED_DIRS = new Set(['node_modules', 'dist', 'build', 'target', 'out']);
+describe('ledger purge source ownership', () => {
+  const SOURCE_DIRS = ['electron', 'src', 'sidecar/src', 'scripts'];
+  const SOURCE_EXTENSIONS = ['.cjs', '.mjs', '.js', '.ts', '.tsx'];
+  const SKIPPED_DIRS = new Set(['node_modules', 'dist', 'build', 'target', 'out']);
+  const allowed = new Set(['electron/usageDb.cjs', 'electron/usageDb.test.ts']);
 
-    function sourceFiles(dir: string): string[] {
-      const found: string[] = [];
-      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-        if (entry.name.startsWith('.') || SKIPPED_DIRS.has(entry.name)) continue;
-        const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) found.push(...sourceFiles(full));
-        else if (SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) found.push(full);
-      }
-      return found;
+  function sourceFiles(dir: string): string[] {
+    const found: string[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || SKIPPED_DIRS.has(entry.name)) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) found.push(...sourceFiles(full));
+      else if (SOURCE_EXTENSIONS.some((ext) => entry.name.endsWith(ext))) found.push(full);
     }
+    return found;
+  }
 
-    const mentioning = SOURCE_DIRS.flatMap((dir) => sourceFiles(path.join(REPO_ROOT, dir)))
-      .filter((file) => fs.readFileSync(file, 'utf8').includes('purgeUsageLedger'))
-      .map((file) => path.relative(REPO_ROOT, file).split(path.sep).join('/'))
-      .sort();
+  const files = SOURCE_DIRS.flatMap((dir) => sourceFiles(path.join(REPO_ROOT, dir)))
+    .sort()
+    .map((file) => ({ file, relative: path.relative(REPO_ROOT, file).split(path.sep).join('/') }));
 
-    expect(mentioning).toEqual(['electron/usageDb.cjs', 'electron/usageDb.test.ts']);
+  it('enumerates both allowed ledger source files', () => {
+    expect(files.map(({ relative }) => relative)).toEqual(expect.arrayContaining([...allowed]));
+  });
+
+  it.each(files)('$relative keeps ledger purging within its owner', ({ file, relative }) => {
+    expect(fs.readFileSync(file, 'utf8').includes('purgeUsageLedger')).toBe(allowed.has(relative));
   });
 });
 
 describe('命令派发', () => {
+  useDatabaseFixture();
   it('不认识的命令返回哨兵，让派发链继续往下走', () => {
     expect(usageDb.usageDispatch(fakeApp(), 'notice_audit_insert', {})).toBe(usageDb.USAGE_MISS);
   });

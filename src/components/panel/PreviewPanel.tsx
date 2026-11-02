@@ -37,6 +37,10 @@ import { isValidInspectSelection, resolveReferencePath } from '@/utils/inspectMe
 import { generateId } from '@/lib/utils';
 import PreviewActionsMenu from './PreviewActionsMenu';
 import ImagePreview from '@/components/preview/ImagePreview';
+import VideoPreview from '@/components/preview/VideoPreview';
+import MediaImagePreview from '@/components/preview/MediaImagePreview';
+import { invokeElectronMedia } from '@/utils/electronHost';
+import { useImageEditStore } from '@/stores/imageEditStore';
 import { savePreviewCopy } from './previewFileActions';
 
 const PdfPreview = lazy(() => import('@/components/preview/PdfPreview'));
@@ -316,6 +320,11 @@ export default function PreviewPanel({
   // design) needs to know which tab is actually visible right now — a
   // hidden background tab must never stay armed.
   const activeTabId = usePreviewStore((s) => s.activeTabId);
+  const mediaConversationId = usePreviewStore((s) => s.tabs.find(tab => tab.id === tabId)?.ownerConversationId ?? s.currentConversationId);
+  const mediaRef = usePreviewStore(s => {
+    const tab = s.tabs.find(item => item.id === tabId);
+    return tab?.kind === 'preview' ? tab.mediaRef : undefined;
+  });
   const previewFilePath = filePathProp ?? storePreviewFilePath;
   // Each instance owns its own reload nonce (keep-alive multi-tab preview —
   // see docs/2026-07-17-workspace-tabs-design.md) instead of reading a
@@ -415,7 +424,8 @@ export default function PreviewPanel({
     // document whose bytes are on screen, or of a file with no preview,
     // keeps what is shown the same way.
     const isQuietReload = (isEditableType && establishedEditablePathRef.current === previewFilePath)
-      || ((isBinaryType || rendererType === 'unsupported') && shownPathRef.current === previewFilePath);
+      || ((isBinaryType || rendererType === 'unsupported' || ((rendererType === 'image' || rendererType === 'video') && mediaConversationId))
+        && shownPathRef.current === previewFilePath);
 
     const loadFile = async () => {
       if (!isQuietReload) {
@@ -441,6 +451,12 @@ export default function PreviewPanel({
           return;
         }
 
+        if ((rendererType === 'image' || rendererType === 'video') && mediaConversationId) {
+          shownPathRef.current = previewFilePath;
+          setLoading(false);
+          return;
+        }
+
         // Check if file exists before attempting to read
         const fileExists = await exists(previewFilePath);
         if (cancelled) return;
@@ -456,7 +472,7 @@ export default function PreviewPanel({
           return;
         }
 
-        if (rendererType === 'unsupported') {
+        if (rendererType === 'unsupported' || rendererType === 'video') {
           // Nothing to read: the file is there, and the content area offers to open it elsewhere.
           shownPathRef.current = previewFilePath;
         } else if (isBinaryType) {
@@ -863,6 +879,12 @@ export default function PreviewPanel({
     try {
       const destination = await saveDialog({ defaultPath: previewFilePath });
       if (!destination || destination === previewFilePath) return;
+      if (rendererType === 'image' && mediaConversationId) {
+        const entry = Object.values(useImageEditStore.getState().entries).find(item => item.draft.conversationId === mediaConversationId && item.originalPath === previewFilePath);
+        await invokeElectronMedia('save-image', { conversationId: mediaConversationId, fileRef: mediaRef ?? entry?.draft.source.fileRef ?? { originalPath: previewFilePath }, destinationPath: destination });
+        useToastStore.getState().addToast({ type: 'success', title: t.panel.saveAsDone, message: getBaseName(destination) });
+        return;
+      }
       await savePreviewCopy({
         sourcePath: previewFilePath,
         destinationPath: destination,
@@ -881,7 +903,7 @@ export default function PreviewPanel({
         message: err instanceof Error ? err.message : String(err),
       });
     }
-  }, [previewFilePath, canUseFileActions, rendererType, t]);
+  }, [previewFilePath, canUseFileActions, rendererType, mediaConversationId, mediaRef, t]);
 
   const handleReload = useCallback(() => setReloadNonce((n) => n + 1), []);
   const handleToggleFullscreen = useCallback(() => setIsFullscreen((v) => !v), []);
@@ -982,8 +1004,12 @@ export default function PreviewPanel({
           </DocSelectionLayer>
         ) : BINARY_TYPES.has(rendererType) ? (
           <LazyFallback />
+        ) : rendererType === 'video' && mediaConversationId ? (
+          <VideoPreview key={previewFilePath} filePath={previewFilePath} conversationId={mediaConversationId} active={!embedded || tabId === activeTabId} />
+        ) : rendererType === 'image' && mediaConversationId && !isDataUrl(previewFilePath) ? (
+          <MediaImagePreview conversationId={mediaConversationId} fileRef={mediaRef ?? { originalPath: previewFilePath }} tabId={tabId ?? activeTabId!} />
         ) : rendererType === 'image' && imageUrl ? (
-          <ImagePreview src={imageUrl} alt={fileName} />
+          <ImagePreview src={imageUrl} alt={fileName} conversationId={mediaConversationId ?? undefined} filePath={isDataUrl(previewFilePath) ? undefined : previewFilePath} />
         ) : rendererType === 'markdown' && content !== null ? (
           viewMode === 'preview' ? (
             <ScrollArea className="h-full">

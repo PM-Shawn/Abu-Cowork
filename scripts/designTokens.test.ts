@@ -40,7 +40,24 @@ function layerLevels(source: string): Map<string, number> {
   return levels;
 }
 
-// Every stacking value written by hand under a directory (src/ by default), in four forms:
+function sourceFiles(root: string): string[] {
+  const files: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.(tsx?|css)$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name) || full === TOKENS_PATH) continue;
+      files.push(full);
+    }
+  };
+  walk(root);
+  return files.sort();
+}
+
+// Every stacking value written by hand in a source file, in four forms:
 //   1. an arbitrary class               `z-[9999]`
 //   2. a Tailwind step                  `z-50`
 //   3. an inline number                 `zIndex: 12` in a style object, `z-index: 12` in CSS text
@@ -62,31 +79,27 @@ function layerLevels(source: string): Map<string, number> {
 //   - a negative step (`-z-10`), which sits under the page and is left out on purpose.
 // What it reports without a value behind it: a type annotation `zIndex: number` reads as a
 // constant named `number` and comes back as NaN.
-function handWrittenLevels(root: string = SRC_DIR): { file: string; value: number }[] {
+function handWrittenLevelsInFile(full: string, root: string): { file: string; value: number }[] {
   const found: { file: string; value: number }[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (!/\.(tsx?|css)$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name) || full === TOKENS_PATH) continue;
-      const text = readFileSync(full, 'utf8');
-      // Reported with `/` on every platform, so the lists below read the same on Windows.
-      const file = path.relative(root, full).split(path.sep).join('/');
-      for (const match of text.matchAll(/\bz-\[(\d+)\]|(?<![\w-])z-(\d+)(?![\w-])|\bzIndex:\s*(\d+)|\bz-index:\s*(\d+)/g)) {
-        found.push({ file, value: Number(match[1] ?? match[2] ?? match[3] ?? match[4]) });
-      }
-      for (const match of text.matchAll(/\bzIndex(?::|=\{)\s*([A-Za-z_$][\w$]*)/g)) {
-        const declared = new RegExp(`\\bconst\\s+${match[1].replace(/\$/g, '\\$')}\\s*=\\s*(\\d+)\\b`).exec(text);
-        found.push({ file, value: declared ? Number(declared[1]) : Number.NaN });
-      }
-    }
-  };
-  walk(root);
+  const text = readFileSync(full, 'utf8');
+  // Reported with `/` on every platform, so the lists below read the same on Windows.
+  const file = path.relative(root, full).split(path.sep).join('/');
+  for (const match of text.matchAll(/\bz-\[(\d+)\]|(?<![\w-])z-(\d+)(?![\w-])|\bzIndex:\s*(\d+)|\bz-index:\s*(\d+)/g)) {
+    found.push({ file, value: Number(match[1] ?? match[2] ?? match[3] ?? match[4]) });
+  }
+  for (const match of text.matchAll(/\bzIndex(?::|=\{)\s*([A-Za-z_$][\w$]*)/g)) {
+    const declared = new RegExp(`\\bconst\\s+${match[1].replace(/\$/g, '\\$')}\\s*=\\s*(\\d+)\\b`).exec(text);
+    found.push({ file, value: declared ? Number(declared[1]) : Number.NaN });
+  }
   return found;
 }
+
+function handWrittenLevels(root: string): { file: string; value: number }[] {
+  return sourceFiles(root).flatMap((file) => handWrittenLevelsInFile(file, root));
+}
+
+const SOURCE_FILES = sourceFiles(SRC_DIR)
+  .map((file) => ({ file, relative: path.relative(SRC_DIR, file).split(path.sep).join('/') }));
 
 // A modal design-system layer turns pointer input off for the rest of the page. A hand-drawn
 // overlay painted above it would hide it while presses fall through to it, so every floating
@@ -105,14 +118,17 @@ describe('design tokens — layer levels', () => {
     expect(new Set(order).size).toBe(order.length);
   });
 
-  // The whole list: a new hand-written value in src/ fails here and has to be a layer utility.
-  it('finds exactly the hand-written stacking values left in src/', () => {
-    expect(handWrittenLevels()).toEqual([]);
+  it('enumerates source files for the layer checks', () => {
+    expect(SOURCE_FILES.length).toBeGreaterThan(0);
   });
 
-  it.each(['z-popover', 'z-dialog', 'z-toast', 'z-tooltip'])('puts %s above every hand-written stacking value in src/', (name) => {
-    const above = handWrittenLevels().filter((entry) => !(entry.value < level(name)));
-    expect(above).toEqual([]);
+  it.each(SOURCE_FILES)('$relative uses the layer utilities', ({ file }) => {
+    const found = handWrittenLevelsInFile(file, SRC_DIR);
+    expect(found).toEqual([]);
+    for (const name of ['z-popover', 'z-dialog', 'z-toast', 'z-tooltip']) {
+      const above = found.filter((entry) => !(entry.value < level(name)));
+      expect(above).toEqual([]);
+    }
   });
 
   const inFixture = (file: string) => handWrittenLevels(FIXTURES_DIR).filter((entry) => entry.file === file).map((entry) => entry.value);
@@ -504,29 +520,24 @@ describe.each(APPEARANCES)('design tokens — contrast (%s)', (name) => {
 // What this reads: one class string that names both the fill and the tertiary text. What it
 // cannot see: tertiary text on a child of the element that paints the fill, and a class joined
 // from two strings.
-function tertiaryOnFill(root: string = SRC_DIR): string[] {
+function tertiaryOnFill(full: string): string[] {
   const found: string[] = [];
-  const walk = (dir: string) => {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      if (!/\.tsx?$/.test(entry.name) || /\.test\.tsx?$/.test(entry.name)) continue;
-      const file = path.relative(root, full).split(path.sep).join('/');
-      for (const match of readFileSync(full, 'utf8').matchAll(/(['"`])((?:(?!\1)[^\n\\])*)\1/g)) {
-        const classes = match[2].split(/\s+/);
-        if (classes.includes('bg-fill') && classes.includes('text-label-tertiary')) found.push(file);
-      }
-    }
-  };
-  walk(root);
+  const file = path.relative(SRC_DIR, full).split(path.sep).join('/');
+  for (const match of readFileSync(full, 'utf8').matchAll(/(['"`])((?:(?!\1)[^\n\\])*)\1/g)) {
+    const classes = match[2].split(/\s+/);
+    if (classes.includes('bg-fill') && classes.includes('text-label-tertiary')) found.push(file);
+  }
   return found;
 }
 
 describe('design tokens — text on a fill', () => {
-  it('finds no class string in src/ that puts tertiary text on a resting fill', () => {
-    expect(tertiaryOnFill()).toEqual([]);
+  const files = SOURCE_FILES.filter(({ file }) => /\.tsx?$/.test(file));
+
+  it('enumerates TypeScript files for the text checks', () => {
+    expect(files.length).toBeGreaterThan(0);
+  });
+
+  it.each(files)('$relative keeps tertiary text off a resting fill', ({ file }) => {
+    expect(tertiaryOnFill(file)).toEqual([]);
   });
 });

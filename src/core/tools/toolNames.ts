@@ -27,6 +27,7 @@ export const TOOL_NAMES = {
 
   // Image
   GENERATE_IMAGE: 'generate_image',
+  EDIT_IMAGE: 'edit_image',
   PROCESS_IMAGE: 'process_image',
 
   // Inline visualization (generative UI widgets)

@@ -2,13 +2,15 @@ import type { Message, ToolCall, ToolCallForContext } from '@/types';
 import type { ExecutionStepSnapshot } from '@/types/execution';
 import type { OutputManifest, SnapshotEntry } from './outputSnapshots';
 import { readToolResultFileReference, rewriteToolResultFileNote } from './toolResultFileReference';
+import type { MediaFileRef } from '@/types/media';
 
 export interface BranchFileCopy {
-  sourceArea: 'conversation' | 'legacy' | 'inline';
+  sourceArea: 'conversation' | 'legacy' | 'inline' | 'media';
   sourceRelPath: string;
   targetRelPath: string;
   inline?: { data: string; mediaType: string };
   missing?: true;
+  contentDigest?: string;
 }
 
 export interface BranchFilePlan {
@@ -35,6 +37,7 @@ export function buildConversationBranchFilePlan(options: {
   messages: readonly Message[];
   messageIdMap: ReadonlyMap<string, string>;
   entries: readonly SnapshotEntry[];
+  mediaSources?: readonly { reference: MediaFileRef; sourceRelPath: string }[];
 }): BranchFilePlan {
   const messages = structuredClone(options.messages) as Message[];
   const files: BranchFileCopy[] = [];
@@ -52,7 +55,8 @@ export function buildConversationBranchFilePlan(options: {
 
   function copy(sourceRelPath: string, sourceArea: BranchFileCopy['sourceArea'] = 'conversation', inline?: BranchFileCopy['inline'], missing = false): BranchFileCopy {
     assertBranchRelativePath(sourceRelPath);
-    if (!sourceRelPath.startsWith('outputs/') && !/^results\/[A-Za-z0-9_-]+\.txt$/.test(sourceRelPath)) {
+    const validMedia = /^media\/(?:captures\/[a-f0-9]{64}\/[a-f0-9-]{36}\.png|results\/[a-f0-9]{64}\/[a-f0-9]{64}\/image\.png)$/.test(sourceRelPath);
+    if (sourceArea === 'media' ? !validMedia : !sourceRelPath.startsWith('outputs/') && !/^results\/[A-Za-z0-9_-]+\.txt$/.test(sourceRelPath)) {
       throw new Error('Unsupported branch file reference');
     }
     const key = `${sourceArea}:${sourceRelPath}:${missing}`;
@@ -132,7 +136,21 @@ export function buildConversationBranchFilePlan(options: {
       mapSteps(step.childSteps ?? []);
     }
   }
+  function mapMedia(reference: MediaFileRef): void {
+    const normalized = reference.originalPath.replace(/\\/g, '/');
+    const owned = normalized.startsWith(`${sourceDir}/outputs/`) ? normalized.slice(sourceDir.length + 1) : undefined;
+    const source = options.mediaSources?.find(item => item.reference.originalPath === reference.originalPath
+      && item.reference.captureId === reference.captureId && item.reference.contentDigest === reference.contentDigest);
+    if (!owned && !source) throw new Error('Media source is unavailable for branching');
+    const entry = !source && owned ? latestByPath.get(owned.slice('outputs/'.length)) : undefined;
+    const file = copy(source?.sourceRelPath ?? owned!, source ? 'media' : 'conversation', undefined, !!entry?.missing);
+    if (file.contentDigest && file.contentDigest !== reference.contentDigest) throw new Error('Conflicting branch media digest');
+    file.contentDigest = reference.contentDigest;
+    reference.originalPath = `${childDir}/${file.targetRelPath}`;
+  }
   for (const message of messages) {
+    for (const attachment of message.imageEditRequest?.attachmentRefs ?? []) mapMedia(attachment.fileRef);
+    for (const artifact of message.mediaArtifacts ?? []) mapMedia(artifact.fileRef);
     if (Array.isArray(message.content)) {
       for (const block of message.content) {
         if (block.type === 'document' && block.originConversationId) block.originConversationId = options.childConversationId;

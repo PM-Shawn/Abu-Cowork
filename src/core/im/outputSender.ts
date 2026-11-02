@@ -12,6 +12,7 @@ import type { TriggerOutput, OutputPlatform, OutputExtractMode } from '../../typ
 import type { IMReplyContext } from '../../types/im';
 import type { MessageContent } from '../../types';
 import { tokenManager } from './tokenManager';
+import { getI18n } from '@/i18n';
 
 /** Extract plain text from message content (string or multimodal array) */
 function contentToString(content: string | MessageContent[]): string {
@@ -138,6 +139,9 @@ class OutputSender {
     if (!channel) {
       return { success: false, error: `IM channel not found: ${channelId}` };
     }
+    if (channel.enabled !== true) {
+      return { success: false, error: getI18n().imChannel.outputChannelDisabled };
+    }
 
     const { platform, appId, appSecret } = channel;
     const adapter = getAdapter(platform);
@@ -149,12 +153,12 @@ class OutputSender {
     const targets: { id: string; receiveIdType?: 'chat_id' | 'open_id' }[] = [];
 
     if (output.outputChatIds) {
-      for (const id of output.outputChatIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+      for (const id of new Set(output.outputChatIds.split(',').map((s) => s.trim()).filter(Boolean))) {
         targets.push({ id, receiveIdType: 'chat_id' });
       }
     }
     if (output.outputUserIds) {
-      for (const id of output.outputUserIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+      for (const id of new Set(output.outputUserIds.split(',').map((s) => s.trim()).filter(Boolean))) {
         targets.push({ id, receiveIdType: 'open_id' });
       }
     }
@@ -193,6 +197,9 @@ class OutputSender {
     // Send to all targets
     try {
       const token = await tokenManager.getToken(platform, appId, appSecret);
+      if (useIMChannelStore.getState().channels[channelId]?.enabled !== true) {
+        return { success: false, error: getI18n().imChannel.outputChannelDisabled };
+      }
       const results = await Promise.allSettled(
         targets.map((t) =>
           adapter.replyToChat!(token, { chatId: t.id, receiveIdType: t.receiveIdType }, message)

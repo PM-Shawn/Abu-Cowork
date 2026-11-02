@@ -3750,6 +3750,7 @@ export interface TranslationDict {
 
   // IM Channel Settings
   imChannel: {
+    outputChannelDisabled: string;
     title: string;
     description: string;
     addChannel: string;

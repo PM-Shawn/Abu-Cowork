@@ -57,7 +57,8 @@ const CATALOG_MISS = Symbol('catalog-dispatch-miss');
 function branchPending(root, convId) {
   try {
     return !!fs.lstatSync(path.join(root, convId, 'branch-recovery.json'), { throwIfNoEntry: false });
-  } catch {
+  } catch (error) {
+    if (['EACCES', 'EPERM'].includes(error.code)) return 'inaccessible';
     // An unreadable recovery state excludes this conversation from the catalog.
     return true;
   }
@@ -613,19 +614,40 @@ function reconcileScanCore(conversationsRoot, existing, existingFtsIds) {
   for (const convId of allIds) {
     seen.add(convId);
     stats.scanned_dirs++;
-    if (branchPending(conversationsRoot, convId)) {
+    const pending = branchPending(conversationsRoot, convId);
+    if (pending === 'inaccessible') {
+      const ex = existing.get(convId);
+      if (!ex || ex.missing) {
+        const result = buildConversationRow(convId, '', null, indexEntries[convId] ?? {});
+        upserts.push([result.row, result.body]);
+        stats.upserted++;
+      }
+      continue;
+    }
+    if (pending) {
       markMissingIds.push(convId);
       continue;
     }
 
     const jsonl = path.join(conversationsRoot, convId, 'messages.jsonl');
     let diskMeta = null;
+    let unreadable = false;
     try {
       diskMeta = fs.statSync(jsonl);
-    } catch {
-      diskMeta = null;
+    } catch (error) {
+      if (['EACCES', 'EPERM', 'EISDIR'].includes(error.code)) unreadable = true;
+      else if (error.code !== 'ENOENT') throw error;
     }
     const indexMeta = indexEntries[convId];
+
+    if (unreadable) {
+      const ex = existing.get(convId);
+      if (ex && !ex.missing) continue;
+      const result = buildConversationRow(convId, jsonl, null, indexMeta ?? {});
+      upserts.push([result.row, result.body]);
+      stats.upserted++;
+      continue;
+    }
 
     if (!diskMeta && !indexMeta) {
       const ex = existing.get(convId);
@@ -659,7 +681,14 @@ function reconcileScanCore(conversationsRoot, existing, existingFtsIds) {
     }
     if (!needsScan) continue;
 
-    const result = buildConversationRow(convId, jsonl, diskMeta, indexMeta);
+    let result;
+    try {
+      result = buildConversationRow(convId, jsonl, diskMeta, indexMeta);
+    } catch (error) {
+      if (!['EACCES', 'EPERM', 'EISDIR'].includes(error.code)) throw error;
+      if (ex && !ex.missing) continue;
+      result = buildConversationRow(convId, jsonl, null, indexMeta ?? {});
+    }
     if (result) {
       stats.corrupt_lines_skipped += result.corrupt_lines;
       upserts.push([result.row, result.body]);
@@ -837,6 +866,7 @@ function catalogDispatch(app, cmd, args) {
 module.exports = {
   catalogDispatch,
   CATALOG_MISS,
+  branchPending,
   // Exported for the headless verify harness (electron/spike/f1bVerify.cjs).
   _internal: {
     getDb,

@@ -61,6 +61,7 @@ import { useWorkProcessFoldStore } from './workProcessFoldStore';
 import { useBatchProgressStore } from './batchProgressStore';
 import { usePreviewStore } from './previewStore';
 import { clearBrowserReclaim, disposeOwnedBrowserViews } from '../core/browser/browserViewLifecycle';
+import { releaseConversationBrowserTabClaims } from '../core/browser/bridgeTabClaims';
 import { appendBoundedSubagentToolCall } from '../core/session/durableToolResultContent';
 import { normalizeUpstreamErrorDetails } from '../core/llm/adapter';
 import { redactFailureText } from '../core/diagnostic/scrub';
@@ -1269,6 +1270,7 @@ export const useChatStore = create<ChatStore>()(
       },
 
       deleteConversation: (id) => {
+        releaseConversationBrowserTabClaims(id);
         conversationPersistenceRevisions.delete(id);
         // P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5
         // "secondary finding"): this abort MUST run before the `conversations`/

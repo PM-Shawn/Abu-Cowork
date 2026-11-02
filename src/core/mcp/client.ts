@@ -129,6 +129,7 @@ const CHROME_BRIDGE_SERVER_NAME = 'abu-browser-bridge';
  * driving.
  */
 const ABU_RUN_SETTLED_NOTIFICATION = 'notifications/abu/runSettled';
+const ABU_CONVERSATION_DELETED_NOTIFICATION = 'notifications/abu/conversationDeleted';
 
 /**
  * Run key for a conversation's own loop — the other half of the browser tab
@@ -592,6 +593,7 @@ export class MCPClientManager {
    * a run that never drove a tab holds no claim.
    */
   private browserBridgeRunOwners: Set<string> = new Set();
+  private deletedBrowserConversations = new Set<string>();
 
   subscribe(callback: () => void): () => void {
     this.listeners.add(callback);
@@ -1429,14 +1431,6 @@ export class MCPClientManager {
       if (Object.keys(meta).length > 0) {
         params._meta = meta;
       }
-      if (serverName === CHROME_BRIDGE_SERVER_NAME && opts?.conversationId) {
-        // Recorded BEFORE the call, not after it succeeds: the extension
-        // claims its target tab while resolving the request, so a call that
-        // then times out or is cancelled has still left a claim behind.
-        this.browserBridgeRunOwners.add(
-          browserRunOwnerKey(opts.conversationId, opts.agentRunId)
-        );
-      }
       // Always pass `timeout` (not only when a signal is given): the SDK's
       // own request/response cycle has an internal default request timeout
       // (60s) that fires independently of the manual `Promise.race` above.
@@ -1444,6 +1438,14 @@ export class MCPClientManager {
       // 60s default would reject `wait_for`-style long calls before our own
       // race ever gets a chance to.
       opts?.beforeDispatch?.();
+      if (serverName === CHROME_BRIDGE_SERVER_NAME && opts?.conversationId
+        && this.deletedBrowserConversations.has(opts.conversationId)) {
+        throw new Error('Browser conversation was deleted');
+      }
+      if (serverName === CHROME_BRIDGE_SERVER_NAME && opts?.conversationId) {
+        // Record admitted calls before dispatch: failure can still leave a claim.
+        this.browserBridgeRunOwners.add(browserRunOwnerKey(opts.conversationId, opts.agentRunId));
+      }
       const result = await Promise.race([
         client.callTool(
           params,
@@ -1661,7 +1663,19 @@ export class MCPClientManager {
     if (!conversationId) return;
     const ownerKey = browserRunOwnerKey(conversationId, agentRunId);
     if (!this.browserBridgeRunOwners.delete(ownerKey)) return;
+    this.notifyBrowserBridgeLifecycle(ABU_RUN_SETTLED_NOTIFICATION, {
+      ownerId: conversationId, runId: agentRunId || MAIN_RUN_KEY,
+    });
+  }
 
+  notifyBrowserBridgeConversationDeleted(conversationId: string): void {
+    if (!conversationId) return;
+    this.deletedBrowserConversations.add(conversationId);
+    // Retain run settlements for extensions that only support scoped release.
+    this.notifyBrowserBridgeLifecycle(ABU_CONVERSATION_DELETED_NOTIFICATION, { ownerId: conversationId });
+  }
+
+  private notifyBrowserBridgeLifecycle(method: string, params: Record<string, string>): void {
     const server = this.servers.get(CHROME_BRIDGE_SERVER_NAME);
     if (!server) return;
     const client = server.client as {
@@ -1671,16 +1685,16 @@ export class MCPClientManager {
     try {
       void Promise.resolve(
         client.notification({
-          method: ABU_RUN_SETTLED_NOTIFICATION,
-          params: { ownerId: conversationId, runId: agentRunId || MAIN_RUN_KEY },
+          method,
+          params,
         })
       ).catch((err) => {
-        mcpLogger.debug('browser bridge run-settled notification failed', {
+        mcpLogger.debug('browser bridge lifecycle notification failed', {
           error: err instanceof Error ? err.message : String(err),
         });
       });
     } catch (err) {
-      mcpLogger.debug('browser bridge run-settled notification threw', {
+      mcpLogger.debug('browser bridge lifecycle notification threw', {
         error: err instanceof Error ? err.message : String(err),
       });
     }

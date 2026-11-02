@@ -50,6 +50,11 @@ export interface BridgeReleaseMessage {
   runId?: string;
 }
 
+export interface BridgeConversationDeletedMessage {
+  type: 'conversation-deleted';
+  ownerId: string;
+}
+
 // --- MCP notification (Abu client → Bridge) ---
 
 /**
@@ -70,6 +75,7 @@ export interface BridgeReleaseMessage {
  * with no IPC to the app, so the MCP connection it already has is the channel.
  */
 export const ABU_RUN_SETTLED_NOTIFICATION = 'notifications/abu/runSettled';
+export const ABU_CONVERSATION_DELETED_NOTIFICATION = 'notifications/abu/conversationDeleted';
 
 /**
  * Params of `ABU_RUN_SETTLED_NOTIFICATION`.

@@ -21,3 +21,7 @@ export function releaseRunBrowserTabClaims(conversationId?: string, runKey?: str
   if (!conversationId) return;
   mcpManager.notifyBrowserBridgeRunSettled(conversationId, runKey);
 }
+
+export function releaseConversationBrowserTabClaims(conversationId: string): void {
+  mcpManager.notifyBrowserBridgeConversationDeleted(conversationId);
+}

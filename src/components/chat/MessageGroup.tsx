@@ -1070,7 +1070,6 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     ? format(t.chat.workingFor, { duration: formatWorkDuration(runElapsedMs) })
     : t.chat.working;
   const foldMode = foldEntry?.mode ?? 'auto';
-  const workExpanded = foldMode === 'expanded' || (foldMode === 'auto' && !(foldEntry?.autoCollapseHandled ?? false));
   const hasFinalAnswerOutsideFold = workFoldEnd !== null && workFoldEnd < segments.length && segments[workFoldEnd]?.kind === 'text';
   const canAutoCollapseFold =
     foldMode === 'auto'
@@ -1087,6 +1086,12 @@ export default function MessageGroup({ conversationId, messages, isLastGroup: is
     && batchRollup.running === 0
     && batchRollup.queued === 0
     && batchRollup.unknown === 0;
+
+  // Completed history is measured in its settled state from the first commit.
+  // A running group keeps the focus-aware completion transition below.
+  const [initiallyAutoCollapsed] = useState(canAutoCollapseFold);
+  const workExpanded = foldMode === 'expanded'
+    || (foldMode === 'auto' && !initiallyAutoCollapsed && !(foldEntry?.autoCollapseHandled ?? false));
 
   useEffect(() => {
     if (!canAutoCollapseFold) return;

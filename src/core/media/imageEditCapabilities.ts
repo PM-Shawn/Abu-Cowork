@@ -26,12 +26,13 @@ export function imageEditCapabilities(backend: Pick<ImageGenBackend, 'vendor' | 
   if (url.search || url.hash || url.username || url.password) return unsupported;
   if (backend.vendor === 'volcengine' && url.origin === 'https://ark.cn-beijing.volces.com'
     && /^\/api\/(plan\/)?v3\/images\/generations\/?$/.test(url.pathname)
-    && /^doubao-seedream-5[.-]0-(lite|flash)(-\d{6})?$/.test(backend.model)) {
+    && /^doubao-seedream-5[.-]0-(lite|flash|pro)(-\d{6})?$/.test(backend.model)) {
     return {
-      whole: true, comments: true, markup: true, region: false, markupTransport: 'reference',
+      whole: true, comments: true, markup: true, region: !backend.model.includes('-lite'), markupTransport: 'reference',
       formats: ['image/png'], maxBytes: 30 * 1024 * 1024, maxPixels: 36_000_000,
       canQuery: false, canCancel: false,
-      profileVersion: backend.model.includes('-flash') ? 'seedream-5-flash-reference-2026-10-30' : 'seedream-5-lite-reference-2026-10-30',
+      profileVersion: backend.model.includes('-pro') ? 'seedream-5-pro-reference-2026-11-02'
+        : backend.model.includes('-flash') ? 'seedream-5-flash-reference-2026-10-30' : 'seedream-5-lite-reference-2026-10-30',
     };
   }
   if (backend.vendor !== 'openai' || url.origin !== 'https://api.openai.com' || !['', '/', '/v1', '/v1/'].includes(url.pathname)) return unsupported;

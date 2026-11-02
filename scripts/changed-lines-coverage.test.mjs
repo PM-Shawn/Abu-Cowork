@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import path from 'node:path';
 
 import {
   GateInputError,
@@ -40,6 +41,21 @@ test('parseLcov normalizes relative and absolute paths and merges duplicate DA r
   assert.deepEqual([...coverage.keys()], ['src/a.ts', 'src/b.tsx']);
   assert.deepEqual([...coverage.get('src/a.ts')], [[2, 4], [3, 1], [4, 0]]);
   assert.deepEqual([...coverage.get('src/b.tsx')], [[8, 2]]);
+});
+
+test('parseLcov maps a native absolute source path to its repository-relative file', () => {
+  const nativeRoot = path.resolve('coverage-repository');
+  const coverage = parseLcov(lcovFixture([
+    { file: path.join(nativeRoot, 'src', 'a.ts'), lines: [[2, 1]] },
+  ]), { repoRoot: nativeRoot });
+  assert.deepEqual([...coverage.keys()], ['src/a.ts']);
+});
+
+test('parseLcov refuses an absolute Windows source outside the repository', () => {
+  assert.throws(
+    () => parseLcov(lcovFixture([{ file: 'Z:/outside.ts', lines: [[2, 1]] }]), { repoRoot }),
+    error => error instanceof GateInputError && error.exitCode === 2,
+  );
 });
 
 test('parseLcov fails loudly on empty, malformed, or out-of-repository input', () => {

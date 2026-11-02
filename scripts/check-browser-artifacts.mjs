@@ -4,19 +4,14 @@
  * Guard: the browser packages ship as build artifacts, and the app loads the
  * artifacts, not the sources.
  *
- *   abu-chrome-extension/src        → abu-chrome-extension/dist/content.js
- *                                     (the extension AND, injected into an
- *                                      isolated world, the built-in browser)
+ *   abu-chrome-extension/           → abu-chrome-extension/dist/
+ *                                     src-tauri/browser-extension/
  *   abu-browser-bridge/src/tools.ts → electron/browser-runtime/dist/server.mjs
  *                                     electron/browser-runtime/dist/queryJsWorker.mjs
  *                                     electron/chrome-bridge-runtime/dist/server.mjs
  *                                     electron/chrome-bridge-runtime/dist/queryJsWorker.mjs
  *
- * Editing a source without rebuilding leaves the running app on the old code.
- * That is not hypothetical: a round of this work shipped a tool-description
- * change that never reached either runtime bundle, so the model kept seeing
- * the old description and a tester spent an evening reproducing a bug that
- * had already been "fixed". Newest-source-vs-artifact mtime catches it.
+ * Source and output digests bind every artifact to the completed build.
  */
 
 import { createHash } from 'node:crypto';
@@ -26,21 +21,27 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
+const EXTENSION_FILES = [
+  'background.js', 'background.js.map', 'content.js', 'content.js.map',
+  'offscreen.js', 'offscreen.js.map', 'popup.js', 'popup.js.map',
+  'manifest.json', 'popup.html', 'offscreen.html',
+];
+const EXTENSION_SOURCES = [
+  'abu-chrome-extension/src', 'abu-browser-shared/types.ts',
+  'abu-chrome-extension/manifest.json', 'abu-chrome-extension/package.json',
+  'abu-chrome-extension/package-lock.json', 'abu-chrome-extension/build.js',
+];
+
 /** Every artifact, with the sources it is built from and how to rebuild it. */
 export const ARTIFACTS = [
-  {
-    artifact: 'abu-chrome-extension/dist/content.js',
-    sources: ['abu-chrome-extension/src', 'abu-browser-shared/types.ts'],
-    rebuild: 'npm run build:browser-extension',
-  },
-  {
-    // Tracked in git and shipped by the Tauri bundle, so it drifts silently:
-    // CI rebuilds the extension and diffs it against this copy, which means a
-    // source edit without `copy-resources` fails there rather than here.
-    artifact: 'src-tauri/browser-extension/content.js',
-    sources: ['abu-chrome-extension/src', 'abu-browser-shared/types.ts'],
-    rebuild: 'npm run build:browser-extension && npm run copy-resources',
-  },
+  ...['abu-chrome-extension/dist', 'src-tauri/browser-extension'].flatMap(directory =>
+    EXTENSION_FILES.map(file => ({
+      artifact: `${directory}/${file}`,
+      sources: EXTENSION_SOURCES,
+      rebuild: directory === 'abu-chrome-extension/dist'
+        ? 'npm run build:browser-extension'
+        : 'npm run build:browser-extension && npm run copy-resources',
+    }))),
   {
     artifact: 'electron/browser-runtime/dist/server.mjs',
     sources: ['abu-browser-bridge/src', 'electron/browser-runtime/server.ts'],
@@ -127,7 +128,31 @@ export function recordSourceDigest(artifact) {
   const entry = ARTIFACTS.find((a) => a.artifact === artifact);
   if (!entry) throw new Error(`no artifact entry for ${artifact}`);
   fs.mkdirSync(STAMP_DIR, { recursive: true });
-  fs.writeFileSync(stampPathFor(artifact), `${sourceDigest(entry.sources)}\n`);
+  fs.writeFileSync(stampPathFor(artifact), `${buildDigest(entry)}\n`);
+}
+
+function buildDigest(entry) {
+  return JSON.stringify({
+    sources: sourceDigest(entry.sources),
+    artifact: createHash('sha256').update(fs.readFileSync(path.join(ROOT, entry.artifact))).digest('hex'),
+  });
+}
+
+export function recordExtensionDigests(directory) {
+  for (const file of EXTENSION_FILES) recordSourceDigest(`${directory}/${file}`);
+}
+
+export function assertExtensionDigests(directory) {
+  for (const file of EXTENSION_FILES) {
+    const artifact = `${directory}/${file}`;
+    const entry = ARTIFACTS.find(candidate => candidate.artifact === artifact);
+    if (!entry) throw new Error(`no artifact entry for ${artifact}`);
+    const stamp = stampPathFor(artifact);
+    if (!fs.existsSync(path.join(ROOT, artifact)) || !fs.existsSync(stamp)
+      || fs.readFileSync(stamp, 'utf8').trim() !== buildDigest(entry)) {
+      throw new Error(`Unverified browser artifact ${artifact}. Rebuild with: ${entry.rebuild}`);
+    }
+  }
 }
 
 /** Running as a script? Only then does it check and exit. */
@@ -147,7 +172,7 @@ for (const { artifact, sources, rebuild } of ARTIFACTS) {
     missing.push({ artifact, rebuild });
     continue;
   }
-  const expected = sourceDigest(sources);
+  const expected = buildDigest({ artifact, sources });
   const recorded = fs.existsSync(stampPath) ? fs.readFileSync(stampPath, 'utf8').trim() : null;
   if (recorded !== expected) {
     stale.push({ artifact, rebuild, recorded, expected });
@@ -165,7 +190,7 @@ for (const { artifact, rebuild } of missing) {
 for (const { artifact, rebuild, recorded } of stale) {
   console.error(
     `[check-browser-artifacts] STALE ${artifact}\n` +
-    `  ${recorded === null ? 'no source digest recorded for' : 'the sources no longer match'} the artifact the app actually loads.\n` +
+    `  ${recorded === null ? 'no build digest recorded for' : 'the sources or output no longer match'} the artifact the app actually loads.\n` +
     `  rebuild with: ${rebuild}`,
   );
 }

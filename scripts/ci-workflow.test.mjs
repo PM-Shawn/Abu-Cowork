@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const ci = readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8');
+const ci = readFileSync(path.join(repoRoot, '.github/workflows/ci.yml'), 'utf8').replace(/\r\n/g, '\n');
 const e2e = readFileSync(path.join(repoRoot, '.github/workflows/e2e.yml'), 'utf8');
 const release = readFileSync(path.join(repoRoot, '.github/workflows/release.yml'), 'utf8');
 const vitestConfig = readFileSync(path.join(repoRoot, 'vitest.config.ts'), 'utf8');
@@ -53,7 +53,7 @@ test('browser artifact gate builds runtimes and verifies the tracked copy before
   const step = requiredCheckStep('Verify Chrome extension bundle is in sync with source', 'build');
   const build = step.indexOf('npm run build:electron-browser-runtime');
   const compare = step.indexOf('if ! diff -r');
-  const stamp = step.indexOf("recordSourceDigest('src-tauri/browser-extension/content.js')");
+  const stamp = step.indexOf("recordExtensionDigests('src-tauri/browser-extension')");
   const verify = step.indexOf('npm run check:browser-artifacts');
   assert.ok(build >= 0 && compare > build && stamp > compare && verify > stamp);
   assert.match(step.slice(compare, stamp), /exit 1\s*\n\s*fi/);

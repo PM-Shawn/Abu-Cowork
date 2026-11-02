@@ -33,6 +33,13 @@ if (typeof navigator !== 'undefined') {
   Object.defineProperty(navigator, 'languages', { value: ['en-US', 'en'], configurable: true });
 }
 
+// Node suites use the same deferred frame boundary as the renderer. Fake
+// timers control these callbacks; DOM suites retain their native frame APIs.
+if (typeof globalThis.requestAnimationFrame === 'undefined') {
+  globalThis.requestAnimationFrame = (callback) => Number(setTimeout(() => callback(performance.now()), 16));
+  globalThis.cancelAnimationFrame = (handle) => clearTimeout(handle);
+}
+
 // ── @tauri-apps/api ──
 vi.mock('@tauri-apps/api/path', () => ({
   homeDir: vi.fn().mockResolvedValue('/Users/testuser'),

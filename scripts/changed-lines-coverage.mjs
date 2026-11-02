@@ -33,13 +33,13 @@ function normalizeRepoPath(sourcePath, repoRoot) {
     throw new GateInputError('LCOV contains an invalid source path');
   }
 
-  const normalizedRoot = path.resolve(repoRoot).split(path.sep).join('/');
   const normalizedSource = raw.split('\\').join('/');
-  const relative = path.posix.isAbsolute(normalizedSource)
-    ? path.posix.relative(normalizedRoot, path.posix.normalize(normalizedSource))
+  const relative = path.isAbsolute(normalizedSource)
+    ? path.relative(path.resolve(repoRoot), path.resolve(normalizedSource)).split(path.sep).join('/')
     : path.posix.normalize(normalizedSource.replace(/^\.\//, ''));
 
-  if (!relative || relative === '..' || relative.startsWith('../') || path.posix.isAbsolute(relative)) {
+  if (!relative || relative === '..' || relative.startsWith('../')
+    || path.posix.isAbsolute(relative) || path.win32.isAbsolute(relative)) {
     throw new GateInputError(`LCOV source path is outside the repository: ${raw}`);
   }
   return relative;

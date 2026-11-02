@@ -29,7 +29,7 @@ function syncTray() {
 
   for (const ch of activeChannels) {
     const sessions = Object.values(imState.sessions).filter((s) => s.channelId === ch.id);
-    const statusDot = ch.status === 'connected' ? '●' : ch.status === 'error' ? '✗' : '○';
+    const statusDot = ch.status === 'connected' ? '●' : ch.status === 'error' || ch.status === 'auth_expired' ? '✗' : '○';
     imChannels.push({
       platform: ch.platform,
       label: `${statusDot} ${getPlatformDisplayName(ch.platform)}`,

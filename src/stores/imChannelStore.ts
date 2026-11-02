@@ -135,6 +135,8 @@ export const useIMChannelStore = create<IMChannelStore>()(
         set((state) => {
           const channel = state.channels[id];
           if (!channel) return;
+          // Pending task results cannot renew expired credentials.
+          if (channel.status === 'auth_expired' && (status === 'connected' || status === 'error')) return;
           channel.status = status;
           channel.lastError = error;
         });

@@ -16,7 +16,7 @@ export type IMResponseMode = 'mention_only' | 'all_messages';
 
 // ── Channel Config ──
 
-export type IMChannelStatus = 'connected' | 'connecting' | 'disconnected' | 'error';
+export type IMChannelStatus = 'connected' | 'connecting' | 'disconnected' | 'error' | 'auth_expired';
 
 export interface IMChannel {
   id: string;

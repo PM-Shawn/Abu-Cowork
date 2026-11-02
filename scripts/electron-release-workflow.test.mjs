@@ -436,11 +436,23 @@ test('Electron build uses native runners for all three release targets', () => {
   assert.equal(branchAcceptance['continue-on-error'], true);
   assert.match(branchAcceptance.run, /npm run test:branch-native/);
   assert.match(branchAcceptance.run, /npm run build:sandbox-launcher/);
+  assert.match(branchAcceptance.run, /npm run test:media-host/);
+  assert.match(branchAcceptance.run, /node scripts\/media-performance\.cjs/);
+  assert.match(branchAcceptance.run, /tests\/e2e\/multimedia-conversation\.spec\.ts tests\/e2e\/multimedia-branching\.spec\.ts/);
+  assert.match(branchAcceptance.run, /npx playwright test -c playwright\.media-performance\.config\.ts/);
+  assert.match(branchAcceptance.run, /renderer-performance\.log/);
   assert.match(branchAcceptance.run, /npm run test:e2e:electron -- tests\/e2e\/smoke\.spec\.ts tests\/e2e\/conversation-branching\.spec\.ts tests\/e2e\/conversation-branch-history\.spec\.ts/);
   assert.ok(windowsStepNames.indexOf(branchAcceptance.name) < windowsStepNames.indexOf('Require all Windows gates'));
   const branchEvidence = build.jobs['build-windows'].steps.find(step => step.name === 'Upload Windows conversation branch evidence');
   assert.equal(branchEvidence.with['include-hidden-files'], true);
   assert.match(branchEvidence.with.path, /\.agent\/windows-branch-acceptance\//);
+  assert.match(branchEvidence.with.path, /\.agent\/media-performance\//);
+  const encoder = build.jobs['build-windows'].steps.find(step => step.name === 'Install video fixture encoder');
+  assert.match(encoder.run, /choco install ffmpeg --yes --no-progress/);
+  assert.ok(windowsStepNames.indexOf(encoder.name) < windowsStepNames.indexOf(branchAcceptance.name));
+  const installedMediaEvidence = build.jobs['build-windows'].steps.find(step => step.name === 'Upload Windows installed media evidence');
+  assert.equal(installedMediaEvidence.with['if-no-files-found'], 'error');
+  assert.match(installedMediaEvidence.with.path, /installed-media-package\.json/);
   assert.ok(
     windowsStepNames.indexOf('Require all Windows gates') <
       windowsStepNames.indexOf('Resolve Windows candidate configuration')

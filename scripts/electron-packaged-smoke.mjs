@@ -1950,6 +1950,35 @@ function verifyPackagedBranchHost(found, runtimeTrap) {
   if (result.status !== 0) throw new Error(`Packaged conversation branch Host failed to load: ${result.stderr}`);
 }
 
+function verifyPackagedSharp(found, runtimeTrap, directory) {
+  const probe = `
+    const assert = require('node:assert/strict');
+    const path = require('node:path');
+    const { createRequire } = require('node:module');
+    const archive = process.argv[1];
+    const filename = process.argv[2];
+    const hostRequire = createRequire(path.join(archive, 'electron', 'imageEditHost.cjs'));
+    const resolved = hostRequire.resolve('sharp');
+    assert.ok(resolved.startsWith(archive + path.sep), 'Sharp must resolve from the packaged archive');
+    const sharp = hostRequire('sharp');
+    (async () => {
+      await sharp({ create: { width: 32, height: 24, channels: 3, background: '#123456' } }).png().toFile(filename);
+      const { data, info } = await sharp(filename).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      assert.equal(info.width, 32);
+      assert.equal(info.height, 24);
+      assert.deepEqual([...data.subarray(0, 3)], [18, 52, 86]);
+      console.log(JSON.stringify({ resolved, width: info.width, height: info.height, libvips: sharp.versions.vips }));
+    })();
+  `;
+  const result = spawnSync(found.bin, ['-e', probe, path.resolve(found.resources, 'app.asar'), path.join(directory, 'sharp.png')], {
+    env: { ...cleanPackagedEnvironment(runtimeTrap), ELECTRON_RUN_AS_NODE: '1' },
+    encoding: 'utf8', timeout: 30_000,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(`Packaged Sharp read/write failed: ${result.stderr}`);
+  console.log(`[packaged-smoke] Sharp read/write: ${result.stdout.trim()}`);
+}
+
 function launchPackagedApp(found, userDataDir, appDataDir, runtimeTrap, expectMigration = false) {
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.mkdirSync(appDataDir, { recursive: true });
@@ -2172,6 +2201,8 @@ async function main() {
   let appProcess;
   try {
     verifyPackagedBranchHost(found, runtimeTrap);
+    verifyPackagedSharp(found, runtimeTrap, runtimeArtifactsDir);
+    checks.packagedSharpReadWrite = true;
     checks.packagedBranchHostLoads = true;
     app = await launchPackagedApp(
       found,

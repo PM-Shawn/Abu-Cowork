@@ -436,6 +436,24 @@ npm run test:e2e       # run all Playwright specs (headless Chromium)
 npm run test:e2e:electron -- tests/e2e/smoke.spec.ts tests/e2e/<feature>.spec.ts
 ```
 
+The Windows candidate build also runs the multimedia conversation and branching specs,
+`npm run test:media-host`, and `node scripts/media-performance.cjs`. The host performance
+report is written to `.agent/media-performance/host.json` after preparing a real
+8000 × 5000 image with 50,000 drawing points and 100 comments through the native helper.
+The separate performance journey runs with
+`npx playwright test -c playwright.media-performance.config.ts` and requires FFmpeg on PATH.
+It edits the same image size and drawing/comment counts in Electron, exercises undo/redo,
+then plays and seeks a real MP4 larger than 200 MiB. Its JSON attachment records stroke
+durations, renderer memory and playback state. This dedicated suite uses the existing
+Electron setup and does not belong to the default E2E suite.
+
+The packaged smoke performs a real Sharp PNG write/read using the pre-fuse Electron
+copy, whose resources must match the release package. Windows installed smoke compares
+SHA-256 for the installed `app.asar` and every unpacked module against that package,
+and requires installed Sharp and `@img` modules. The installed module inventory and
+hashes are retained as `windows-installed-media-package`; this establishes byte equality
+with the tested package. Sharp execution is performed in the pre-fuse copy.
+
 Run the full suite locally only for shell-wide changes (`electron/main.cjs`, `preload.cjs`, `tests/e2e/electronHelpers.ts`, global components, **zh-CN copy changes** — specs locate elements by Chinese text). Playwright's `--only-changed` does not help here: it diffs test files and their imports, and these specs do not import app source.
 
 Electron has no headless mode, so every launch shows a real window. The launcher sets `ABU_E2E_QUIET_WINDOW=1`, which makes every window reveal — the main/transition windows in `main.cjs` and the pet / overlay / stop-button windows in `guiHost.cjs` — go through `revealWindow()` with `showInactive()` instead of `show()`, and hides the macOS Dock icon (`electron/windowShowPolicy.cjs`), so a run no longer steals keyboard focus from the developer. A new window family must reveal through `revealWindow(win)` too; a bare `win.show()` re-activates the app for the whole run (`electron/guiHost.reveal.test.cjs` pins the pet / overlay / stop-button paths). Windows stay real and rendered — drag-region and browser-view specs depend on that.

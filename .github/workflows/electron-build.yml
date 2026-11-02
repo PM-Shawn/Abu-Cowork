@@ -558,7 +558,20 @@ jobs:
           cargo test --manifest-path electron/native-helper/Cargo.toml --bin tauri-transition-reader
           cargo test --manifest-path electron/native-helper/Cargo.toml --test stdin_eof
 
-      - name: Windows conversation branch acceptance
+      - name: Install video fixture encoder
+        shell: pwsh
+        run: |
+          $temporaryDirectory = Join-Path $PWD '.agent/windows-branch-temp'
+          New-Item -ItemType Directory -Force $temporaryDirectory | Out-Null
+          $env:TEMP = $temporaryDirectory
+          $env:TMP = $temporaryDirectory
+          $env:TMPDIR = $temporaryDirectory
+          choco install ffmpeg --yes --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ffmpeg -version
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Windows conversation branch and multimedia acceptance
         id: windows_branch_acceptance
         continue-on-error: true
         shell: pwsh
@@ -578,8 +591,15 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           npm run build:sandbox-launcher 2>&1 | Tee-Object -FilePath "$evidenceDirectory/launcher.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run test:e2e:electron -- tests/e2e/smoke.spec.ts tests/e2e/conversation-branching.spec.ts tests/e2e/conversation-branch-history.spec.ts 2>&1 |
+          npm run test:media-host 2>&1 | Tee-Object -FilePath "$evidenceDirectory/media-host.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/media-performance.cjs 2>&1 | Tee-Object -FilePath "$evidenceDirectory/media-performance.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run test:e2e:electron -- tests/e2e/smoke.spec.ts tests/e2e/conversation-branching.spec.ts tests/e2e/conversation-branch-history.spec.ts tests/e2e/multimedia-conversation.spec.ts tests/e2e/multimedia-branching.spec.ts 2>&1 |
             Tee-Object -FilePath "$evidenceDirectory/electron.log"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npx playwright test -c playwright.media-performance.config.ts 2>&1 |
+            Tee-Object -FilePath "$evidenceDirectory/renderer-performance.log"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Upload Windows conversation branch evidence
@@ -590,6 +610,7 @@ jobs:
           include-hidden-files: true
           path: |
             .agent/windows-branch-acceptance/
+            .agent/media-performance/
             test-results/
           retention-days: 7
 
@@ -722,6 +743,16 @@ jobs:
         env:
           ABU_EXPECT_TAURI_MIGRATION: ${{ inputs.transition_release || inputs.legacy_migration_support }}
         run: npm run smoke:electron:packaged
+
+      - name: Upload Windows installed media evidence
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-installed-media-package
+          include-hidden-files: true
+          path: .agent/windows-branch-acceptance/installed-media-package.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Tauri-sign transition installer
         if: ${{ inputs.transition_release }}

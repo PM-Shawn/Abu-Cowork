@@ -6,6 +6,8 @@ const crypto = require('node:crypto');
 const { identityOf, sameIdentity } = require('./fileIdentity.cjs');
 const { bytesMatchMediaType } = require('./mediaSignature.cjs');
 const { createNativeFileSession } = require('./nativeHelperManager.cjs');
+const { imageEditAttachmentSchema } = require('./generated/mediaRuntime.cjs');
+const { isDeepStrictEqual } = require('node:util');
 const {
   assertConversationId, assertBranchRelativePath, buildConversationBranchFilePlan,
   markBranchFilesMissing, readOutputManifestRecords,
@@ -206,11 +208,45 @@ async function assertCopyCapacity(root, rootIdentity, additionalBytes) {
       }
     }
   }
+  await count('media/captures');
+  await count('media/results');
   await assertRoot(root, rootIdentity);
 }
 
+async function branchMediaSources(root, rootIdentity, sourceId, messages, inheritedMessageIds) {
+  const conversationKey = crypto.createHash('sha256').update(sourceId).digest('hex');
+  const sources = [];
+  const outputPrefix = `${path.join(root, 'conversations', sourceId, 'outputs').replace(/\\/g, '/')}/`;
+  for (const message of messages) {
+    const references = [
+      ...(message.imageEditRequest?.attachmentRefs ?? []).map(attachment => attachment.fileRef),
+      ...(message.mediaArtifacts ?? []).map(artifact => artifact.fileRef),
+    ];
+    for (const reference of references) {
+      if (inheritedMessageIds.has(message.id) && reference.originalPath.replace(/\\/g, '/').startsWith(outputPrefix)) continue;
+      let relative;
+      if (reference.captureId) {
+        if (!/^[a-f0-9-]{36}$/.test(reference.captureId)) fail('invalid-media-capture');
+        relative = `media/captures/${conversationKey}/${reference.captureId}`;
+        const metadata = await readOptionalText(root, rootIdentity, `${relative}.json`);
+        if (metadata !== null) {
+          const attachment = imageEditAttachmentSchema.parse(JSON.parse(metadata));
+          if (!isDeepStrictEqual(attachment.fileRef, reference)) fail('invalid-media-capture');
+        } else if (await inspectPath(root, `${relative}.png`)) fail('invalid-media-capture');
+        relative += '.png';
+      } else {
+        relative = path.relative(root, reference.originalPath).replace(/\\/g, '/');
+        if (!new RegExp(`^media/results/${conversationKey}/[a-f0-9]{64}/image\\.png$`).test(relative)) fail('invalid-media-result');
+      }
+      if (!/^[a-f0-9]{64}$/.test(reference.contentDigest ?? '')) fail('invalid-media-digest');
+      sources.push({ reference, sourceRelPath: relative });
+    }
+  }
+  return sources;
+}
+
 /** Called only with host-derived appData and ledger messages, never renderer paths. */
-async function prepareBranchFiles({ appDataDir, sourceConversationId, childConversationId, messages, messageIdMap }) {
+async function prepareBranchFiles({ appDataDir, sourceConversationId, childConversationId, messages, messageIdMap, inheritedMessageIds = new Set() }) {
   assertConversationId(sourceConversationId);
   assertConversationId(childConversationId);
   if (sourceConversationId.toLowerCase() === childConversationId.toLowerCase()) fail('invalid-child');
@@ -224,6 +260,7 @@ async function prepareBranchFiles({ appDataDir, sourceConversationId, childConve
   const plan = buildConversationBranchFilePlan({
     sourceConversationId, childConversationId, sourceDirectory,
     childDirectory: path.join(root, 'conversations', childConversationId), messages, messageIdMap, entries,
+    mediaSources: await branchMediaSources(root, rootIdentity, sourceConversationId, messages, inheritedMessageIds),
   });
   const records = [];
   const missing = new Set();
@@ -246,7 +283,7 @@ async function prepareBranchFiles({ appDataDir, sourceConversationId, childConve
       records.push({ targetRelPath: file.targetRelPath, inline: file.inline, size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') });
       totalBytes += bytes.length;
     } else {
-      let relative = `conversations/${sourceConversationId}/${file.sourceRelPath}`;
+      let relative = file.sourceArea === 'media' ? file.sourceRelPath : `conversations/${sourceConversationId}/${file.sourceRelPath}`;
       let frozen = await readPinnedFile(root, rootIdentity, relative, null, MAX_FILE_BYTES);
       if (!frozen && file.sourceArea === 'legacy') {
         relative = `sessions/${sourceConversationId}/${file.sourceRelPath}`;
@@ -256,6 +293,7 @@ async function prepareBranchFiles({ appDataDir, sourceConversationId, childConve
         missing.add(file.targetRelPath);
         continue;
       }
+      if (file.contentDigest && frozen.sha256 !== file.contentDigest) fail('media-content-changed');
       records.push({ sourceRelative: relative, targetRelPath: file.targetRelPath, frozen, size: Number(frozen.size), sha256: frozen.sha256 });
       totalBytes += Number(frozen.size);
     }

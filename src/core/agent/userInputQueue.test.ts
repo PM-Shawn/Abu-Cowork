@@ -4,6 +4,7 @@
  * may be consumed inside the current loop.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { ImageEditRequest } from '@/types/media';
 import {
   enqueueUserInput,
   enqueueUserInputWithId,
@@ -25,6 +26,25 @@ const CONV = 'conv-queue-test';
 
 describe('userInputQueue staging', () => {
   beforeEach(() => clearInputQueue(CONV));
+
+  it('queues written comments with the captured image and isolates them from subsequent draft changes', () => {
+    const request: ImageEditRequest = {
+      schemaVersion: 1, id: 'request-1', messageId: 'message-1', scope: 'local', conversationId: CONV,
+      sourceArtifactId: 'source-1', sourceCaptureId: 'capture-1', sourceDigest: 'a'.repeat(64), prompt: '',
+      comments: [{ id: 'comment-1', point: { x: 0.5, y: 0.5 }, text: 'Keep the package' }], markup: [], region: [],
+      attachmentRefs: [{ kind: 'source', fileRef: { originalPath: '/source.png', captureId: 'capture-1', contentDigest: 'a'.repeat(64) }, mimeType: 'image/png', width: 100, height: 100, byteLength: 100 }],
+      backendId: 'images', capabilityVersion: '1',
+    };
+    enqueueUserInput(CONV, '', false, undefined, undefined, request);
+    request.comments[0].text = 'Next edit';
+    const queued = dequeueNextUserInput(CONV)!;
+    expect(queued.text).toBe('Keep the package');
+    expect(queued.imageEditRequest?.comments[0].text).toBe('Keep the package');
+    expect(queued.imageEditRequest?.attachmentRefs[0].fileRef.captureId).toBe('capture-1');
+    restoreDequeuedUserInput(CONV, queued);
+    resumeUserInputQueue(CONV);
+    expect(dequeueNextUserInput(CONV)?.imageEditRequest).toEqual(queued.imageEditRequest);
+  });
 
   it('getQueuedInputs exposes queued items for rendering', () => {
     enqueueUserInput(CONV, '数完说你好');

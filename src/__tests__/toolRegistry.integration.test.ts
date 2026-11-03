@@ -19,32 +19,11 @@ import { setPlatformForTest as _setPlatformForTest } from '../test/helpers';
 import { resolveTriggerCallbacks } from '../core/trigger/triggerPermission';
 import { buildTriggerRunPermissionCeiling } from '../core/permissions/runPermissionCeiling';
 import { canonicalizeElectronPathForPolicy } from '../utils/electronHost';
+import { getI18n } from '@/i18n';
 
 vi.mock('../utils/electronHost', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/electronHost')>()),
   canonicalizeElectronPathForPolicy: vi.fn().mockResolvedValue(null),
-}));
-
-// Mock i18n. commandSafety resolves reason/label strings via
-// getI18n().toolResult.commandSafety.<key> at analysis time; this test only
-// asserts on the commandConfirm strings, so a proxy that echoes the key name is
-// enough to keep command analysis from crashing on the missing namespace.
-vi.mock('../i18n', () => ({
-  getI18n: () => ({
-    commandConfirm: {
-      blocked: '已阻止',
-      userCancelled: '用户取消了操作',
-    },
-    toolResult: {
-      commandSafety: new Proxy({}, { get: (_t, key) => String(key) }),
-    },
-    toolErrors: {
-      userDeniedAccess: 'user denied access',
-      pathAccessDenied: 'path access denied',
-      needsAuthorization: 'needs authorization',
-      scopedRunNoWorkspaceCommand: 'Error: this unattended run has no write-authorized working directory. Choose Full Autonomy, configure a workspace path for this task, or pass an absolute cwd inside an authorized directory.',
-    },
-  }),
 }));
 
 // Mock MCP manager
@@ -76,7 +55,7 @@ describe('toolRegistry integration', () => {
       });
 
       const result = await executeAnyTool('run_command', { command: 'rm -rf /' });
-      expect(result).toContain('已阻止');
+      expect(result).toContain(getI18n().commandConfirm.blocked);
       // The underlying execute should NOT have been called
     });
 
@@ -184,7 +163,7 @@ describe('toolRegistry integration', () => {
         { command: 'sudo rm something' },
         onConfirm
       );
-      expect(result).toContain('用户取消');
+      expect(result).toContain(getI18n().commandConfirm.userCancelled);
     });
 
     it('fails closed for scoped non-read-only commands whose effective cwd is read-only', async () => {
@@ -1117,7 +1096,7 @@ describe('toolRegistry integration', () => {
           undefined,
           { authorizationScopeId: scopeId },
         );
-        expect(String(denied)).toContain('needs authorization');
+        expect(String(denied)).toContain(getI18n().toolErrors.needsAuthorization);
         expect(executeFn).not.toHaveBeenCalled();
 
         const filePermission = vi.fn(async ({ path, capability }) => {

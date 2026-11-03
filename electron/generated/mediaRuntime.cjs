@@ -50265,11 +50265,11 @@ var zhCN = {
     contentGuardDisableTitle: "关闭内容安全扫描？",
     contentGuardDisableMessage: "关闭后阿布自发创建的技能和记忆不会被扫描，可能写入包含危险指令的内容。只在明确需要调试误报时关闭，测试完请立即打开。",
     permissionModeStandard: "请求批准",
-    permissionModeStandardDesc: "工作区内自由读写；越界写入、危险命令及电脑操控首次操作每个应用都需确认",
+    permissionModeStandardDesc: "修改外部文件或操作电脑时询问你",
     permissionModeSmart: "替我审批",
-    permissionModeSmartDesc: "越界操作交 AI 审核；电脑操控先确认本任务，再自动放行已识别的普通应用，浏览器、通讯和未知应用仍问你。可能误判",
+    permissionModeSmartDesc: "由 AI 审核风险，必要时请求你批准",
     permissionModeAutonomous: "完全自主",
-    permissionModeAutonomousDesc: "电脑操控先确认本任务，再自动执行已识别的普通操作；浏览器、通讯和未知应用仍问你，系统红线始终禁止",
+    permissionModeAutonomousDesc: "自动执行任务，敏感操作仍会询问你",
     // ModelConfigSection
     currentConfig: "当前配置",
     configured: "已配置",
@@ -52276,6 +52276,7 @@ var zhCN = {
   toolErrors: {
     userDeniedAccess: "用户拒绝了访问",
     pathAccessDenied: "路径访问被拒绝",
+    symlinkTargetNeedsAuthorization: "此路径通过符号链接指向 {path}。该目标超出已授权范围，需要单独授权。",
     needsAuthorization: "需要用户授权才能访问",
     scopedRunNoWorkspaceCommand: "Error: 当前无人值守任务没有可写授权工作目录，因此不能运行写入命令。请选择完全自主档、为此任务配置工作区路径，或传入已授权目录内的绝对 `cwd`。"
   },
@@ -54833,11 +54834,11 @@ var enUS = {
     contentGuardDisableTitle: "Disable content safety scanner?",
     contentGuardDisableMessage: "When off, skills and memories Abu proposes skip the safety scan — they may contain dangerous instructions. Only disable temporarily to debug false positives, then re-enable.",
     permissionModeStandard: "Standard",
-    permissionModeStandardDesc: "Read/write inside the workspace; out-of-bounds writes, dangerous commands, and first use of each app by Computer Use need confirmation",
+    permissionModeStandardDesc: "Ask before editing external files or controlling your computer",
     permissionModeSmart: "Smart Review",
-    permissionModeSmartDesc: "Escalations go to AI review; Computer Use confirms the task first, then auto-allows reviewed ordinary apps while browsers, communications, and unknown apps still ask. May misjudge",
+    permissionModeSmartDesc: "Let AI review risks and ask for approval when needed",
     permissionModeAutonomous: "Full Autonomy",
-    permissionModeAutonomousDesc: "Computer Use confirms the task first, then reviewed ordinary work runs automatically; browsers, communications, and unknown apps still ask, while system red lines remain blocked",
+    permissionModeAutonomousDesc: "Run tasks automatically and ask before sensitive actions",
     // ModelConfigSection
     currentConfig: "Current Config",
     configured: "Configured",
@@ -56845,6 +56846,7 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
   toolErrors: {
     userDeniedAccess: "User denied access to",
     pathAccessDenied: "Path access denied",
+    symlinkTargetNeedsAuthorization: "This path resolves through a symbolic link to {path}. This target is outside the authorized paths and requires separate authorization.",
     needsAuthorization: "User authorization required to access",
     scopedRunNoWorkspaceCommand: "Error: this unattended run has no write-authorized working directory, so no writing command can run. Choose Full Autonomy, configure a workspace path for this task, or pass an absolute `cwd` inside an authorized directory."
   },

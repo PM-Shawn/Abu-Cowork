@@ -91,7 +91,7 @@ test('branches every edit attachment, reopens without the parent, and captures a
   assert.equal(child[1].mediaArtifacts[0].editRequestId, childRequest.id);
   const refs = [...childRequest.attachmentRefs.map(value => value.fileRef), child[1].mediaArtifacts[0].fileRef];
   for (const ref of refs) {
-    assert.ok(ref.originalPath.startsWith(path.join(f.root, 'conversations/child/outputs/inherited')));
+    assert.ok(path.resolve(ref.originalPath).startsWith(`${path.join(f.root, 'conversations/child/outputs/inherited')}${path.sep}`));
     assert.deepEqual(fs.readFileSync(ref.originalPath), f.bytes);
   }
   const host = createMediaHost({ dataRoot: f.root, getConversation: id => f.entries[id] });

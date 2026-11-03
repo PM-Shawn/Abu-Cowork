@@ -269,6 +269,7 @@ describe('pathSafety', () => {
           needsPermission: true,
           permissionPath: readCanonical,
           capability: 'read',
+          reason: expect.stringContaining(readCanonical),
         });
         authorizeWorkspace(readCanonical, ['read']);
         expect(await checkReadPath(readLexical)).toMatchObject({
@@ -284,6 +285,7 @@ describe('pathSafety', () => {
           needsPermission: true,
           permissionPath: writeCanonical,
           capability: 'write',
+          reason: expect.stringContaining(writeCanonical),
         });
         // Parent-directory approval is valid too, and remains pinned to the
         // canonical root captured when the grant was created.
@@ -298,6 +300,7 @@ describe('pathSafety', () => {
           needsPermission: true,
           permissionPath: listCanonical,
           capability: 'read',
+          reason: expect.stringContaining(listCanonical),
         });
         authorizeWorkspace(listCanonical, ['read']);
         expect(await checkListPath(listLexical)).toMatchObject({

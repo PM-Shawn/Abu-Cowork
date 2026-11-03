@@ -6,18 +6,75 @@ import {
 } from './electronHelpers';
 import { startOpenAiMock, waitForApp, type OpenAiMock } from './openAiMock';
 import { persistedStoreVersion } from './storeVersions';
+import { readRuntimeEventLines } from './runtimeEvents';
 
 let app: ElectronApplication | undefined;
 let dataRoot: ElectronDataRoot | undefined;
 let model: OpenAiMock | undefined;
+let diagnosticPage: Page | undefined;
+let diagnostics: { time: number; kind: string; data: unknown }[] = [];
+
+function record(kind: string, data: unknown): void {
+  diagnostics.push({ time: performance.now(), kind, data });
+}
+
+async function imPolicyState() {
+  const channels = JSON.parse(localStorage.getItem('abu-im-channel') ?? '{}') as {
+    state?: {
+      channels?: Record<string, { platform?: string; enabled?: boolean; status?: string }>;
+      sessions?: Record<string, unknown>;
+    };
+  };
+  const triggers = JSON.parse(localStorage.getItem('abu-triggers') ?? '{}') as {
+    state?: { triggers?: Record<string, {
+      status?: string; source?: { type?: string; channelId?: string }; runs?: { status: string }[];
+    }> };
+  };
+  const host = window as unknown as { __TAURI_INTERNALS__: { invoke<T>(command: string): Promise<T> } };
+  return {
+    port: await host.__TAURI_INTERNALS__.invoke<number>('get_trigger_server_port'),
+    channels: Object.entries(channels.state?.channels ?? {}).map(([id, channel]) => ({
+      id, platform: channel.platform, enabled: channel.enabled, status: channel.status,
+    })),
+    sessionKeys: Object.keys(channels.state?.sessions ?? {}),
+    triggers: Object.entries(triggers.state?.triggers ?? {}).map(([id, trigger]) => ({
+      id, status: trigger.status,
+      source: { type: trigger.source?.type, channelId: trigger.source?.channelId },
+      runs: trigger.runs?.map(run => ({ status: run.status })),
+    })),
+  };
+}
+
+test.beforeEach(() => { diagnostics = []; });
 
 test.afterEach(async () => {
-  if (app) await closeAbuElectron(app);
-  app = undefined;
-  if (model) await model.close();
-  model = undefined;
-  if (dataRoot) removeElectronDataRoot(dataRoot);
-  dataRoot = undefined;
+  const testInfo = test.info();
+  try {
+    if (testInfo.status !== testInfo.expectedStatus) {
+      try {
+        if (diagnosticPage && !diagnosticPage.isClosed()) {
+          record('failure-state', await diagnosticPage.evaluate(imPolicyState));
+          record('failure-listeners', {
+            inbound: await windowListenerRegistered(app!, diagnosticPage.url(), 'im-inbound-event'),
+            trigger: await windowListenerRegistered(app!, diagnosticPage.url(), 'trigger-http-event'),
+          });
+          record('runtime-events', await readRuntimeEventLines(diagnosticPage));
+        }
+      } finally {
+        await testInfo.attach('im-policy-diagnostics.json', {
+          body: JSON.stringify(diagnostics, null, 2), contentType: 'application/json',
+        });
+      }
+    }
+  } finally {
+    diagnosticPage = undefined;
+    if (app) await closeAbuElectron(app);
+    app = undefined;
+    if (model) await model.close();
+    model = undefined;
+    if (dataRoot) removeElectronDataRoot(dataRoot);
+    dataRoot = undefined;
+  }
 });
 
 async function runs(page: Page, store: string, collection: string, id: string) {
@@ -55,8 +112,14 @@ for (const outputEnabled of [false, true]) {
       };
     });
     const page = await app.firstWindow();
+    diagnosticPage = page;
+    page.on('framenavigated', frame => {
+      if (frame === page.mainFrame()) record('navigation', frame.url());
+    });
+    page.on('pageerror', error => record('page-error', error.message));
     const completionLogs: string[] = [];
     page.on('console', message => {
+      record('console', { type: message.type(), text: message.text() });
       if (message.text().startsWith('[Trigger] Completed:') || message.text().startsWith('[Scheduler] Task completed:')) {
         completionLogs.push(message.text());
       }
@@ -107,18 +170,19 @@ for (const outputEnabled of [false, true]) {
     await waitForApp(page);
     await expect.poll(() => windowListenerRegistered(app!, page.url(), 'im-inbound-event'),
       { timeout: 45_000 }).toBe(true);
-    const port = await page.evaluate(async () => {
-      const host = window as unknown as { __TAURI_INTERNALS__: { invoke<T>(command: string): Promise<T> } };
-      return host.__TAURI_INTERNALS__.invoke<number>('get_trigger_server_port');
-    });
+    const initialState = await page.evaluate(imPolicyState);
+    record('before-first-webhook', initialState);
+    const { port } = initialState;
     expect(port).toBeGreaterThan(0);
     const send = async (ts: string, extra: Record<string, unknown> = {}) => {
+      record('slack-webhook-send', { ts, port });
       const response = await fetch(`http://127.0.0.1:${port}/im/slack/webhook`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ event: {
           type: 'message', ts, user: 'U1', channel: 'C1', channel_type: 'im', text: 'Hello', ...extra,
         } }),
       });
+      record('slack-webhook-response', { ts, status: response.status, body: await response.text() });
       expect(response.ok).toBe(true);
     };
     await send('1.000001');
@@ -133,6 +197,7 @@ for (const outputEnabled of [false, true]) {
     expect(await runs(page, 'abu-triggers', 'triggers', 'disabled')).toEqual([]);
 
     const sendDingTalk = async (msgId: string) => {
+      record('dingtalk-webhook-send', { msgId, port });
       const response = await fetch(`http://127.0.0.1:${port}/im/dingtalk/webhook`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -140,6 +205,7 @@ for (const outputEnabled of [false, true]) {
           text: { content: 'Hello' }, conversationType: '1',
         }),
       });
+      record('dingtalk-webhook-response', { msgId, status: response.status, body: await response.text() });
       expect(response.ok).toBe(true);
     };
     await sendDingTalk('ding-one');

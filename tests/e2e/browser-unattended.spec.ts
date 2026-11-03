@@ -1216,6 +1216,92 @@ test.describe.serial('Electron unattended browser authorization E2E', () => {
   });
 
   // ① master switch on + site allowed ⇒ the scheduled run really fills the form
+  test('clears a form in a batch and rejects an oversized browser wait', async () => {
+    const fixture = await listenLoopback(createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
+      res.end(`<!doctype html><html><body>
+<label for="field">Application number</label><input id="field" value="old value">
+<select id="choice"><option value="">Choose</option><option value="old" selected>Old</option></select>
+<p id="ready">Ready</p>
+</body></html>`);
+    }));
+    fixtures.push(fixture);
+    mock = await startOpenAiMock([
+      { kind: 'tool-call', arguments: {}, toolCallId: 'form-tabs', toolName: 'abu-browser__get_tabs' },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__get_tabs');
+        return {
+          kind: 'tool-call', toolCallId: 'form-nav', toolName: 'abu-browser__navigate',
+          arguments: { tabId: (await currentTab(app!, body)).tabId, url: fixture.url },
+        };
+      },
+      async (body) => {
+        lastSuccessfulToolResult(body, 'abu-browser__navigate');
+        return {
+          kind: 'tool-call', toolCallId: 'form-find', toolName: 'abu-browser__find',
+          arguments: { tabId: (await tabOn(app!, fixture.url)).tabId, query: JSON.stringify({ label: 'Application number' }) },
+        };
+      },
+      async (body) => {
+        const found = JSON.parse(lastSuccessfulToolResult(body, 'abu-browser__find')) as { matches: Array<{ ref: string }> };
+        expect(found.matches).toHaveLength(1);
+        expect(await evaluateInNativeView(app!, fixture.url, 'document.getElementById("field").value')).toBe('old value');
+        return {
+          kind: 'tool-call', toolCallId: 'form-clear', toolName: 'abu-browser__batch',
+          arguments: {
+            tabId: (await tabOn(app!, fixture.url)).tabId,
+            steps: JSON.stringify([
+              { action: 'fill', locator: { ref: found.matches[0].ref }, value: '' },
+              { action: 'select', locator: { css: '#choice' }, value: '' },
+              { action: 'wait_for', condition: { type: 'appear', locator: { css: '#ready' } }, timeout: 1000 },
+            ]),
+          },
+        };
+      },
+      async (body) => {
+        const result = JSON.parse(lastSuccessfulToolResult(body, 'abu-browser__batch')) as { completedSteps: unknown[]; stopped?: string };
+        expect(result.stopped).toBeUndefined();
+        expect(result.completedSteps).toHaveLength(3);
+        expect(await evaluateInNativeView(app!, fixture.url, 'document.getElementById("field").value')).toBe('');
+        expect(await evaluateInNativeView(app!, fixture.url, 'document.getElementById("choice").value')).toBe('');
+        return {
+          kind: 'tool-call', toolCallId: 'form-invalid-wait', toolName: 'abu-browser__wait_for',
+          arguments: {
+            tabId: (await tabOn(app!, fixture.url)).tabId,
+            condition: JSON.stringify({ type: 'appear', locator: { css: '#ready' } }), timeout: 120_001,
+          },
+        };
+      },
+      async (body) => {
+        expect(lastToolResult(body, 'abu-browser__wait_for')).toMatch(/120000/);
+        return {
+          kind: 'tool-call', toolCallId: 'form-valid-wait', toolName: 'abu-browser__wait_for',
+          arguments: {
+            tabId: (await tabOn(app!, fixture.url)).tabId,
+            condition: JSON.stringify({ type: 'appear', locator: { css: '#ready' } }), timeout: 1000,
+          },
+        };
+      },
+      (body) => {
+        const result = JSON.parse(lastSuccessfulToolResult(body, 'abu-browser__wait_for')) as { success: boolean; timedOut: boolean };
+        expect(result).toMatchObject({ success: true, timedOut: false });
+        return { kind: 'complete', responseText: 'Form cleared and wait limits verified.' };
+      },
+    ]);
+    const page = await launchConfiguredApp(mock.baseUrl);
+    const taskName = 'Browser form clearing and bounded waits';
+    await seedUnattendedRun(page, {
+      allowUnattendedBrowser: true, sitePermissions: { [fixture.origin]: 'allowed' },
+      scheduleId: `browser-form-bounds-${randomUUID()}`, scheduleName: taskName,
+      prompt: `clear the form at ${fixture.url} and check its readiness`,
+    });
+    await waitForBuiltinBrowserRuntime(page);
+    await watchConfirmDialogTitles(page);
+    await runScheduledTaskNow(page, taskName);
+    await waitForTaskTurns(mock, 7);
+    await expectNoConfirmationDialogEverAppeared(page);
+  });
+
   test('runs a scheduled browser form fill unattended, with no confirmation dialog anywhere', async () => {
     const marker = `abu-e2e-unattended-form-${randomUUID().slice(0, 8)}`;
     const fixture = await startFormFixture(marker);

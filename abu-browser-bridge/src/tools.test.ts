@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import type { ZodType } from 'zod';
 import {
   ABU_CONVERSATION_META_KEY,
   ABU_CREATE_IF_EMPTY_META_KEY,
@@ -554,6 +555,18 @@ describe('locator parsing', () => {
 });
 
 describe('wait condition parsing', () => {
+  it('accepts bounded waits and rejects invalid durations in the published schema', () => {
+    const { registered } = collectTools();
+    const schema = registered.find((tool) => tool.name === 'wait_for')!.schema!.timeout as ZodType;
+    expect(schema.parse(undefined)).toBe(30_000);
+    for (const timeout of [1, 30_000, 120_000, '1000']) {
+      expect(schema.safeParse(timeout).success).toBe(true);
+    }
+    for (const timeout of [0, -1, 120_001, 3_600_000, Infinity, NaN]) {
+      expect(schema.safeParse(timeout).success, String(timeout)).toBe(false);
+    }
+  });
+
   const callWait = async (condition: string) => {
     const { registered } = collectTools();
     const waitFor = registered.find((t) => t.name === 'wait_for')!;
@@ -861,7 +874,7 @@ describe('batch', () => {
     await expect(batch.handler({
       tabId: 7,
       steps: '[{"action":"fill","locator":{"css":"#a"}}]',
-    }, {})).rejects.toThrow(/`value` must be a non-empty string/);
+    }, {})).rejects.toThrow(/`value` must be a string/);
     // The step number is in the message: "which step" is the first thing a
     // caller needs when a batch is rejected.
     await expect(batch.handler({

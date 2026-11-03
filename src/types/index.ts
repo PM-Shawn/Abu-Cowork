@@ -470,6 +470,8 @@ export interface UpstreamErrorDetails {
 
 export interface Message {
   id: string;
+  mediaArtifacts?: import('./media').MediaArtifact[];
+  imageEditRequest?: import('./media').ImageEditRequest;
   /** Historical copy owned by a branch; source-run actions remain unavailable. */
   inheritedFromBranch?: true;
   /** Local configured welcome, distinct from generated assistant output. */

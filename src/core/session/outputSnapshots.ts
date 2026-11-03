@@ -46,7 +46,8 @@ import { openAuthorizedFileOperation } from '../tools/authorizedFileOperation';
 import { FileOperationDenied, runFileOperationStage, type FileOperationGuard } from '../tools/fileOperation';
 import type { ToolResultImage } from '../tools/toolResultContent';
 import { createLogger } from '../logging/logger';
-import { applyOutputManifestRecord as applyRecord, readOutputManifestRecords, type ManifestLogRecord } from './outputManifest';
+import { foldLog } from './outputManifestRecords';
+import { applyOutputManifestRecord as applyRecord, type ManifestLogRecord } from './outputManifest';
 
 const logger = createLogger('outputSnapshots');
 
@@ -142,11 +143,6 @@ interface SnapshotMeta {
   refKind: string;
 }
 
-/**
- * One line of manifest-log.jsonl. `remove` names the entry it evicts by its
- * `snapshottedAt`, so it never cancels a newer copy of the same path that the
- * other process recorded in the meantime.
- */
 interface CachedManifest {
   manifest: OutputManifest;
   /** Byte size of the log this manifest was folded from, or NO_LOG. */
@@ -294,16 +290,6 @@ async function readLegacyManifest(dir: string, convId: string): Promise<OutputMa
 
 function utf8Bytes(text: string): number {
   return new TextEncoder().encode(text).byteLength;
-}
-
-/**
- * Fold the log onto the base. A line that is not a record is skipped: a
- * process that dies inside an append can leave part of a line, and every
- * append starts with a newline so that part never joins the next record.
- */
-function foldLog(convId: string, text: string, entries: Record<string, SnapshotEntry>): void {
-  const records = readOutputManifestRecords(text, errorKind => logger.warn('manifest log line skipped', { convId, errorKind }));
-  for (const record of records) applyRecord(entries, record);
 }
 
 async function logBytesOnDisk(dir: string): Promise<number> {

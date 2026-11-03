@@ -12,6 +12,7 @@
 import type { Message, MessageContent, ToolCall, ToolCallForContext, ToolResultContent } from '@/types';
 import type { LedgerLine } from './messageLedger';
 import { boundMessageToolResultContentForDisk } from './durableToolResultContent';
+import { parseMessageMedia } from '@/types/media';
 import { readToolResultFileReference } from './toolResultFileReference';
 
 /** What a tool result's image snapshot contributes to an `outputRef`. */
@@ -126,7 +127,7 @@ export function stripForDisk(msg: Message, convId: string | undefined, options: 
   // Message.content. Bound both tool projections before every ledger/snapshot
   // serialization so no alternate writer can bypass the admission guard; the
   // dehydration pass below then operates on the bounded projections.
-  const stripped: Message = { ...boundMessageToolResultContentForDisk(msg) };
+  const stripped: Message = { ...boundMessageToolResultContentForDisk(msg), ...parseMessageMedia(msg, convId) };
   const allowToolResultDehydration = options.allowToolResultDehydration !== false;
   const find = options.findToolResultImageSnapshot;
 

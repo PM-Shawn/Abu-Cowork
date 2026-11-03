@@ -7,6 +7,7 @@ const { isDeepStrictEqual } = require('node:util');
 const { z } = require('zod');
 const { createNativeFileSession } = require('./nativeHelperManager.cjs');
 const { identityOf, sameIdentity } = require('./fileIdentity.cjs');
+const { createMediaStorageBudget } = require('./mediaStorageBudget.cjs');
 const {
   prepareBranchFiles, copyBranchFiles, readPinnedFile, readManifestHistory,
   inspectPath, assertRoot, MAX_FILE_BYTES,
@@ -46,7 +47,7 @@ function sameOrigin(meta, request) {
 }
 
 /** All mutations are addressed by checked IDs; renderer paths never enter this module. */
-function createConversationBranchHost({ appDataDir, now = Date.now, createId = () => crypto.randomUUID() }) {
+function createConversationBranchHost({ appDataDir, now = Date.now, createId = () => crypto.randomUUID(), assertCapacity = createMediaStorageBudget(appDataDir) }) {
   const prepared = new Map();
   const published = new Map();
   const queues = new Map();
@@ -260,7 +261,10 @@ function createConversationBranchHost({ appDataDir, now = Date.now, createId = (
     const actual = conversationBranchPrefix(messages, request.sourceConversationId, request.targetMessageId, find, text);
     if (!isDeepStrictEqual(JSON.parse(request.prefix), JSON.parse(actual))) fail('source-changed');
     const history = buildConversationBranchHistory({ ...request, sourceTitle: sourceMeta.title, messages, accessAllowed: true, createId });
-    const files = await prepareBranchFiles({ appDataDir: state.root, ...request, messages: history.messages, messageIdMap: history.messageIdMap });
+    const inheritedMessageIds = new Set(messages.filter(message => message.inheritedFromBranch)
+      .map(message => history.messageIdMap.get(message.id)).filter(Boolean));
+    const files = await prepareBranchFiles({ appDataDir: state.root, ...request, messages: history.messages,
+      messageIdMap: history.messageIdMap, inheritedMessageIds });
     const timestamp = now();
     const meta = {
       id: request.childConversationId, title: request.title, createdAt: timestamp, updatedAt: timestamp,
@@ -284,6 +288,7 @@ function createConversationBranchHost({ appDataDir, now = Date.now, createId = (
     const operation = prepared.get(request.childConversationId);
     if (!operation || operation.token !== request.token || !sameOrigin(operation.meta, request)) fail('preparation-unavailable');
     const childId = request.childConversationId;
+    let reservation;
     try {
       const receipt = operationReceipt(request);
       await assertPreparationIdentity(state, request);
@@ -291,6 +296,7 @@ function createConversationBranchHost({ appDataDir, now = Date.now, createId = (
       // The empty entry's name is its complete identity; interruption cannot leave partial JSON.
       if (!reserved) await writeNew(state, `conversation-branches/${receipt}`, Buffer.alloc(0));
       await removeEntry(state, 'conversation-branches', childId);
+      reservation = assertCapacity.reserve(childId, operation.files.totalBytes, { branch: true });
       const checksums = await copyBranchFiles(operation.files);
       const prefix = `conversation-branches/${childId}`;
       const messages = operation.files.plan.messages;
@@ -306,8 +312,9 @@ function createConversationBranchHost({ appDataDir, now = Date.now, createId = (
         childConversationId: childId, meta: operation.meta, messageCount: messages.length, files: checksums };
       await writeNew(state, `${prefix}/${RECOVERY}`, Buffer.from(JSON.stringify(recovery)));
       await moveDirectory(state, childId);
+      reservation.release();
       return await lookup(state, request);
-    } finally { prepared.delete(childId); }
+    } finally { reservation?.release(); prepared.delete(childId); }
   }
   async function publish(state, request) {
     const result = await lookup(state, request);

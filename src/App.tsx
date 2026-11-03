@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { listen } from '@tauri-apps/api/event';
+import { acceptMediaJobRecord } from '@/core/media/mediaJobs';
+import type { MediaJobRecord } from '@/types/media';
 
 import { invoke } from '@tauri-apps/api/core';
 import { isTauriEnv } from '@/utils/tauriEnv';
@@ -356,6 +358,16 @@ function App() {
   }, []);
 
   // Pet window asks for status resync when it (re)opens
+  useEffect(() => {
+    let disposed = false;
+    let release: (() => void) | undefined;
+    void listen<MediaJobRecord>('media-job-changed', event => acceptMediaJobRecord(event.payload)).then(unlisten => {
+      if (disposed) unlisten();
+      else release = unlisten;
+    });
+    return () => { disposed = true; release?.(); };
+  }, []);
+
   useEffect(() => {
     if (!isTauriEnv()) return; // web / E2E: no Tauri IPC
     let unlistenFn: (() => void) | null = null;

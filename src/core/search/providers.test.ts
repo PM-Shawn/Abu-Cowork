@@ -4,7 +4,10 @@ import {
   createBraveProvider,
   createTavilyProvider,
   createSearXNGProvider,
+  createKeenableProvider,
   createSearchProvider,
+  keenablePublishedAfter,
+  KEENABLE_APP_TITLE,
 } from './providers';
 
 // Mock getTauriFetch
@@ -189,7 +192,68 @@ describe('search providers', () => {
     });
   });
 
+  describe('createKeenableProvider', () => {
+    it('uses the keyless public endpoint with an app title when no key is set', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          results: [
+            { title: 'Keenable', url: 'https://www.keenable.ai/docs', description: 'Search API docs' },
+            { title: 'No URL' },
+            { title: 'Other', url: 'https://other.com/x', snippet: 'snippet only' },
+          ],
+        }),
+      });
+
+      const result = await createKeenableProvider('').search('keenable', defaultOptions);
+
+      expect(result.results).toEqual([
+        { title: 'Keenable', url: 'https://www.keenable.ai/docs', snippet: 'Search API docs', source: 'keenable.ai', publishedDate: undefined },
+        { title: 'Other', url: 'https://other.com/x', snippet: 'snippet only', source: 'other.com', publishedDate: undefined },
+      ]);
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe('https://api.keenable.ai/v1/search/public');
+      expect(init.method).toBe('POST');
+      expect(init.headers['X-Keenable-Title']).toBe(KEENABLE_APP_TITLE);
+      expect(init.headers['X-API-Key']).toBeUndefined();
+      expect(JSON.parse(init.body)).toEqual({ query: 'keenable', max_results: 5 });
+    });
+
+    it('uses the keyed endpoint and maps freshness when a key is set', async () => {
+      mockFetch.mockResolvedValue({ ok: true, json: async () => ({ results: [] }) });
+
+      await createKeenableProvider('keen-key').search('news', { count: 3, market: 'en-US', freshness: 'Week' });
+
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe('https://api.keenable.ai/v1/search');
+      expect(init.headers['X-API-Key']).toBe('keen-key');
+      expect(init.headers['X-Keenable-Title']).toBeUndefined();
+      const body = JSON.parse(init.body);
+      expect(body.max_results).toBe(3);
+      expect(body.published_after).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it('maps Day/Week/Month to a published_after date', () => {
+      const now = new Date('2026-11-03T12:00:00Z');
+      expect(keenablePublishedAfter('Day', now)).toBe('2026-11-02');
+      expect(keenablePublishedAfter('week', now)).toBe('2026-10-27');
+      expect(keenablePublishedAfter('Month', now)).toBe('2026-10-03');
+      expect(keenablePublishedAfter(undefined, now)).toBeUndefined();
+      expect(keenablePublishedAfter('Year', now)).toBeUndefined();
+    });
+
+    it('throws on an HTTP error', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 429, text: async () => 'rate limited' });
+      await expect(createKeenableProvider().search('q', defaultOptions)).rejects.toThrow('Keenable Search API error: 429');
+    });
+  });
+
   describe('createSearchProvider', () => {
+    it('should create a keyless Keenable provider', () => {
+      const provider = createSearchProvider('keenable', '');
+      expect(provider.search).toBeTypeOf('function');
+    });
+
     it('should create Bing provider', () => {
       const provider = createSearchProvider('bing', 'key');
       expect(provider).toBeDefined();

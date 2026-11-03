@@ -144,7 +144,7 @@ Recent highlights: **Workspace file tree + code canvas** (browse / preview / edi
 
 ### Web Search
 
-- **Multiple Search Engines** — Bing, Brave, Tavily, SearXNG (self-hosted, no API key needed)
+- **Multiple Search Engines** — Bing, Brave, Tavily, Keenable (no API key needed), SearXNG (self-hosted, no API key needed)
 - **Independent Configuration** — Search engine settings decoupled from main AI service
 
 ### Automation & Triggers
@@ -278,7 +278,7 @@ Create a weekly report PPT for this week
 | LLM Adapter | Dual-protocol adapter (Anthropic / OpenAI-compatible) |
 | State Management | Zustand + Immer + Persist |
 | Tool Protocol | MCP (`@modelcontextprotocol/sdk`) |
-| Web Search | Bing / Brave / Tavily / SearXNG |
+| Web Search | Bing / Brave / Tavily / Keenable / SearXNG |
 | Sandbox | macOS Seatbelt + path/command dual validation |
 | UI Components | Abu's own component library (`src/components/ds/`) on Radix UI + Lucide Icons |
 | Testing | Vitest + happy-dom (covers core store / agent / skill / memdir modules) |
@@ -356,7 +356,7 @@ src/
 │   ├── tools/        # Tool registry, built-in tools, safety checks
 │   ├── mcp/          # MCP client
 │   ├── skill/        # Skill loading & preprocessing
-│   ├── search/       # Web search (Bing/Brave/Tavily/SearXNG)
+│   ├── search/       # Web search (Bing/Brave/Tavily/Keenable/SearXNG)
 │   ├── memdir/       # File-based memory system (personal/project, multi-file + index)
 │   ├── scheduler/    # Scheduling engine
 │   ├── trigger/      # Trigger engine (HTTP/file/cron/IM)

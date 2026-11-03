@@ -1123,6 +1123,9 @@ const zhCN: TranslationDict = {
     webSearchProviderBrave: 'Brave 搜索',
     webSearchProviderTavily: 'Tavily 搜索',
     webSearchProviderSearXNG: 'SearXNG（自建）',
+    webSearchProviderKeenable: 'Keenable（无需 API Key）',
+    webSearchApiKeyOptionalPlaceholder: '可选：留空即使用免费的无 Key 端点',
+    webSearchKeenableKeyDesc: '无需 Key 即可使用（按 IP 限速）。填写 Keenable API Key 可提高额度。',
     // AI Services
     aiServices: '模型',
     aiServicesDescription: '配置模型、搜索和图片生成服务',

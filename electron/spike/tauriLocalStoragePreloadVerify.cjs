@@ -6,12 +6,20 @@ const os = require('node:os');
 const path = require('node:path');
 const { app, BrowserWindow, ipcMain } = require('electron');
 const { resolveDeviceId } = require('../deviceIdStore.cjs');
+const { registerPrivilegedWindow, validateRegisteredMainFrame } = require('../securityBoundary.cjs');
+const { registerRendererCallbackContext } = require('../rendererCallbackContext.cjs');
 
 const preload = path.join(__dirname, '..', 'preload.cjs');
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'abu-preload-migration-'));
 const page = path.join(root, 'index.html');
 const migratedValue = '{"state":{"source":"tauri"},"version":42}';
 let acknowledgement = null;
+
+ipcMain.on('tauri:callback-context', (event, contextId) => {
+  assert.equal(validateRegisteredMainFrame(event).ok, true);
+  registerRendererCallbackContext(event.sender, contextId);
+  event.returnValue = { ok: true, contextId };
+});
 
 fs.writeFileSync(
   page,
@@ -64,6 +72,7 @@ app.whenReady().then(async () => {
     },
   });
   try {
+    registerPrivilegedWindow(win, page, { label: 'main' });
     await win.loadFile(page);
     const valueAtFirstPageScript = await win.webContents.executeJavaScript(
       'window.valueAtFirstPageScript'

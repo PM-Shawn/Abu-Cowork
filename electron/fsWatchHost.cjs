@@ -62,6 +62,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { assertAbsoluteWithoutBaseDir, assertAllowed } = require('./fsHost.cjs');
 const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
+const { assertCurrentRendererCallbackOwner } = require('./rendererCallbackContext.cjs');
 const { assertResourceOwner } = require('./securityBoundary.cjs');
 
 /** Sentinel returned when `cmd` isn't one of the fs-watch family. */
@@ -105,7 +106,7 @@ function resolveWatchPath(app, p, baseDirNum) {
 
 /** Deliver one `{index, message}` rawMessage to a channel's registered callback (shared wire contract: channelBridge.cjs). */
 function deliver(entry, message) {
-  if (sendChannelMessage(entry.sender, entry.callbackId, entry.nextIndex, message)) {
+  if (sendChannelMessage(entry.owner, entry.callbackId, entry.nextIndex, message)) {
     entry.nextIndex++;
   }
 }
@@ -199,14 +200,15 @@ function cleanupFsWatchesForSender(sender) {
 /**
  * @param {import('electron').App} app
  * @param {string} cmd
- * @param {{ args?: Record<string, unknown>; event?: import('electron').IpcMainInvokeEvent }} payload
+ * @param {{ args?: Record<string, unknown>; event?: import('electron').IpcMainInvokeEvent; owner: {sender: import('electron').WebContents, contextId: string} }} payload
  */
 function fsWatchDispatch(app, cmd, payload) {
-  const { args, event } = payload || {};
+  const { args, event, owner } = payload || {};
   const a = args || {};
 
   switch (cmd) {
     case 'plugin:fs|watch': {
+      assertCurrentRendererCallbackOwner(owner);
       const paths = Array.isArray(a.paths) ? a.paths : [];
       const options = a.options || {};
       const callbackId = parseChannelId(a.onEvent);
@@ -216,6 +218,7 @@ function fsWatchDispatch(app, cmd, payload) {
       const sender = event && event.sender;
       const rid = nextRid++;
       const entry = {
+        owner,
         sender: sender || null,
         callbackId,
         nextIndex: 0,
@@ -261,6 +264,7 @@ function fsWatchDispatch(app, cmd, payload) {
 
     case 'plugin:resources|close':
     case 'plugin:fs|unwatch': {
+      assertCurrentRendererCallbackOwner(owner);
       assertResourceOwner(watchTable.get(a.rid), event && event.sender, 'fs watch');
       cleanupRid(a.rid);
       return null;

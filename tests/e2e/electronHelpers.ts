@@ -20,6 +20,8 @@ import { _electron as electron, type ElectronApplication, type Locator, type Pag
 export const REPO_ROOT = process.cwd();
 export const MAIN_ENTRY = path.join(REPO_ROOT, 'electron', 'main.cjs');
 const MAIN_PROCESS_RECORDER = path.join(REPO_ROOT, 'tests', 'e2e', 'mainProcessRecorder.cjs');
+const MAIN_PROCESS_STARTUP = path.join(REPO_ROOT, 'tests', 'e2e', 'electronStartup.cjs');
+const E2E_TEMP_DIRECTORY_ENV = 'ABU_E2E_TEMP_DIRECTORY';
 const E2E_APP_DATA_ROOT_ENV = 'ABU_E2E_APP_DATA_ROOT';
 const E2E_SIDECAR_CRASH_TOKEN_ENV = 'ABU_E2E_SIDECAR_CRASH_TOKEN';
 const SIDECAR_ID = 'abu-sidecar';
@@ -133,7 +135,7 @@ function buildLaunchEnv(
   // machine. Windows are still real and rendered: drag-region and
   // browser-view specs depend on that. See electron/windowShowPolicy.cjs.
   env.ABU_E2E_QUIET_WINDOW = '1';
-  return { ...env, ...extraEnv };
+  return { ...env, ...extraEnv, [E2E_TEMP_DIRECTORY_ENV]: temporaryDirectory };
 }
 
 /**
@@ -170,6 +172,7 @@ export async function launchAbuElectron(
       // `-r` modules are required BEFORE the entry point, so a recorder
       // installed here sees every window the app ever creates. Playwright's own
       // loader is unshifted ahead of these args the same way.
+      '-r', MAIN_PROCESS_STARTUP,
       ...(options.recordMainProcess ? ['-r', MAIN_PROCESS_RECORDER] : []),
       ...(options.mainProcessPreload ? ['-r', options.mainProcessPreload] : []),
       MAIN_ENTRY,
@@ -182,9 +185,6 @@ export async function launchAbuElectron(
     env: withoutLiveEvalCredential(buildLaunchEnv(dataRoot, options.extraEnv, temporaryDirectory)),
     timeout: 60_000,
   });
-  await app.evaluate(({ app }, temporaryRoot) => {
-    app.setPath('temp', temporaryRoot);
-  }, temporaryDirectory);
   // Spread FIRST: a caller relaunching with a previous LaunchedApp (which the
   // doc above invites, and which already carries an `app` key) would otherwise
   // have the stale, already-exited app spread over the new one — producing an

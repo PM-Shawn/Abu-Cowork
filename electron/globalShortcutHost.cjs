@@ -38,7 +38,7 @@
  * checks for in its own doc examples.
  *
  * Exports `globalShortcutDispatch(cmd, payload)` (`payload` is
- * `{args, event}` — needs the raw ipcMain event to resolve `event.sender`,
+ * `{args, event, owner}` — retains the registered callback context and IPC sender,
  * the renderer whose Channel callback registered the accelerator) +
  * `GLOBAL_SHORTCUT_MISS`, wired into electron/tauriHost.cjs's dispatch chain.
  * Also exports `teardownGlobalShortcuts()` — unregisters every OS-level
@@ -51,6 +51,7 @@
 
 const { globalShortcut } = require('electron');
 const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
+const { assertCurrentRendererCallbackOwner } = require('./rendererCallbackContext.cjs');
 const { assertResourceOwner } = require('./securityBoundary.cjs');
 
 /** Sentinel returned when `cmd` isn't a global-shortcut command. */
@@ -95,21 +96,22 @@ function deliverShortcutEvent(accel) {
   const reg = registrations.get(accel);
   if (!reg) return;
   const message = { shortcut: accel, id: reg.shortcutIndex, state: 'Pressed' };
-  if (sendChannelMessage(reg.sender, reg.callbackId, reg.nextMessageIndex, message)) {
+  if (sendChannelMessage(reg.owner, reg.callbackId, reg.nextMessageIndex, message)) {
     reg.nextMessageIndex++;
   }
 }
 
 /**
  * @param {string} cmd
- * @param {{ args?: Record<string, unknown>; event?: import('electron').IpcMainInvokeEvent }} payload
+ * @param {{ args?: Record<string, unknown>; event?: import('electron').IpcMainInvokeEvent; owner: {sender: import('electron').WebContents, contextId: string} }} payload
  */
 function globalShortcutDispatch(cmd, payload) {
-  const { args, event } = payload || {};
+  const { args, event, owner } = payload || {};
   const a = args || {};
 
   switch (cmd) {
     case 'plugin:global-shortcut|register': {
+      assertCurrentRendererCallbackOwner(owner);
       const shortcuts = toShortcutList(a.shortcuts);
       const callbackId = parseChannelId(a.handler);
       if (callbackId == null) {
@@ -142,6 +144,7 @@ function globalShortcutDispatch(cmd, payload) {
           continue;
         }
         registrations.set(accel, {
+          owner,
           callbackId,
           sender: sender || null,
           shortcutIndex: nextShortcutIndex++,
@@ -152,6 +155,7 @@ function globalShortcutDispatch(cmd, payload) {
     }
 
     case 'plugin:global-shortcut|unregister': {
+      assertCurrentRendererCallbackOwner(owner);
       const shortcuts = toShortcutList(a.shortcuts);
       const sender = event && event.sender;
       for (const accel of shortcuts) {
@@ -169,6 +173,7 @@ function globalShortcutDispatch(cmd, payload) {
     }
 
     case 'plugin:global-shortcut|unregister_all': {
+      assertCurrentRendererCallbackOwner(owner);
       unregisterOwnedBySender(event && event.sender);
       return null;
     }

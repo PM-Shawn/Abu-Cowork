@@ -33,10 +33,13 @@ type PreloadInvoke = (cmd: string, args?: unknown, options?: unknown) => unknown
 function loadPreloadInvoke(): PreloadInvoke {
   const exposed = new Map<string, unknown>();
   const context: Record<string, unknown> = {
-    process: { argv: ['electron', '--abu-deep-link-scheme=abu-dev'] },
+    process: { argv: ['electron', '--abu-deep-link-scheme=abu-dev'], contextId: 'payload-contract' },
     require: () => ({
       contextBridge: { exposeInMainWorld: (key: string, value: unknown) => exposed.set(key, value) },
-      ipcRenderer: { invoke: async () => undefined, on() {}, send() {}, sendSync: () => null },
+      ipcRenderer: {
+        invoke: async () => undefined, on() {}, send() {},
+        sendSync: (channel: string, contextId: string) => channel === 'tauri:callback-context' ? { ok: true, contextId } : null,
+      },
       webUtils: { getPathForFile: () => '' },
     }),
   };

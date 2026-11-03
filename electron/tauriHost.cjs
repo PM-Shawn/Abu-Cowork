@@ -190,10 +190,20 @@ const {
 const {
   assertTrustedIpcSender,
   assertTrustedMainIpcSender,
+  validateRegisteredMainFrame,
   validateInvokePayload,
   assertResourceOwner,
 } = require('./securityBoundary.cjs');
 const { wireRendererResourceCleanup } = require('./rendererLifecycle.cjs');
+const {
+  isRendererCallbackContextId,
+  registerRendererCallbackContext,
+  forgetRendererCallbackContext,
+  captureRendererCallbackOwner,
+  isCurrentRendererCallbackOwner,
+  assertCurrentRendererCallbackOwner,
+} = require('./rendererCallbackContext.cjs');
+const callbackContextCleanupInstalled = new WeakSet();
 const { createQuitGate } = require('./quitGate.cjs');
 
 // Window-family state (Phase 2 slice D). `mainWindow` is set by main.cjs right
@@ -352,7 +362,7 @@ function markQuitting() {
 /** True iff any live subscription exists for `event`. */
 function hasListeners(event) {
   for (const sub of subscriptions.values()) {
-    if (sub.event === event) return true;
+    if (sub.event === event && isCurrentRendererCallbackOwner(sub.owner)) return true;
   }
   return false;
 }
@@ -393,15 +403,10 @@ function wireWindowEvents(win) {
   // out by the next quit attempt (quitGate.cjs, `request` while asking).
   win.on('closed', () => quitGate?.rendererGone());
   win.webContents.on('render-process-gone', () => quitGate?.rendererGone());
-  // Purge this renderer's resources only when its top-level document is being
-  // replaced. Child-frame loads (notably HTML widget `srcdoc` previews) keep
-  // the renderer alive and must not disconnect its main→renderer event bridge.
-  wireRendererResourceCleanup(win.webContents, ({ reason }) => {
-    const subscriptionCount = clearSubscriptionsForSender(win.webContents);
-    cleanupFsWatchesForSender(win.webContents);
-    cleanupGlobalShortcutsForSender(win.webContents);
+  // Revoke operation grants when a main-frame navigation starts. Callback
+  // resources follow their preload context through registration below.
+  wireRendererResourceCleanup(win.webContents, () => {
     computerUseGate?.revokeSender(win.webContents);
-    runtimeState.noteRendererResourcesCleared({ reason, subscriptionCount });
     // The page a quit handshake was talking to has been replaced.
     quitGate?.rendererGone();
   });
@@ -585,12 +590,13 @@ function deliver(event, payload, onlySender) {
   for (const [eventId, sub] of subscriptions) {
     if (sub.event !== event) continue;
     if (onlySender && sub.sender !== onlySender) continue;
-    if (!sub.sender || sub.sender.isDestroyed()) {
+    if (!isCurrentRendererCallbackOwner(sub.owner)) {
       subscriptions.delete(eventId);
       continue;
     }
     sub.sender.send('tauri:callback', {
       id: sub.callbackId,
+      contextId: sub.owner.contextId,
       payload: { event, id: eventId, payload },
     });
     delivered++;
@@ -649,6 +655,19 @@ function clearSubscriptionsForSender(sender) {
     removed++;
   }
   return removed;
+}
+
+function clearRendererCallbackResources(sender, reason) {
+  const subscriptionCount = clearSubscriptionsForSender(sender);
+  cleanupFsWatchesForSender(sender);
+  cleanupGlobalShortcutsForSender(sender);
+  runtimeState.noteRendererResourcesCleared({ reason, subscriptionCount });
+}
+
+function retireRendererCallbackContext(sender, reason) {
+  if (forgetRendererCallbackContext(sender) !== undefined) {
+    clearRendererCallbackResources(sender, reason);
+  }
 }
 
 // Commands whose real handler isn't wired yet (next-layer slices B-E) but
@@ -1581,10 +1600,34 @@ function registerTauriHost(app, options = {}) {
   // needed for tray creation.
   initGuiHost(app);
 
-  ipcMain.handle('tauri:invoke', async (e, payload) => {
+  ipcMain.on('tauri:callback-context', (event, contextId) => {
+    const registered = validateRegisteredMainFrame(event);
+    if (!registered.ok) {
+      event.returnValue = { ok: false, error: registered.reason };
+      return;
+    }
+    if (!isRendererCallbackContextId(contextId)) {
+      event.returnValue = { ok: false, error: 'Invalid renderer callback context identity' };
+      return;
+    }
+    const sender = event.sender;
+    const previous = registerRendererCallbackContext(sender, contextId);
+    if (previous !== undefined && previous !== contextId) {
+      clearRendererCallbackResources(sender, 'renderer_callback_context_replaced');
+    }
+    if (!callbackContextCleanupInstalled.has(sender)) {
+      callbackContextCleanupInstalled.add(sender);
+      sender.once('destroyed', () => retireRendererCallbackContext(sender, 'renderer_destroyed'));
+      sender.on('render-process-gone', () => retireRendererCallbackContext(sender, 'renderer_process_gone'));
+    }
+    event.returnValue = { ok: true, contextId };
+  });
+
+  ipcMain.handle('tauri:invoke', async (e, payload, contextId) => {
     try {
       const senderRecord = assertTrustedIpcSender(e);
       const { cmd, args, body, headers } = validateInvokePayload(senderRecord, payload);
+      const owner = captureRendererCallbackOwner(e.sender, contextId);
       const a = args;
       // Secret commands (slice C) — secretDispatch owns the 7-command list;
       // it returns `undefined` for anything that isn't a secret command, so we
@@ -1601,12 +1644,12 @@ function registerTauriHost(app, options = {}) {
       // to route debounced change events back to the subscribing renderer's
       // Channel callback, so it's dispatched here (has `e` in scope) rather
       // than folded into fsDispatch (which only receives `app`).
-      const fsWatchResult = fsWatchDispatch(app, cmd, { args: a, event: e });
+      const fsWatchResult = fsWatchDispatch(app, cmd, { args: a, event: e, owner });
       if (fsWatchResult !== FS_WATCH_MISS) return fsWatchResult;
       // Updater family (F-slice #2) — plugin:updater|check/download_and_install
       // bridged onto electron-updater (generic provider → existing OSS bucket).
       // Needs `e.sender` for the download-progress Channel, so dispatched here.
-      const updaterResult = updaterDispatch(cmd, { args: a, event: e });
+      const updaterResult = updaterDispatch(cmd, { args: a, owner });
       if (updaterResult !== UPDATER_MISS) return updaterResult;
       // mcp bridge (mcp 收敛) — generic stdio process bridge (mcp_spawn/write/
       // kill) the frontend uses to drive MCP servers AND the agent sidecar;
@@ -1740,7 +1783,7 @@ function registerTauriHost(app, options = {}) {
       // same reason fsWatchDispatch needs it), so it's dispatched here rather
       // than folded into dispatch(). Placed after guiDispatch and before
       // windowDispatch — no ordering dependency on either.
-      const globalShortcutResult = globalShortcutDispatch(cmd, { args: a, event: e });
+      const globalShortcutResult = globalShortcutDispatch(cmd, { args: a, event: e, owner });
       if (globalShortcutResult !== GLOBAL_SHORTCUT_MISS) return globalShortcutResult;
       // Window-family commands (slice D) — checked before the event-plugin
       // switch below so plugin:window|* and app_exit/window_hide/window_show
@@ -1758,8 +1801,9 @@ function registerTauriHost(app, options = {}) {
       // threaded through dispatch(), which only needs `app`.
       switch (cmd) {
         case 'plugin:event|listen': {
+          assertCurrentRendererCallbackOwner(owner);
           const id = nextEventId++;
-          subscriptions.set(id, { event: a.event, callbackId: a.handler, sender: e.sender });
+          subscriptions.set(id, { event: a.event, callbackId: a.handler, sender: e.sender, owner });
           // A renderer just subscribed. If it's the deep-link channel, drain any
           // running-app deep links that arrived before the subscriber existed
           // (the OS can deliver open-url / second-instance URLs before React
@@ -1786,6 +1830,7 @@ function registerTauriHost(app, options = {}) {
           return id;
         }
         case 'plugin:event|unlisten': {
+          assertCurrentRendererCallbackOwner(owner);
           // Prune the preload's callback registry too — unlisten's synchronous
           // __TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener is a no-op (it
           // only has the eventId, not the callbackId), so without this the
@@ -1794,16 +1839,21 @@ function registerTauriHost(app, options = {}) {
           // renderer to drop it.
           const sub = subscriptions.get(a.eventId);
           assertResourceOwner(sub, e.sender, 'event subscription');
+          if (sub && sub.owner.contextId !== owner.contextId) {
+            throw new Error('Event subscription belongs to a different renderer context');
+          }
           if (sub && sub.sender && !sub.sender.isDestroyed()) {
-            sub.sender.send('tauri:uncallback', { id: sub.callbackId });
+            sub.sender.send('tauri:uncallback', { id: sub.callbackId, contextId: sub.owner.contextId });
           }
           subscriptions.delete(a.eventId);
           return null;
         }
         case 'plugin:event|emit':
+          assertCurrentRendererCallbackOwner(owner);
           deliver(a.event, a.payload);
           return null;
         case 'plugin:event|emit_to':
+          assertCurrentRendererCallbackOwner(owner);
           // TODO(slice D+): honor `a.target` (window/webview scoping) instead
           // of broadcasting to every subscription — fine for now, single window.
           deliver(a.event, a.payload);
@@ -2049,9 +2099,10 @@ module.exports = {
     windowDispatch,
     WINDOW_DISPATCH_MISS,
     /** Register a subscription exactly as `plugin:event|listen` does. */
-    subscribe(event, callbackId, sender) {
+    subscribe(event, callbackId, sender, contextId) {
+      const owner = captureRendererCallbackOwner(sender, contextId);
       const id = nextEventId++;
-      subscriptions.set(id, { event, callbackId, sender });
+      subscriptions.set(id, { event, callbackId, sender, owner });
       return id;
     },
     clearSubscriptions() {
@@ -2061,7 +2112,7 @@ module.exports = {
     subscribedEvents(sender) {
       const events = [];
       for (const sub of subscriptions.values()) {
-        if (sub.sender === sender) events.push(sub.event);
+        if (sub.sender === sender && isCurrentRendererCallbackOwner(sub.owner)) events.push(sub.event);
       }
       return events;
     },

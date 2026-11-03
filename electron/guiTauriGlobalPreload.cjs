@@ -29,23 +29,34 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
+const rendererContextId = process.contextId;
+if (typeof rendererContextId !== 'string' || rendererContextId.length === 0 || rendererContextId.length > 256) {
+  throw new Error('Electron renderer context identity is unavailable');
+}
+const callbackContext = ipcRenderer.sendSync('tauri:callback-context', rendererContextId);
+if (callbackContext?.ok !== true || callbackContext.contextId !== rendererContextId) {
+  throw new Error('Renderer callback context registration failed');
+}
+
 let cbId = 1;
 /** callbackId -> the JS function passed to listen(). */
 const callbacks = new Map();
 
 function invoke(cmd, args) {
-  return ipcRenderer.invoke('tauri:invoke', { cmd, args: args ?? null });
+  return ipcRenderer.invoke('tauri:invoke', { cmd, args: args ?? null }, rendererContextId);
 }
 
 // Matches tauriHost.cjs's `deliver()` wire format exactly: `{id: callbackId,
 // payload: {event, id: eventId, payload}}` — the inner object IS the Tauri
 // Event shape (`event.payload` is what listen() callbacks read).
-ipcRenderer.on('tauri:callback', (_e, { id, payload } = {}) => {
+ipcRenderer.on('tauri:callback', (_e, { id, payload, contextId } = {}) => {
+  if (contextId !== rendererContextId) return;
   const cb = callbacks.get(id);
   if (cb) cb(payload);
 });
 
-ipcRenderer.on('tauri:uncallback', (_e, { id } = {}) => {
+ipcRenderer.on('tauri:uncallback', (_e, { id, contextId } = {}) => {
+  if (contextId !== rendererContextId) return;
   callbacks.delete(id);
 });
 

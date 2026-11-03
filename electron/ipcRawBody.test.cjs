@@ -354,6 +354,7 @@ function loadPreload() {
   const exposed = new Map();
   const invoked = [];
   const context = {
+    process: { contextId: 'raw-body-test', argv: [] },
     require(id) {
       assert.equal(id, 'electron');
       return {
@@ -362,7 +363,7 @@ function loadPreload() {
           invoke: async (channel, payload) => { invoked.push({ channel, payload }); },
           on() {},
           send() {},
-          sendSync: () => null,
+          sendSync: (channel, contextId) => channel === 'tauri:callback-context' ? { ok: true, contextId } : null,
         },
         webUtils: { getPathForFile: () => '' },
       };

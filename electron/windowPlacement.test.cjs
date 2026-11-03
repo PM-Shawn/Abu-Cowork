@@ -13,6 +13,7 @@
 
 const assert = require('node:assert/strict');
 const test = require('node:test');
+const { registerRendererCallbackContext } = require('./rendererCallbackContext.cjs');
 
 /** Fake Electron `screen` over a fixed display list (DIP geometry, like Electron). */
 function fakeScreen(displays, primaryIndex = 0) {
@@ -67,6 +68,7 @@ class FakeWindow {
   constructor(bounds, webContents = { id: Math.random(), isDestroyed: () => false, sent: [] }) {
     this.bounds = { ...bounds };
     this.webContents = webContents;
+    registerRendererCallbackContext(webContents, 'window-test');
     this.webContents.send = (channel, message) => this.webContents.sent.push({ channel, message });
     this.minimized = false;
     this.visible = true;
@@ -234,9 +236,9 @@ test('tauri://move reaches only the moved window\'s own subscriptions', () => {
   tauriHost.__test.clearSubscriptions();
   const pet = new FakeWindow({ x: 100, y: 200, width: 80, height: 80 });
   const main = new FakeWindow({ x: 0, y: 33, width: 1200, height: 800 });
-  tauriHost.__test.subscribe('tauri://move', 11, pet.webContents);
-  tauriHost.__test.subscribe('tauri://move', 22, main.webContents);
-  tauriHost.__test.subscribe('pet-status-update', 33, pet.webContents);
+  tauriHost.__test.subscribe('tauri://move', 11, pet.webContents, 'window-test');
+  tauriHost.__test.subscribe('tauri://move', 22, main.webContents, 'window-test');
+  tauriHost.__test.subscribe('pet-status-update', 33, pet.webContents, 'window-test');
 
   placement.wireWindowMoveEvent(pet, { screen: screenProxy, emitWindowEvent: tauriHost.emitWindowEvent });
   pet.setPosition(240, 180);
@@ -256,9 +258,9 @@ test('__test.subscribedEvents reports the live subscriptions of one sender only'
   const main = new FakeWindow({ x: 0, y: 33, width: 1200, height: 800 });
   assert.deepEqual(tauriHost.__test.subscribedEvents(pet.webContents), []);
 
-  tauriHost.__test.subscribe('tauri://move', 11, pet.webContents);
-  tauriHost.__test.subscribe('pet-status-update', 33, pet.webContents);
-  tauriHost.__test.subscribe('pet-position-changed', 22, main.webContents);
+  tauriHost.__test.subscribe('tauri://move', 11, pet.webContents, 'window-test');
+  tauriHost.__test.subscribe('pet-status-update', 33, pet.webContents, 'window-test');
+  tauriHost.__test.subscribe('pet-position-changed', 22, main.webContents, 'window-test');
   assert.deepEqual(tauriHost.__test.subscribedEvents(pet.webContents), ['tauri://move', 'pet-status-update']);
   assert.deepEqual(tauriHost.__test.subscribedEvents(main.webContents), ['pet-position-changed']);
 

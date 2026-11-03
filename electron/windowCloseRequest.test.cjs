@@ -13,6 +13,7 @@
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
 const test = require('node:test');
+const { registerRendererCallbackContext } = require('./rendererCallbackContext.cjs');
 
 const electronId = require.resolve('electron');
 require.cache[electronId] = {
@@ -62,7 +63,8 @@ test('close-requested carries the count of running background commands', (t) => 
   t.after(() => tauriHost.__test.clearSubscriptions());
   const win = new FakeWindow();
   tauriHost.wireWindowEvents(win);
-  tauriHost.__test.subscribe('close-requested', 7, win.webContents);
+  registerRendererCallbackContext(win.webContents, 'close-test');
+  tauriHost.__test.subscribe('close-requested', 7, win.webContents, 'close-test');
 
   table.running = 2;
   assert.equal(closeWindow(win).defaultPrevented, true);

@@ -10,7 +10,6 @@ interface Acceptance {
   registrations(id: number): { id: number; mainFrame: boolean }[];
   resources(id: number): { shortcut: boolean; destroyedListeners: number; watchesOpened: number; watchesClosed: number };
   watchPath(): string;
-  reload(id: number): Promise<void>;
   subscriptions(id: number): string[];
   deliver(id: number, contextId: string, value: string, remove?: boolean): void;
   emit(id: number, value: string): number;
@@ -59,7 +58,7 @@ for (const gui of [false, true]) {
       await listen(page, gui);
       const first = await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.context(windowId), id);
       expect(first).toBeTruthy();
-      await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.reload(windowId), id);
+      await page.reload();
       const second = await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.context(windowId), id);
       expect(second).not.toBe(first);
       expect(await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.subscriptions(windowId), id)).toEqual([]);
@@ -98,7 +97,10 @@ for (const gui of [false, true]) {
       expect(await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.subscriptions(windowId), id)).toEqual(['computer-use-status']);
       expect(await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.emit(windowId, 'after cancellation'), id)).toBe(1);
       await expect.poll(received).toEqual(['current', 'after cancellation']);
-      await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.errorPage(windowId), id);
+      await Promise.all([
+        page.waitForEvent('load'),
+        launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.errorPage(windowId), id),
+      ]);
       await expect.poll(() => launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.subscriptions(windowId), id!)).toEqual([]);
       expect(await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.context(windowId), id)).not.toBe(second);
       await expect(page.evaluate(async useGui => {
@@ -140,7 +142,8 @@ test('renderer replacement and termination release native callback resources', a
       expect(active.shortcut).toBe(true);
       expect(active.watchesOpened).toBe(baseline.watchesOpened + 1);
       expect(active.destroyedListeners).toBeGreaterThan(baseline.destroyedListeners);
-      await launched.app.evaluate((_, { windowId, action }) => globalThis.__abuCallbackContextAcceptance[action](windowId), { windowId: id, action: ending });
+      if (ending === 'reload') await page.reload();
+      else await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.crash(windowId), id);
       const cleared = await launched.app.evaluate((_, windowId) => globalThis.__abuCallbackContextAcceptance.resources(windowId), id);
       expect(cleared.shortcut).toBe(false);
       expect(cleared.destroyedListeners).toBeLessThan(active.destroyedListeners);

@@ -69,10 +69,6 @@ globalThis.__abuCallbackContextAcceptance = {
     fs.writeFileSync(file, 'watch');
     return file;
   },
-  async reload(id) {
-    const contents = windows.get(id).webContents;
-    await contents.loadURL(contents.getURL());
-  },
   subscriptions(id) {
     return require('../../electron/tauriHost.cjs').__test.subscribedEvents(windows.get(id).webContents);
   },

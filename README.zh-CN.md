@@ -133,7 +133,7 @@
 
 ### 联网搜索
 
-- **多搜索引擎** — 支持 Bing、Brave、Tavily、SearXNG（自托管免 API Key）
+- **多搜索引擎** — 支持 Bing、Brave、Tavily、Keenable（免 API Key）、SearXNG（自托管免 API Key）
 - **独立配置** — 搜索引擎与主 AI 服务解耦，独立管理
 
 ### 自动化与触发器
@@ -267,7 +267,7 @@
 | LLM 适配 | 双协议适配器 (Anthropic / OpenAI-compatible) |
 | 状态管理 | Zustand + Immer + Persist |
 | 工具协议 | MCP (`@modelcontextprotocol/sdk`) |
-| 联网搜索 | Bing / Brave / Tavily / SearXNG |
+| 联网搜索 | Bing / Brave / Tavily / Keenable / SearXNG |
 | 安全沙箱 | macOS Seatbelt + 路径/命令双重校验 |
 | UI 组件 | 阿布自己的组件库（`src/components/ds/`），基于 Radix UI + Lucide Icons |
 | 测试 | Vitest + happy-dom（覆盖核心 store / agent / skill / memdir 等模块） |
@@ -344,7 +344,7 @@ src/
 │   ├── tools/        # 工具注册、内置工具、安全校验
 │   ├── mcp/          # MCP 客户端
 │   ├── skill/        # Skill 加载与预处理
-│   ├── search/       # 联网搜索（Bing/Brave/Tavily/SearXNG）
+│   ├── search/       # 联网搜索（Bing/Brave/Tavily/Keenable/SearXNG）
 │   ├── memdir/       # 文件化记忆体系（personal/project，多文件 + 索引）
 │   ├── scheduler/    # 定时调度引擎
 │   ├── trigger/      # 触发器引擎（HTTP/文件/Cron/IM）

@@ -276,7 +276,7 @@ Credentials are used for the platform connection you configure. Never paste an A
 Under **Settings → Models**, expand **Auxiliary Capabilities → Web Search**:
 
 - If an enabled model provider includes search, Abu labels it as built in through that provider.
-- Otherwise configure Brave, Tavily, Bing, or a self-hosted SearXNG service.
+- Otherwise configure Brave, Tavily, Bing, Keenable (works without an API key), or a self-hosted SearXNG service.
 
 Availability depends on the active model service, API permissions, and network settings. When freshness matters, explicitly request web search and review the sources.
 

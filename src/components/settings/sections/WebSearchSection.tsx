@@ -11,10 +11,11 @@ import SettingsSectionHeader from '@/components/settings/SettingsSectionHeader';
 import { open } from '@tauri-apps/plugin-shell';
 import type { WebSearchProviderType } from '@/core/search/providers';
 
-const SEARCH_PROVIDERS: { id: WebSearchProviderType; labelKey: 'webSearchProviderBing' | 'webSearchProviderBrave' | 'webSearchProviderTavily' | 'webSearchProviderSearXNG'; signupUrl?: string }[] = [
+const SEARCH_PROVIDERS: { id: WebSearchProviderType; labelKey: 'webSearchProviderBing' | 'webSearchProviderBrave' | 'webSearchProviderTavily' | 'webSearchProviderSearXNG' | 'webSearchProviderKeenable'; signupUrl?: string }[] = [
   { id: 'tavily', labelKey: 'webSearchProviderTavily', signupUrl: 'https://tavily.com/' },
   { id: 'brave', labelKey: 'webSearchProviderBrave', signupUrl: 'https://brave.com/search/api/' },
   { id: 'searxng', labelKey: 'webSearchProviderSearXNG', signupUrl: 'https://docs.searxng.org/' },
+  { id: 'keenable', labelKey: 'webSearchProviderKeenable', signupUrl: 'https://keenable.ai/' },
   { id: 'bing', labelKey: 'webSearchProviderBing', signupUrl: 'https://www.microsoft.com/en-us/bing/apis/bing-web-search-api' },
 ];
 
@@ -45,6 +46,7 @@ export function WebSearchForm() {
   };
 
   const isSearXNG = webSearchProvider === 'searxng';
+  const isKeenable = webSearchProvider === 'keenable';
   const currentProvider = SEARCH_PROVIDERS.find((p) => p.id === webSearchProvider);
 
   return (
@@ -80,9 +82,9 @@ export function WebSearchForm() {
             id={keyId}
             value={webSearchApiKey}
             onChange={setWebSearchApiKey}
-            placeholder={t.settings.webSearchApiKeyPlaceholder}
+            placeholder={isKeenable ? t.settings.webSearchApiKeyOptionalPlaceholder : t.settings.webSearchApiKeyPlaceholder}
           />
-          <p className={FIELD_HINT}>{t.settings.webSearchApiKeyDesc}</p>
+          <p className={FIELD_HINT}>{isKeenable ? t.settings.webSearchKeenableKeyDesc : t.settings.webSearchApiKeyDesc}</p>
         </div>
       )}
 

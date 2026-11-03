@@ -116,8 +116,8 @@ export const webSearchTool: ToolDefinition = {
       const apiKey = state.auxiliaryServices.webSearch?.apiKey ?? '';
       const baseUrl = state.auxiliaryServices.webSearch?.baseUrl ?? '';
 
-      // SearXNG doesn't need API key
-      if (providerType !== 'searxng' && !apiKey) {
+      // SearXNG and Keenable (keyless public endpoint) don't need an API key
+      if (providerType !== 'searxng' && providerType !== 'keenable' && !apiKey) {
         return tw.errNoApiKey;
       }
       if (providerType === 'searxng' && !baseUrl) {

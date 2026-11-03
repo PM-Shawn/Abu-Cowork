@@ -18,6 +18,8 @@
  */
 'use strict';
 
+const { isCurrentRendererCallbackOwner } = require('./rendererCallbackContext.cjs');
+
 /**
  * Parse a Channel's wire form ("__CHANNEL__:<id>") into its numeric callback
  * id, or null when the value isn't a serialized channel.
@@ -38,15 +40,15 @@ function parseChannelId(onEvent) {
  * Returns whether the message was actually sent — the renderer Channel
  * REORDERS by index, so the caller must only advance its counter on a real
  * send (a skipped index would stall every later message in that channel).
- * @param {import('electron').WebContents | null | undefined} sender
+ * @param {{sender: import('electron').WebContents, contextId: string}} owner
  * @param {number} callbackId
  * @param {number} index
  * @param {unknown} message
  * @returns {boolean} true iff sent
  */
-function sendChannelMessage(sender, callbackId, index, message) {
-  if (!sender || sender.isDestroyed()) return false;
-  sender.send('tauri:callback', { id: callbackId, payload: { index, message } });
+function sendChannelMessage(owner, callbackId, index, message) {
+  if (!isCurrentRendererCallbackOwner(owner)) return false;
+  owner.sender.send('tauri:callback', { id: callbackId, contextId: owner.contextId, payload: { index, message } });
   return true;
 }
 

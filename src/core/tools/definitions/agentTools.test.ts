@@ -650,6 +650,8 @@ describe('delegateToAgentTool', () => {
     stubChatStore();
     const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const addChildStepToDelegate = vi.fn().mockReturnValue('child-orphan');
+    let memberStarted = (): void => {};
+    const memberHasStarted = new Promise<void>((resolve) => { memberStarted = resolve; });
     vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
     vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
     vi.mocked(getCurrentLoopContext).mockReturnValue({
@@ -661,6 +663,7 @@ describe('delegateToAgentTool', () => {
     vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
       options.onProgress?.({ type: 'tool-start', id: 'toolu_a', toolName: 'write_file', toolInput: {} });
       options.onProgress?.({ type: 'tool-start', id: 'toolu_b', toolName: 'read_file', toolInput: {} });
+      memberStarted();
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
@@ -670,6 +673,7 @@ describe('delegateToAgentTool', () => {
       { conversationId: 'conv-1', loopId: 'loop-orphan', toolCallId: 'delegate-orphan' } as never,
     ).then((text) => { resolved = true; return text; });
     delegation.catch(() => undefined); // asserted below
+    await memberHasStarted;
 
     // One poll short of the budget the drain cannot have given up yet. This
     // holds however slowly the surrounding promise chain runs: a late start
@@ -702,6 +706,8 @@ describe('delegateToAgentTool', () => {
     const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => {});
     const toolCallToStepId = new Map<string, string>();
     const addChildStepToDelegate = vi.fn().mockReturnValue('child-mid');
+    let memberStarted = (): void => {};
+    const memberHasStarted = new Promise<void>((resolve) => { memberStarted = resolve; });
     vi.mocked(agentRegistry.getAgent).mockReturnValue({ name: 'researcher', description: 'test', systemPrompt: 'test' } as never);
     vi.mocked(createSubagentController).mockReturnValue({ signal: new AbortController().signal, cleanup: vi.fn() } as never);
     vi.mocked(getCurrentLoopContext).mockReturnValue({
@@ -717,6 +723,7 @@ describe('delegateToAgentTool', () => {
     vi.mocked(runSubagentLoop).mockImplementation(async (options: { onProgress?: (event: unknown) => void }) => {
       options.onProgress?.({ type: 'tool-start', id: 'toolu_mid', toolName: 'write_file', toolInput: {} });
       setTimeout(() => toolCallToStepId.set('delegate-mid', 'parent-step-mid'), parentAppearsMs);
+      memberStarted();
       return { text: 'done', stopReason: 'completed' } as never;
     });
 
@@ -724,6 +731,7 @@ describe('delegateToAgentTool', () => {
       { agent_name: 'researcher', task: 'write the report' },
       { conversationId: 'conv-1', loopId: 'loop-mid', toolCallId: 'delegate-mid' } as never,
     );
+    await memberHasStarted;
 
     // Before the frame lands nothing can be attached — a late start only makes
     // that more true, so this cannot flake the other way.

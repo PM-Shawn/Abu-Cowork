@@ -9,6 +9,13 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 const { fsDispatch, canonicalizeForPathPolicy } = require('./fsHost.cjs');
 const { fsWatchDispatch, cleanupFsWatchesForSender } = require('./fsWatchHost.cjs');
+const { registerRendererCallbackContext, captureRendererCallbackOwner } = require('./rendererCallbackContext.cjs');
+
+function watchCallbackOwner(sender) {
+  sender.isDestroyed = () => false;
+  registerRendererCallbackContext(sender, 'fs-watch-test');
+  return captureRendererCallbackOwner(sender, 'fs-watch-test');
+}
 
 const app = {};
 
@@ -578,6 +585,8 @@ test('a different IPC sender cannot close another sender fs watch', (t) => {
   owner.send = () => {};
   const other = new EventEmitter();
   other.send = () => {};
+  const callbackOwner = watchCallbackOwner(owner);
+  const otherCallbackOwner = watchCallbackOwner(other);
 
   const rid = fsWatchDispatch(app, 'plugin:fs|watch', {
     args: {
@@ -586,11 +595,13 @@ test('a different IPC sender cannot close another sender fs watch', (t) => {
       onEvent: '__CHANNEL__:1',
     },
     event: { sender: owner },
+    owner: callbackOwner,
   });
   t.after(() => {
     fsWatchDispatch(app, 'plugin:resources|close', {
       args: { rid },
       event: { sender: owner },
+      owner: callbackOwner,
     });
   });
 
@@ -599,6 +610,7 @@ test('a different IPC sender cannot close another sender fs watch', (t) => {
       fsWatchDispatch(app, 'plugin:resources|close', {
         args: { rid },
         event: { sender: other },
+        owner: otherCallbackOwner,
       }),
     /different IPC sender/
   );
@@ -610,6 +622,7 @@ test('renderer reload cleanup closes every fs watch owned by that sender', (t) =
   fs.writeFileSync(file, 'watch');
   const owner = new EventEmitter();
   owner.send = () => {};
+  const callbackOwner = watchCallbackOwner(owner);
 
   const rid = fsWatchDispatch(app, 'plugin:fs|watch', {
     args: {
@@ -618,6 +631,7 @@ test('renderer reload cleanup closes every fs watch owned by that sender', (t) =
       onEvent: '__CHANNEL__:2',
     },
     event: { sender: owner },
+    owner: callbackOwner,
   });
   assert.equal(owner.listenerCount('destroyed'), 1);
 
@@ -628,6 +642,7 @@ test('renderer reload cleanup closes every fs watch owned by that sender', (t) =
     fsWatchDispatch(app, 'plugin:resources|close', {
       args: { rid },
       event: { sender: owner },
+      owner: callbackOwner,
     })
   );
 });
@@ -756,7 +771,7 @@ test(
       () =>
         fsWatchDispatch(app, 'plugin:fs|watch', {
           args: { paths: ['secret-name.txt'], options: {}, onEvent: '__CHANNEL__:9' },
-          event: { sender: null },
+          owner: watchCallbackOwner(new EventEmitter()),
         }),
       'path'
     );

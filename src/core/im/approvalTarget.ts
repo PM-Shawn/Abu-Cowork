@@ -71,17 +71,8 @@ function firstId(list: string | undefined): string | null {
 /**
  * Is this IM channel one the user still wants delivered to?
  *
- * The R2 reasoning below, reused by the outbound side. `sendViaIMChannel` has
- * no `enabled` check of its own, so a channel the user switched OFF still
- * delivers — someone who turned a channel off to stop the noise would keep
- * getting pushed to. The run's ENDING is the newest thing pushed there (batch
- * 8), and a failing task can now speak on every tick, so it checks.
- *
- * Deliberately not applied to the RESULT push: users receive those today, and
- * silently dropping results a disabled channel currently delivers is a
- * separate product decision with its own blast radius (see the batch-8 report).
- *
- * `status` is not consulted, for the same reason as below: it is weather.
+ * Both successful results and terminal notices respect the user's enabled
+ * setting. Connection status may change during ordinary reconnects.
  */
 export function isImOutputChannelEnabled(channelId: string | undefined): boolean {
   if (!channelId) return false;
@@ -112,11 +103,9 @@ export function resolveUnattendedImTarget(
   /*
     R2 — a channel the user switched OFF is not a target either.
 
-    `outputSender.sendViaIMChannel` has no `enabled` check, so a disabled
-    channel still DELIVERS: the prompt is pushed through a channel the user
-    turned off, while the inbound socket (`feishuWsManager`) is stopped, so no
-    answer can ever arrive. The run then stalls for the full five minutes and
-    fails closed anyway. Refusing here makes that immediate and honest.
+    A disabled channel has no active inbound socket to receive an answer.
+    Refusing the approval target immediately keeps the run from waiting for
+    an answer through a channel the user turned off.
 
     Deliberately NOT gated on `status`: that is a live connection state which
     flaps across ordinary reconnects, and a target that disappears mid-outage

@@ -14,6 +14,15 @@
 
 const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
+const rendererContextId = process.contextId;
+if (typeof rendererContextId !== 'string' || rendererContextId.length === 0 || rendererContextId.length > 256) {
+  throw new Error('Electron renderer context identity is unavailable');
+}
+const callbackContext = ipcRenderer.sendSync('tauri:callback-context', rendererContextId);
+if (callbackContext?.ok !== true || callbackContext.contextId !== rendererContextId) {
+  throw new Error('Renderer callback context registration failed');
+}
+
 const TAURI_LOCAL_STORAGE_GET = 'abu:tauri-local-storage:get';
 const TAURI_LOCAL_STORAGE_ACK = 'abu:tauri-local-storage:ack';
 const DEVICE_ID_RESOLVE = 'abu:device-id:resolve';
@@ -496,13 +505,14 @@ const invoke = (cmd, args, options) => {
       // the raw bytes) — the existing raw-body detection path is untouched.
       args: isBinary ? undefined : safeArgs(serializeChannels(args), cmd),
       headers,
-    });
+    }, rendererContextId);
   }
-  return ipcRenderer.invoke('tauri:invoke', { cmd, args: safeArgs(serializeChannels(args), cmd) });
+  return ipcRenderer.invoke('tauri:invoke', { cmd, args: safeArgs(serializeChannels(args), cmd) }, rendererContextId);
 };
 
 // Main delivers a callback invocation by id — see tauriHost.cjs `deliver()`.
-ipcRenderer.on('tauri:callback', (_e, { id, payload } = {}) => {
+ipcRenderer.on('tauri:callback', (_e, { id, payload, contextId } = {}) => {
+  if (contextId !== rendererContextId) return;
   const c = callbacks.get(id);
   if (!c) return;
   try {
@@ -515,7 +525,8 @@ ipcRenderer.on('tauri:callback', (_e, { id, payload } = {}) => {
 // Main prunes a callback on unlisten (it holds the callbackId; the api's own
 // synchronous unregisterListener only has the eventId). Without this the
 // callbacks Map would leak across a session's listen/unlisten churn.
-ipcRenderer.on('tauri:uncallback', (_e, { id } = {}) => {
+ipcRenderer.on('tauri:uncallback', (_e, { id, contextId } = {}) => {
+  if (contextId !== rendererContextId) return;
   callbacks.delete(id);
 });
 

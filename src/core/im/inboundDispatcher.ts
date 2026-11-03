@@ -18,6 +18,9 @@ import { isTauriEnv } from '../../utils/tauriEnv';
 import type { ImageAttachment } from '../../types';
 
 let unlistenIM: UnlistenFn | null = null;
+const MESSAGE_REPLAY_WINDOW_MS = 30 * 60_000;
+const MAX_RECENT_MESSAGES = 10_000;
+const recentMessages = new Map<string, number>();
 
 export async function startInboundDispatcher(): Promise<void> {
   if (!isTauriEnv()) return; // web / E2E: no Tauri event bus
@@ -68,6 +71,7 @@ function hasEnabledChannelForPlatform(platform: string): boolean {
 export function stopInboundDispatcher(): void {
   unlistenIM?.();
   unlistenIM = null;
+  recentMessages.clear();
   console.log('[InboundDispatcher] Stopped');
 }
 
@@ -80,6 +84,19 @@ function dispatch(
   // Parse once, share with both paths
   const message = parseInboundMessage(platform, rawPayload);
   if (!message) return;
+  const messageId = message.messageId || message.replyContext.messageId;
+  if (typeof messageId === 'string' && messageId.trim()) {
+    const now = Date.now();
+    for (const [key, seenAt] of recentMessages) {
+      if (now - seenAt >= MESSAGE_REPLAY_WINDOW_MS) recentMessages.delete(key);
+    }
+    const key = JSON.stringify([message.platform, message.chatId, messageId]);
+    if (recentMessages.has(key)) return;
+    if (recentMessages.size >= MAX_RECENT_MESSAGES) {
+      recentMessages.delete(recentMessages.keys().next().value!);
+    }
+    recentMessages.set(key, now);
+  }
   // Attach adapter-downloaded images (e.g. WeChat inbound photos) so the channel
   // router can forward them to the agent as real vision content. Trigger matching
   // is text-based and unaffected.

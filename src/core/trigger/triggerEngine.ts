@@ -266,6 +266,10 @@ class TriggerEngine {
       console.log(`[Trigger] Trigger ${triggerId} is paused, skipping`);
       return;
     }
+    if (
+      !skipChecks && trigger.source.type === 'im'
+      && !isImOutputChannelEnabled(trigger.source.channelId)
+    ) return;
 
     // Event summary for skipped run records
     const eventSummary = JSON.stringify(payload.data).slice(0, 200);
@@ -616,6 +620,10 @@ class TriggerEngine {
     replyContext?: IMReplyContext,
   ) {
     if (!trigger.output) return;
+    if (
+      trigger.output.target === 'im_channel'
+      && !isImOutputChannelEnabled(trigger.output.outputChannelId)
+    ) return;
 
     useTriggerStore.getState().updateRunOutput(trigger.id, runId, 'pending');
 
@@ -940,7 +948,7 @@ class TriggerEngine {
 
     for (const [channelId, triggerIds] of this.imTriggersMap) {
       const channel = channelStore.channels[channelId];
-      if (!channel || channel.platform !== message.platform) continue;
+      if (!channel?.enabled || channel.platform !== message.platform) continue;
 
       for (const triggerId of triggerIds) {
         const trigger = store.triggers[triggerId];

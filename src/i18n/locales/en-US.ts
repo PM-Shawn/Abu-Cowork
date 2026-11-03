@@ -3137,6 +3137,7 @@ const enUS: TranslationDict = {
   },
 
   imChannel: {
+    outputChannelDisabled: 'The output channel is disabled.',
     title: 'IM Channels',
     description: 'Connect IM platforms so users can @Abu or DM the bot directly',
     addChannel: 'Add Channel',

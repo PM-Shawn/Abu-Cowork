@@ -635,6 +635,7 @@ class SchedulerEngine {
     conversationId: string,
     outcome: UnattendedRunOutcome,
   ) {
+    if (!isImOutputChannelEnabled(task.outputChannelId)) return;
     const context: OutputContext = {
       triggerName: task.name,
       aiResponse: '',
@@ -683,14 +684,7 @@ class SchedulerEngine {
    * block, and a notification about a failure must not become a second one.
    */
   private async pushOutcomeToIMChannel(task: ScheduledTask, outcome: UnattendedRunOutcome) {
-    /*
-      A channel the user switched OFF is not somewhere to push a failure
-      notice. `outputSender.sendViaIMChannel` has no `enabled` check
-      (`approvalTarget.ts` records the same gap on the approval side), so
-      without this the one action a user has for "stop talking to me here"
-      would be ignored by the newest, chattiest thing pushed to it — a failing
-      task now speaks on EVERY tick.
-    */
+    // Respect the channel setting before building a terminal notice.
     if (!isImOutputChannelEnabled(task.outputChannelId)) {
       console.warn(`[Scheduler] Outcome push skipped — channel disabled: ${task.name}`);
       return;
@@ -736,12 +730,12 @@ class SchedulerEngine {
     const targets: { id: string; receiveIdType?: 'chat_id' | 'open_id' }[] = [];
 
     if (task.outputChatIds) {
-      for (const id of task.outputChatIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+      for (const id of new Set(task.outputChatIds.split(',').map((s) => s.trim()).filter(Boolean))) {
         targets.push({ id, receiveIdType: 'chat_id' });
       }
     }
     if (task.outputUserIds) {
-      for (const id of task.outputUserIds.split(',').map((s) => s.trim()).filter(Boolean)) {
+      for (const id of new Set(task.outputUserIds.split(',').map((s) => s.trim()).filter(Boolean))) {
         targets.push({ id, receiveIdType: 'open_id' });
       }
     }

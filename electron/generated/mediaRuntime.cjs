@@ -50265,11 +50265,11 @@ var zhCN = {
     contentGuardDisableTitle: "关闭内容安全扫描？",
     contentGuardDisableMessage: "关闭后阿布自发创建的技能和记忆不会被扫描，可能写入包含危险指令的内容。只在明确需要调试误报时关闭，测试完请立即打开。",
     permissionModeStandard: "请求批准",
-    permissionModeStandardDesc: "工作区内自由读写；越界写入、危险命令及电脑操控首次操作每个应用都需确认",
+    permissionModeStandardDesc: "修改外部文件或操作电脑时询问你",
     permissionModeSmart: "替我审批",
-    permissionModeSmartDesc: "越界操作交 AI 审核；电脑操控先确认本任务，再自动放行已识别的普通应用，浏览器、通讯和未知应用仍问你。可能误判",
+    permissionModeSmartDesc: "由 AI 审核风险，必要时请求你批准",
     permissionModeAutonomous: "完全自主",
-    permissionModeAutonomousDesc: "电脑操控先确认本任务，再自动执行已识别的普通操作；浏览器、通讯和未知应用仍问你，系统红线始终禁止",
+    permissionModeAutonomousDesc: "自动执行任务，敏感操作仍会询问你",
     // ModelConfigSection
     currentConfig: "当前配置",
     configured: "已配置",
@@ -52001,6 +52001,7 @@ var zhCN = {
     outputUserIdPlaceholder: "用户 ID，多个用逗号分隔"
   },
   imChannel: {
+    outputChannelDisabled: "结果推送频道已关闭。",
     title: "频道",
     description: "连接 IM 平台，让用户通过 @Abu 或私聊直接使用 Abu 的能力",
     addChannel: "添加频道",
@@ -54833,11 +54834,11 @@ var enUS = {
     contentGuardDisableTitle: "Disable content safety scanner?",
     contentGuardDisableMessage: "When off, skills and memories Abu proposes skip the safety scan — they may contain dangerous instructions. Only disable temporarily to debug false positives, then re-enable.",
     permissionModeStandard: "Standard",
-    permissionModeStandardDesc: "Read/write inside the workspace; out-of-bounds writes, dangerous commands, and first use of each app by Computer Use need confirmation",
+    permissionModeStandardDesc: "Ask before editing external files or controlling your computer",
     permissionModeSmart: "Smart Review",
-    permissionModeSmartDesc: "Escalations go to AI review; Computer Use confirms the task first, then auto-allows reviewed ordinary apps while browsers, communications, and unknown apps still ask. May misjudge",
+    permissionModeSmartDesc: "Let AI review risks and ask for approval when needed",
     permissionModeAutonomous: "Full Autonomy",
-    permissionModeAutonomousDesc: "Computer Use confirms the task first, then reviewed ordinary work runs automatically; browsers, communications, and unknown apps still ask, while system red lines remain blocked",
+    permissionModeAutonomousDesc: "Run tasks automatically and ask before sensitive actions",
     // ModelConfigSection
     currentConfig: "Current Config",
     configured: "Configured",
@@ -56570,6 +56571,7 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
     outputUserIdPlaceholder: "User IDs, comma-separated"
   },
   imChannel: {
+    outputChannelDisabled: "The output channel is disabled.",
     title: "IM Channels",
     description: "Connect IM platforms so users can @Abu or DM the bot directly",
     addChannel: "Add Channel",

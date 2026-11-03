@@ -39,6 +39,7 @@ import { REPO_ROOT } from './electronHelpers';
 
 /** localStorage key → the store module that owns its `persist` options. */
 const STORE_SOURCES = {
+  'abu-im-channel': 'imChannelStore.ts',
   'abu-projects': 'projectStore.ts',
   'abu-schedule': 'scheduleStore.ts',
   'abu-triggers': 'triggerStore.ts',

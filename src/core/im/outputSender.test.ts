@@ -326,6 +326,7 @@ describe('OutputSender.send', () => {
           appId: 'cli_x',
           appSecret: 'sec',
           name: 'FS Bot',
+          enabled: true,
         },
       },
     });
@@ -359,6 +360,7 @@ describe('OutputSender.send', () => {
           appId: 'cli_y',
           appSecret: 'sec2',
           name: 'FS Bot 2',
+          enabled: true,
         },
       },
     });
@@ -391,6 +393,7 @@ describe('OutputSender.send', () => {
           appId: 'dt_app',
           appSecret: 'dt_sec',
           name: 'DT Bot',
+          enabled: true,
         },
       },
     });

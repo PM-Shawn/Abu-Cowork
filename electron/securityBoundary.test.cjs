@@ -15,6 +15,7 @@ const {
   assertTrustedMainIpcSender,
   isTrustedMainWindowPage,
   validateInvokePayload,
+  validateRegisteredMainFrame,
   assertResourceOwner,
   canonicalFilePage,
   isWindowsAbsolutePath,
@@ -72,6 +73,19 @@ test('unregistered privileged IPC sender is blocked', () => {
     () => assertTrustedIpcSender(trustedEvent(wc)),
     /unregistered IPC sender/
   );
+});
+
+test('callback initialization validates the live main frame while business IPC retains its URL restriction', () => {
+  const page = fileUrl('main.html');
+  const wc = new FakeWebContents(page);
+  assert.equal(validateRegisteredMainFrame(trustedEvent(wc)).ok, false);
+  registerPrivilegedWebContents(wc, page);
+  const event = trustedEvent(wc, 'chrome-error://chromewebdata/');
+  assert.equal(validateRegisteredMainFrame(event).ok, true);
+  assert.throws(() => assertTrustedIpcSender(event), /registered privileged page/);
+  assert.equal(validateRegisteredMainFrame({ sender: wc, senderFrame: { url: page, parent: wc.mainFrame } }).ok, false);
+  wc.destroyed = true;
+  assert.equal(validateRegisteredMainFrame(event).ok, false);
 });
 
 test('registered main-frame sender on exact file page is accepted, ignoring query and hash', () => {
@@ -720,9 +734,10 @@ test('preload exposes only narrow file, media, diagnostics, and receive-only sid
     },
     on: (channel, callback) => ipcListeners.set(channel, callback),
     send: (channel, payload) => sent.push({ channel, payload }),
-    sendSync: () => null,
+    sendSync: (channel, contextId) => channel === 'tauri:callback-context' ? { ok: true, contextId } : null,
   };
   const context = {
+    process: { contextId: 'security-test', argv: [] },
     require(id) {
       assert.equal(id, 'electron');
       return {
@@ -1132,7 +1147,7 @@ test('preload exposes only narrow file, media, diagnostics, and receive-only sid
 function loadShellBridgeWithArgv(argv) {
   const exposed = new Map();
   const context = {
-    process: { argv },
+    process: { argv, contextId: 'material-test' },
     require(id) {
       assert.equal(id, 'electron');
       return {
@@ -1141,7 +1156,7 @@ function loadShellBridgeWithArgv(argv) {
           invoke: async () => undefined,
           on: () => {},
           send: () => {},
-          sendSync: () => null,
+          sendSync: (channel, contextId) => channel === 'tauri:callback-context' ? { ok: true, contextId } : null,
         },
         webUtils: { getPathForFile: () => '' },
       };

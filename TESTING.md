@@ -52,14 +52,14 @@ The default Vitest gate continues to check the shared history and file selection
 | Layer | Files |
 |---|---|
 | Unit (`*.test.ts(x)`, Vitest) | 1096 |
-| Integration (`*.integration.test.ts`) | 25 |
+| Integration (`*.integration.test.ts`) | 27 |
 | Contract (`*.contract.test.ts`) | 32 |
 | Enterprise (`enterprise-tests/**`, `npm run test:enterprise`, private build only — not in the default gate) | 60 |
 | Quarantined (`src/__tests__/quarantine/`) | 0 |
 | Quarantined specs (`e2e/**/*.spec.ts`, `tests/e2e/**/*.spec.ts`) | 0 |
 | Web E2E (`e2e/*.spec.ts`, Playwright) | 8 |
-| Real-Electron E2E (`tests/e2e/*.spec.ts`) | 115 |
-| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 124 |
+| Real-Electron E2E (`tests/e2e/*.spec.ts`) | 118 |
+| Node `node:test` scripts (`*.test.mjs` / `*.test.cjs`) | 126 |
 <!-- test-inventory:end -->
 
 ---

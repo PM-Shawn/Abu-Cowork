@@ -10,6 +10,7 @@ test('preload restores interaction on cancellation and isolates a late callback 
   const exposed = new Map();
   const invoked = [];
   const context = {
+    process: { contextId: 'quit-test', argv: [] },
     document: { body: { inert: false } },
     require(id) {
       assert.equal(id, 'electron');
@@ -17,7 +18,7 @@ test('preload restores interaction on cancellation and isolates a late callback 
         contextBridge: { exposeInMainWorld: (key, value) => exposed.set(key, value) },
         ipcRenderer: {
           on: (channel, handler) => handlers.set(channel, handler),
-          sendSync: () => null,
+          sendSync: (channel, contextId) => channel === 'tauri:callback-context' ? { ok: true, contextId } : null,
           invoke: async (channel, payload) => { invoked.push({ channel, payload }); return true; },
         },
         webUtils: {},
@@ -57,13 +58,14 @@ test('a failed save stays frozen and retry acquires its barrier before releasing
   const exposed = new Map();
   const order = [];
   const context = {
+    process: { contextId: 'quit-test', argv: [] },
     document: { body: { inert: false } },
     require() {
       return {
         contextBridge: { exposeInMainWorld: (key, value) => exposed.set(key, value) },
         ipcRenderer: {
           on: (channel, handler) => handlers.set(channel, handler),
-          sendSync: () => null,
+          sendSync: (channel, contextId) => channel === 'tauri:callback-context' ? { ok: true, contextId } : null,
           invoke: async () => true,
         },
         webUtils: {},

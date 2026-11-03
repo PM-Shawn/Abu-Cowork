@@ -642,7 +642,10 @@ describe('SchedulerEngine run report card', () => {
   // LAST message. Appending before the push would send an empty IM message
   // instead of the answer the task produced.
   it('appends the card after the IM push has read the last message', async () => {
-    const task = makeTask({ id: 'task-push-order' });
+    const channelId = useIMChannelStore.getState().addChannel({
+      platform: 'feishu', name: 'Result channel', appId: 'test-app', appSecret: 'test-secret',
+    });
+    const task = makeTask({ id: 'task-push-order', outputChannelId: channelId });
     useScheduleStore.setState({ tasks: { [task.id]: task } });
     vi.mocked(runAgentLoop).mockImplementation(async (conversationId: string) => {
       recordBrowserSignal(

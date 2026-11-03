@@ -10,6 +10,8 @@ import { getIMPlugin } from './pluginRegistry';
 
 /** Normalized inbound IM message */
 export interface NormalizedIMMessage {
+  /** Stable platform message identity, independent of reply addressing. */
+  messageId?: string;
   /** Sender user ID (platform-specific) */
   senderId: string;
   /** Sender display name */
@@ -97,6 +99,7 @@ function parseFeishu(payload: Record<string, unknown>): NormalizedIMMessage | nu
   const message = event.message as Record<string, unknown> | undefined;
   const sender = event.sender as Record<string, unknown> | undefined;
   if (!message || !sender) return null;
+  if (sender.sender_type === 'bot' || sender.sender_type === 'app') return null;
 
   // Parse content JSON (Feishu wraps text in JSON)
   let text: string;
@@ -129,6 +132,7 @@ function parseFeishu(payload: Record<string, unknown>): NormalizedIMMessage | nu
   const cleanText = text.replace(/@_user_\d+/g, '').trim();
 
   return {
+    messageId,
     senderId: uid,
     senderName: String((sender as Record<string, unknown>).sender_name ?? uid),
     text: cleanText,
@@ -171,6 +175,7 @@ function parseDingTalk(payload: Record<string, unknown>): NormalizedIMMessage | 
   const conversationId = String(payload.conversationId ?? '');
 
   return {
+    messageId: typeof payload.msgId === 'string' ? payload.msgId : undefined,
     senderId,
     senderName: senderNick,
     text: text.trim(),
@@ -233,6 +238,7 @@ function parseSlack(payload: Record<string, unknown>): NormalizedIMMessage | nul
   // Only process user messages
   if (event.type !== 'message') return null;
   if (event.subtype) return null; // skip bot messages, edits, etc.
+  if (event.bot_id || event.bot_profile) return null;
 
   const text = String(event.text ?? '');
   if (!text) return null;
@@ -250,6 +256,7 @@ function parseSlack(payload: Record<string, unknown>): NormalizedIMMessage | nul
   const cleanText = text.replace(/<@\w+>\s*/g, '').trim();
 
   return {
+    messageId: event.ts ? String(event.ts) : undefined,
     senderId: userId,
     senderName: userId, // Slack doesn't include name in event, would need API call
     text: cleanText,
@@ -311,6 +318,7 @@ function parseWeChatILink(payload: Record<string, unknown>): NormalizedIMMessage
   if (!text) return null;
 
   return {
+    messageId,
     senderId: fromUserId,
     senderName: fromUserId.split('@')[0] ?? fromUserId,
     text,

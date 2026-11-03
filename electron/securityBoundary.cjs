@@ -323,7 +323,7 @@ function senderFrameUrl(senderFrame) {
   return typeof senderFrame?.url === 'string' ? senderFrame.url : '';
 }
 
-function validateTrustedIpcSender(event) {
+function validateRegisteredMainFrame(event) {
   const sender = event && event.sender;
   const senderFrame = event && event.senderFrame;
   const record = sender && trustedWebContents.get(sender);
@@ -331,6 +331,14 @@ function validateTrustedIpcSender(event) {
   if (!record) return { ok: false, reason: 'unregistered IPC sender' };
   if (isDestroyedSender(sender)) return { ok: false, reason: 'destroyed IPC sender' };
   if (!isMainFrame(sender, senderFrame)) return { ok: false, reason: 'IPC sender is not the main frame' };
+  return { ok: true, record };
+}
+
+function validateTrustedIpcSender(event) {
+  const registered = validateRegisteredMainFrame(event);
+  if (!registered.ok) return registered;
+  const { record } = registered;
+  const senderFrame = event.senderFrame;
   if (!isAllowedRegisteredPage(record, senderFrameUrl(senderFrame))) {
     return { ok: false, reason: 'IPC sender URL is not the registered privileged page' };
   }
@@ -705,6 +713,7 @@ function assertResourceOwner(resource, sender, kind) {
 module.exports = {
   registerPrivilegedWebContents,
   registerPrivilegedWindow,
+  validateRegisteredMainFrame,
   validateTrustedIpcSender,
   assertTrustedIpcSender,
   assertTrustedMainIpcSender,

@@ -63,6 +63,7 @@
 const { app, autoUpdater: nativeUpdater } = require('electron');
 const { createMacUpdateReadiness } = require('./macUpdateReadiness.cjs');
 const { parseChannelId, sendChannelMessage } = require('./channelBridge.cjs');
+const { assertCurrentRendererCallbackOwner } = require('./rendererCallbackContext.cjs');
 const { isOfficialBuild } = require('./releaseMetadata.cjs');
 
 /** Sentinel returned when `cmd` isn't one of the updater family. */
@@ -221,18 +222,18 @@ async function check() {
  * (see header). Rejects on download/verification failure (e.g. sha512
  * mismatch) so the frontend's catch path resets its progress UI.
  * @param {Record<string, unknown>} a
- * @param {Electron.IpcMainInvokeEvent | undefined} event
+ * @param {{sender: Electron.WebContents, contextId: string}} owner
  */
-async function downloadAndInstall(a, event) {
+async function downloadAndInstall(a, owner) {
+  assertCurrentRendererCallbackOwner(owner);
   const au = getUpdater();
   if (!au) throw new Error('updater not armed (dev shell without ABU_UPDATER_FEED_URL)');
 
   const callbackId = parseChannelId(a.onEvent);
-  const sender = event && event.sender;
   let index = 0;
   const send = (message) => {
     if (callbackId === null) return;
-    if (sendChannelMessage(sender, callbackId, index, message)) index++;
+    if (sendChannelMessage(owner, callbackId, index, message)) index++;
   };
 
   // A new download invalidates any previously downloaded update: if THIS
@@ -306,15 +307,15 @@ function quitAndInstallIfPending(onFailure) {
  * Map a `plugin:updater|*` command. Returns UPDATER_MISS for anything else so
  * tauriHost falls through to its default dispatch.
  * @param {string} cmd
- * @param {{ args?: Record<string, unknown>, event?: Electron.IpcMainInvokeEvent }} payload
+ * @param {{ args?: Record<string, unknown>, owner?: {sender: Electron.WebContents, contextId: string} }} payload
  */
-function updaterDispatch(cmd, { args, event } = {}) {
+function updaterDispatch(cmd, { args, owner } = {}) {
   const a = args || {};
   switch (cmd) {
     case 'plugin:updater|check':
       return check();
     case 'plugin:updater|download_and_install':
-      return downloadAndInstall(a, event);
+      return downloadAndInstall(a, owner);
     case 'plugin:updater|download':
     case 'plugin:updater|install':
       // No electron-updater equivalent of Tauri's two-step download/install

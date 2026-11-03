@@ -9,6 +9,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { fsDispatch } = require('../fsHost.cjs');
 const { fsWatchDispatch } = require('../fsWatchHost.cjs');
+const { registerRendererCallbackContext, captureRendererCallbackOwner } = require('../rendererCallbackContext.cjs');
 
 const app = { getPath: () => os.homedir() };
 let pass = 0, fail = 0;
@@ -42,9 +43,12 @@ const ok = (c, m) => { c ? (pass++, console.log('  ✓ ' + m)) : (fail++, consol
     once: () => {},
     removeListener: () => {},
   };
+  registerRendererCallbackContext(sender, 'watch-verification');
+  const owner = captureRendererCallbackOwner(sender, 'watch-verification');
   const rid = fsWatchDispatch(app, 'plugin:fs|watch', {
     args: { paths: [file], options: { delayMs: 0 }, onEvent: '__CHANNEL__:1' },
     event: { sender },
+    owner,
   });
   ok(typeof rid === 'number', 'file-watch returns a numeric rid');
   // Modify AFTER fs.watch has armed (a same-tick write races the FSEvents setup).
@@ -55,7 +59,7 @@ const ok = (c, m) => { c ? (pass++, console.log('  ✓ ' + m)) : (fail++, consol
     ok(paths.length > 0, `file-watch delivered an event (${paths.length})`);
     ok(paths.includes(file), `file-watch path is the file itself: ${file}`);
     ok(!paths.includes(doubled), 'file-watch path is NOT the doubled /file/file form');
-    fsWatchDispatch(app, 'plugin:resources|close', { args: { rid } });
+    fsWatchDispatch(app, 'plugin:resources|close', { args: { rid }, event: { sender }, owner });
     fs.rmSync(dir, { recursive: true, force: true });
     console.log(`\n[review-fix] ${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);

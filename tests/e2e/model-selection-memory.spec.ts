@@ -83,6 +83,60 @@ async function expectSettingsModel(page: Page, model: typeof MODEL_A, providerNa
   await expect(modelButton(page, model.label)).toBeVisible();
 }
 
+test('image badges and selection slots stay in the same columns across model groups', async () => {
+  const dataRoot = createElectronDataRoot();
+  const { app } = await launchAbuElectron(dataRoot);
+  try {
+    const page = await app.firstWindow({ timeout: READY_TIMEOUT });
+    await waitForApp(page);
+    await dismissFirstRunOverlays(page);
+    await configureLocalMockProvider(page, 'http://127.0.0.1:1/v1', {
+      modelId: FLASH.id, modelLabel: FLASH.label,
+      extraModels: [LLAMA_VISION, MODEL_A], supportsTools: true,
+    });
+    await chooseModel(page, FLASH.label, LLAMA_VISION.label);
+    await modelButton(page, LLAMA_VISION.label).click();
+    const rows = page.locator('div[role="button"]').filter({ has: page.getByText('能看图', { exact: true }) });
+    await expect(rows).toHaveCount(3);
+    const measure = async () => {
+      await page.locator('[data-ds-popover]').evaluate(async (element) => {
+        await Promise.all(element.getAnimations({ subtree: true }).map((animation) => animation.finished));
+      });
+      return rows.evaluateAll((elements) => elements.map((row) => {
+      const badge = Array.from(row.querySelectorAll('span')).find((span) => span.textContent === '能看图' && span.children.length === 0);
+      if (!badge) throw new Error('Image badge is missing');
+      const slot = row.children[2];
+      return {
+        badgeX: badge.getBoundingClientRect().x,
+        slotX: slot.getBoundingClientRect().x,
+        slotWidth: slot.getBoundingClientRect().width,
+        selected: slot.children.length > 0,
+      };
+      }));
+    };
+    const before = await measure();
+    expect(before.some((row) => row.selected)).toBe(true);
+    expect(before.some((row) => !row.selected)).toBe(true);
+    for (const row of before) {
+      expect(row.badgeX).toBeCloseTo(before[0].badgeX, 1);
+      expect(row.slotX).toBeCloseTo(before[0].slotX, 1);
+      expect(row.slotWidth).toBe(14);
+    }
+    await page.keyboard.press('Escape');
+    await chooseModel(page, LLAMA_VISION.label, FLASH.label);
+    await modelButton(page, FLASH.label).click();
+    const after = await measure();
+    for (const row of after) {
+      expect(row.badgeX).toBeCloseTo(before[0].badgeX, 1);
+      expect(row.slotX).toBeCloseTo(before[0].slotX, 1);
+      expect(row.slotWidth).toBe(14);
+    }
+  } finally {
+    await closeAbuElectron(app);
+    removeElectronDataRoot(dataRoot);
+  }
+});
+
 test('new tasks remember the latest pick, existing tasks keep their models, and Flash sends images', async () => {
   test.setTimeout(240_000);
   const dataRoot = createElectronDataRoot();

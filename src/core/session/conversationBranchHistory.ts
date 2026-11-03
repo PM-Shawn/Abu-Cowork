@@ -28,7 +28,7 @@ export function isConversationBranchReply(message: Message): boolean {
   return message.role === 'assistant' && !message.isSystem && !message.introduction
     && !message.compactBoundary && !message.browserRunReport && !message.maxTurnsNotice
     && !!(getMessageText(message.content).trim() || message.toolCalls?.length
-      || message.toolCallsForContext?.length || message.thinking);
+      || message.toolCallsForContext?.length || message.thinking || message.mediaArtifacts?.length);
 }
 
 /** The action and creation command share the same ended-turn boundary. */
@@ -160,10 +160,34 @@ export function buildConversationBranchHistory(options: ConversationBranchHistor
   }
   let loops = new Map<string, string>();
   let turnLoopId: string | undefined;
+  const mediaIds = new Map<string, string>();
+  function mappedMediaId(id: string): string {
+    const existing = mediaIds.get(id);
+    if (existing) return existing;
+    const mapped = newId('message');
+    mediaIds.set(id, mapped);
+    return mapped;
+  }
   const messages = prefix.map((original, index) => {
     const message = structuredClone(original);
     message.id = mappedMessage(original.id);
     message.inheritedFromBranch = true;
+    if (message.imageEditRequest) {
+      const request = message.imageEditRequest;
+      request.id = mappedMediaId(request.id);
+      request.conversationId = options.childConversationId;
+      request.messageId = message.id;
+      request.sourceArtifactId = mappedMediaId(request.sourceArtifactId);
+      if (request.retryOf) request.retryOf = mappedMediaId(request.retryOf);
+    }
+    for (const artifact of message.mediaArtifacts ?? []) {
+      artifact.id = mappedMediaId(artifact.id);
+      artifact.conversationId = options.childConversationId;
+      artifact.messageId = message.id;
+      artifact.groupId = mappedMediaId(artifact.groupId);
+      if (artifact.parentArtifactId) artifact.parentArtifactId = mappedMediaId(artifact.parentArtifactId);
+      if (artifact.editRequestId) artifact.editRequestId = mappedMediaId(artifact.editRequestId);
+    }
     message.isStreaming = false;
     delete message.runId;
     delete message.clientMessageId;
@@ -234,6 +258,13 @@ export function buildConversationBranchHistory(options: ConversationBranchHistor
       } else if (tool.id !== undefined) {
         const display = message.toolCalls?.find(candidate => candidate.id === tool.id);
         if (display?.isError) tool.isError = true;
+      }
+    }
+    const mappedInputs = new Set<object>();
+    for (const tool of [...(message.toolCalls ?? []), ...(message.toolCallsForContext ?? [])]) {
+      if (tool.name === 'edit_image' && typeof tool.input.request_id === 'string' && !mappedInputs.has(tool.input)) {
+        mappedInputs.add(tool.input);
+        tool.input.request_id = mappedMediaId(tool.input.request_id);
       }
     }
     remapSteps(message.executionSteps ?? []);

@@ -287,7 +287,7 @@ test('a failed layer export removes its generated attachments and preserves the 
   assert.deepEqual((await f.captures.read('conversation-1', f.source.fileRef)).bytes, f.bytes);
 });
 
-test('capture cleanup keeps ownership checks when source permissions change', async t => {
+test('capture cleanup keeps ownership checks after the source symlink changes', async t => {
   const f = await fixture(t);
   const folder = path.join(f.root, 'assets');
   const alias = path.join(f.root, 'alias');
@@ -297,8 +297,12 @@ test('capture cleanup keeps ownership checks when source permissions change', as
   const source = await f.captures.capture('conversation-1', { path: path.join(alias, 'source.png') });
   const capturedPath = f.captures.get('conversation-1', source.fileRef).path;
   fs.unlinkSync(alias);
-  fs.symlinkSync('/etc', alias);
-  await assert.rejects(f.captures.read('conversation-1', source.fileRef), /allowed scope/);
+  fs.symlinkSync(process.platform === 'win32' ? f.root : '/etc', alias, 'dir');
+  if (process.platform === 'win32') {
+    assert.deepEqual((await f.captures.read('conversation-1', source.fileRef)).bytes, f.bytes);
+  } else {
+    await assert.rejects(f.captures.read('conversation-1', source.fileRef), /allowed scope/);
+  }
   assert.throws(() => f.captures.release('conversation-1', { ...source.fileRef, contentDigest: 'a'.repeat(64) }), /does not match/);
   f.captures.release('conversation-1', source.fileRef);
   assert.equal(fs.existsSync(capturedPath), false);

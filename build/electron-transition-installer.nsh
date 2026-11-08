@@ -56,13 +56,38 @@
   !ifndef BUILD_UNINSTALLER
     !include "${BUILD_RESOURCES_DIR}\abu-installer-pages.nsh"
     !include "${BUILD_RESOURCES_DIR}\abu-installer-transaction.nsh"
+    !include "${BUILD_RESOURCES_DIR}\abu-installer-processes.nsh"
   !endif
 !macroend
 
 !macro customCheckAppRunning
   !ifndef BUILD_UNINSTALLER
     !include "${BUILD_RESOURCES_DIR}\abu-installer-overrides.nsh"
-  !endif
+    Var /GLOBAL AbuProcessWaitCount
+    StrCpy $AbuProcessWaitCount 0
+    abuCheckInstallProcesses:
+      !insertmacro AbuRunProcessCheck Check
+      ${If} $AbuProcessResult == 4
+      ${AndIf} ${isUpdated}
+        IntOp $AbuProcessWaitCount $AbuProcessWaitCount + 1
+        ${If} $AbuProcessWaitCount < 30
+          Sleep 500
+          Goto abuCheckInstallProcesses
+        ${EndIf}
+      ${EndIf}
+      ${If} $AbuProcessResult != 0
+        StrCpy $AbuHelperResult 23
+        ${If} $AbuProcessResult == 4
+          StrCpy $AbuHelperResult 22
+        ${EndIf}
+        Call AbuRecoverFailure
+        ${If} $AbuExistingLocation != ""
+        ${AndIf} ${FileExists} "$AbuFinalDirectory\${APP_EXECUTABLE_FILENAME}"
+          StrCpy $AbuPreviousUsable "1"
+        ${EndIf}
+        Goto abuInstallResult
+      ${EndIf}
+  !else
   Var /GLOBAL AbuProcessWaitCount
   StrCpy $AbuProcessWaitCount 0
   System::Call 'kernel32::SetEnvironmentVariableW(w "ABU_INSTALLER_DIRECTORY", w "$INSTDIR") i.r0'
@@ -93,6 +118,7 @@
       SetErrorLevel 2
       Quit
     ${EndIf}
+  !endif
 !macroend
 
 !macro customWelcomePage
@@ -104,6 +130,7 @@
 !macroend
 
 !macro customPageAfterChangeDir
+  Page custom AbuProcessPage AbuProcessPageLeave
   !define MUI_PAGE_CUSTOMFUNCTION_PRE AbuProgressPre
   !define MUI_PAGE_CUSTOMFUNCTION_SHOW AbuShowProgress
 !macroend

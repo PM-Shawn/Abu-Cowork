@@ -492,6 +492,8 @@ Function AbuFailurePage
     ${NSD_SetText} $0 "$(AbuHelpTitle)"
   ${ElseIf} $AbuFailureCode == 20
     ${NSD_SetText} $0 "$(AbuDamagedTitle)"
+  ${ElseIf} $AbuFailureCode == 22
+    ${NSD_SetText} $0 "$(AbuCloseFailed)"
   ${ElseIf} $AbuFailureCode == 21
   ${AndIf} $AbuExistingLocation != ""
     ${NSD_SetText} $0 "$(AbuLockedTitle)"
@@ -501,6 +503,10 @@ Function AbuFailurePage
     ${NSD_SetText} $0 "$(AbuHelpCopy)"
   ${ElseIf} $AbuFailureCode == 20
     ${NSD_SetText} $0 "$(AbuDamagedCopy)"
+  ${ElseIf} $AbuFailureCode == 22
+    ${NSD_SetText} $0 "$(AbuCloseFailedCopy)"
+  ${ElseIf} $AbuFailureCode == 23
+    ${NSD_SetText} $0 "$(AbuCheckFailed)"
   ${ElseIf} $AbuFailureCode == 21
     ${NSD_SetText} $0 "$(AbuLockedCopy)"
   ${EndIf}

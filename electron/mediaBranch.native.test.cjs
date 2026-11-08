@@ -91,7 +91,7 @@ test('branches every edit attachment, reopens without the parent, and captures a
   assert.equal(child[1].mediaArtifacts[0].editRequestId, childRequest.id);
   const refs = [...childRequest.attachmentRefs.map(value => value.fileRef), child[1].mediaArtifacts[0].fileRef];
   for (const ref of refs) {
-    assert.ok(ref.originalPath.startsWith(path.join(f.root, 'conversations/child/outputs/inherited')));
+    assert.ok(path.resolve(ref.originalPath).startsWith(path.join(f.root, 'conversations/child/outputs/inherited') + path.sep));
     assert.deepEqual(fs.readFileSync(ref.originalPath), f.bytes);
   }
   const host = createMediaHost({ dataRoot: f.root, getConversation: id => f.entries[id] });
@@ -102,7 +102,7 @@ test('branches every edit attachment, reopens without the parent, and captures a
   const reopened = createMediaHost({ dataRoot: f.root, getConversation: id => f.entries[id] });
   const sender = Object.assign(new EventEmitter(), { id: 1, mainFrame: {}, isDestroyed: () => false });
   f.cleanup.push(() => sender.emit('destroyed'));
-  for (const ref of refs) assert.equal(reopened.resolveFile('child', ref).path, ref.originalPath);
+  for (const ref of refs) assert.equal(path.resolve(reopened.resolveFile('child', ref).path), path.resolve(ref.originalPath));
   await assert.rejects(reopened.dispatch(sender, 'execute-edit', { conversationId: 'child', requestId: childRequest.id }), /historical/);
   await assert.rejects(reopened.dispatch(sender, 'get-edit', { conversationId: 'child', requestId: childRequest.id }), /unavailable/);
   const fresh = await reopened.dispatch(sender, 'capture', { conversationId: 'child', fileRef: refs[0] });

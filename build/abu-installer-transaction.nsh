@@ -25,6 +25,7 @@ Function AbuInitializeTransaction
   SetOutPath $PLUGINSDIR
   File "${BUILD_RESOURCES_DIR}\abu-installer-transaction.ps1"
   File "${BUILD_RESOURCES_DIR}\abu-installer-job.cs"
+  File "${BUILD_RESOURCES_DIR}\abu-installer-processes.ps1"
   File /oname=7za.exe "${BUILD_RESOURCES_DIR}\..\.agent\installer-tools\7za.exe"
   File "${BUILD_RESOURCES_DIR}\..\.agent\installer-tools\7zip-LICENSE.txt"
   File "${BUILD_RESOURCES_DIR}\..\.agent\installer-tools\7zip-COPYING"
@@ -41,6 +42,8 @@ Function AbuInitializeTransaction
   !insertmacro AbuEnvironment "ABU_INSTALLER_EXTRACTOR" "$PLUGINSDIR\7za.exe"
   !insertmacro AbuEnvironment "ABU_INSTALLER_CACHE" "$LOCALAPPDATA\${APP_INSTALLER_STORE_FILE}"
   !insertmacro AbuEnvironment "ABU_INSTALLER_SOURCE" "$EXEPATH"
+  System::Call 'kernel32::GetCurrentProcessId() i.r1'
+  !insertmacro AbuEnvironment "ABU_INSTALLER_PROCESS_ID" "$1"
   !insertmacro AbuEnvironment "ABU_INSTALLER_UNPACKED_KB" "${APP_64_UNPACKED_SIZE}"
   ${If} ${FileExists} "$AbuFinalDirectory.abu-update\*.*"
     !insertmacro AbuRunTransaction Recover

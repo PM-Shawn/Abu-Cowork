@@ -106,6 +106,7 @@ Function AbuWindowClose
   ${If} $AbuFailed == "1"
     SetErrorLevel 2
   ${ElseIf} $AbuPageState == "welcome"
+  ${OrIf} $AbuPageState == "processes"
     SetErrorLevel 1
   ${Else}
     SetErrorLevel 0

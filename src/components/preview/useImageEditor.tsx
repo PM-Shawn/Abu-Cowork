@@ -3,21 +3,26 @@ import { Button, IconButton } from '@/components/ds/button';
 import { Menu, MenuItem } from '@/components/ds/menu';
 import { TextField } from '@/components/ds/text-field';
 import { Slider } from '@/components/ds/slider';
+import { InlineMessage } from '@/components/ds/inline-message';
 import { AppIcons } from '@/components/ds/icons';
 import { useI18n } from '@/i18n';
 import { useEnterpriseStore } from '@/stores/enterpriseStore';
 import { findImageEditEntry, useImageEditStore } from '@/stores/imageEditStore';
 import { useToastStore } from '@/stores/toastStore';
+import { getDefaultImageBackend, useSettingsStore } from '@/stores/settingsStore';
 import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, readComposerDraft, writeComposerDraft } from '@/stores/composerDraftStore';
 import { activateImageEditing } from '@/core/media/imageEditing';
 import { IMAGE_ASPECT_RATIOS, setImageAspectRatioPrompt } from '@/core/media/imageDraft';
 import { ImageLayers } from '@/core/media/ImageLayers';
+import { imageEditCapabilities } from '@/core/media/imageEditCapabilities';
 import { focusComposerFromWindow } from '@/components/chat/composerFocus';
 import { useMediaFile } from '@/hooks/useMediaFile';
 import type { ImageAspectRatio, ImageEditTool, ImageMarkup, ImagePoint, ImageRegionStroke, MediaFileRef } from '@/types/media';
 
 export function useImageEditor(conversationId?: string, filePath?: string, fileRef?: MediaFileRef) {
   const { t } = useI18n();
+  const backend = useSettingsStore(getDefaultImageBackend);
+  const regionSupported = Boolean(backend?.apiKey.trim() && imageEditCapabilities(backend).region);
   const scope = useEnterpriseStore(state => getComposerDraftScopeForEnterpriseMode(state.mode));
   const composerKey = getComposerDraftKey(conversationId ?? null, scope);
   const entry = useImageEditStore(state => findImageEditEntry(state, composerKey, filePath, fileRef?.captureId));
@@ -35,9 +40,16 @@ export function useImageEditor(conversationId?: string, filePath?: string, fileR
   const ratioChosen = useRef(false);
   const [commentEditor, setCommentEditor] = useState<{ id: string; open: boolean }>();
   useEffect(() => { pendingStroke.current = undefined; setStroke(undefined); setCommentEditor(undefined); }, [key]);
+  useEffect(() => {
+    if (!regionSupported && pendingStroke.current && 'erase' in pendingStroke.current) {
+      pendingStroke.current = undefined;
+      setStroke(undefined);
+    }
+  }, [regionSupported]);
 
   const activate = async (tool: ImageEditTool) => {
     if (!conversationId || !filePath) return false;
+    if (tool === 'region' && !regionSupported) return false;
     setCommentEditor(current => current && { ...current, open: false });
     if (active && entry) { useImageEditStore.getState().selectTool(key, tool); return true; }
     setBusy(true);
@@ -48,7 +60,7 @@ export function useImageEditor(conversationId?: string, filePath?: string, fileR
     useToastStore.getState().addToast({ type: 'error', title: t.media.editUnavailable, message: error instanceof Error ? error.message : String(error) });
   });
   const setRatio = async (ratio: ImageAspectRatio) => {
-    if (!await activate(entry?.draft.activeTool ?? 'prompt')) return;
+    if (!await activate(tool ?? 'prompt')) return;
     const current = readComposerDraft(composerKey);
     const text = setImageAspectRatioPrompt(current.text, ratio, t.media.ratioPrompt);
     writeComposerDraft(composerKey, { ...current, text });
@@ -57,7 +69,8 @@ export function useImageEditor(conversationId?: string, filePath?: string, fileR
     focusComposerFromWindow();
   };
   const store = useImageEditStore.getState();
-  const tool = active ? entry?.draft.activeTool : undefined;
+  const requestedTool = active ? entry?.draft.activeTool : undefined;
+  const tool = requestedTool === 'region' && !regionSupported ? undefined : requestedTool;
   const drawing = tool !== undefined && tool !== 'prompt' && Boolean(media?.grant);
   const setPending = (value?: ImageMarkup | ImageRegionStroke) => { pendingStroke.current = value; setStroke(value); };
 
@@ -85,7 +98,7 @@ export function useImageEditor(conversationId?: string, filePath?: string, fileR
   const pointerUp = () => {
     const current = pendingStroke.current;
     const latest = useImageEditStore.getState().entries[key];
-    if (current && latest) {
+    if (current && latest && (tool === 'markup' || tool === 'region')) {
       if ('erase' in current) store.changeLayer(key, 'region', [...latest.draft.region, current]);
       else store.changeLayer(key, 'markup', [...latest.draft.markup, current]);
     }
@@ -109,7 +122,7 @@ export function useImageEditor(conversationId?: string, filePath?: string, fileR
       <Button size="sm" variant="plain" onClick={() => store.changeLayer(key, tool, [])}>{t.media.clear}</Button>
     </div>}
     <div className="flex flex-wrap items-center justify-center gap-1">
-      {tools.map(([value, title]) => <Button key={value} size="sm" variant="plain" busy={busy} aria-pressed={tool === value} onClick={() => run(activate(value))}>{title}</Button>)}
+      {tools.map(([value, title]) => <Button key={value} size="sm" variant="plain" busy={busy} disabled={value === 'region' && !regionSupported} aria-pressed={tool === value} onClick={() => run(activate(value))}>{title}</Button>)}
       <Menu side="top" trigger={<Button size="sm" variant="plain" busy={busy}>{t.media.ratio}</Button>} onCloseAutoFocus={event => {
         if (!ratioChosen.current) return;
         event.preventDefault(); ratioChosen.current = false; focusComposerFromWindow();
@@ -117,6 +130,7 @@ export function useImageEditor(conversationId?: string, filePath?: string, fileR
         {IMAGE_ASPECT_RATIOS.map(ratio => <MenuItem key={ratio} onSelect={() => { ratioChosen.current = true; run(setRatio(ratio)); }}>{ratio}</MenuItem>)}
       </Menu>
     </div>
+    {!regionSupported && <InlineMessage tone="info">{entry?.draft.region.length ? t.media.regionDraftUnavailable : t.media.regionUnavailable}</InlineMessage>}
   </div> : null;
 
   return {

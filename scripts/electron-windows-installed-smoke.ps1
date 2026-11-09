@@ -110,6 +110,40 @@ try {
   if (-not $installedPath.StartsWith($programsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
     throw "Installer escaped the current-user Programs directory: $installedPath"
   }
+  $installedResources = Join-Path (Split-Path $installedPath) 'resources'
+  $packagedResources = Join-Path $outputRoot 'win-unpacked/resources'
+  $packagedUnpacked = Join-Path $packagedResources 'app.asar.unpacked'
+  $installedUnpacked = Join-Path $installedResources 'app.asar.unpacked'
+  foreach ($module in @('sharp', '@img')) {
+    if (-not (Test-Path (Join-Path $installedUnpacked "node_modules/$module"))) {
+      throw "Installed media module is missing: $module"
+    }
+  }
+  $packagedFiles = @('app.asar') + @(
+    Get-ChildItem $packagedUnpacked -Recurse -File |
+      ForEach-Object { [System.IO.Path]::GetRelativePath($packagedResources, $_.FullName) }
+  )
+  $installedFiles = @('app.asar') + @(
+    Get-ChildItem $installedUnpacked -Recurse -File |
+      ForEach-Object { [System.IO.Path]::GetRelativePath($installedResources, $_.FullName) }
+  )
+  if (Compare-Object ($packagedFiles | Sort-Object) ($installedFiles | Sort-Object)) {
+    throw 'Installed archive and unpacked module inventory differs from the packaged build'
+  }
+  $mediaPackageProof = @(
+    foreach ($relative in $packagedFiles) {
+      $expectedHash = (Get-FileHash (Join-Path $packagedResources $relative) -Algorithm SHA256).Hash
+      $installedHash = (Get-FileHash (Join-Path $installedResources $relative) -Algorithm SHA256).Hash
+      if ($installedHash -ne $expectedHash) {
+        throw "Installed archive or unpacked module content differs: $relative"
+      }
+      [PSCustomObject]@{ path = $relative; sha256 = $installedHash }
+    }
+  )
+  $mediaEvidence = Join-Path $repositoryRoot '.agent/windows-branch-acceptance'
+  New-Item -ItemType Directory -Force $mediaEvidence | Out-Null
+  $mediaPackageProof | ConvertTo-Json -Depth 4 |
+    Out-File (Join-Path $mediaEvidence 'installed-media-package.json') -Encoding utf8
   if ($expectMigration -and -not (Test-Path $tauriRollbackMarker)) {
     throw "Transition installer modified the old Tauri install; rollback marker is missing"
   }

@@ -51465,6 +51465,9 @@ var zhCN = {
     commentPlaceholder: "描述这里需要怎样修改",
     markup: "标记",
     region: "选择区域",
+    regionEdited: "已编辑选区",
+    regionUnavailable: "当前图片服务不支持选择区域。",
+    regionDraftUnavailable: "草稿已保留，当前图片服务不支持选择区域。",
     pen: "画笔",
     arrow: "箭头",
     rectangle: "矩形",
@@ -56032,6 +56035,9 @@ var enUS = {
     commentPlaceholder: "Describe the change here",
     markup: "Draw",
     region: "Select area",
+    regionEdited: "Selection edited",
+    regionUnavailable: "The current image service does not support selecting an area.",
+    regionDraftUnavailable: "Your draft is preserved. The current image service does not support selecting an area.",
     pen: "Pen",
     arrow: "Arrow",
     rectangle: "Rectangle",
@@ -58142,19 +58148,19 @@ function imageEditCapabilities(backend) {
   if (!URL.canParse(backend.baseUrl)) return unsupported;
   const url2 = new URL(backend.baseUrl);
   if (url2.search || url2.hash || url2.username || url2.password) return unsupported;
-  if (backend.vendor === "volcengine" && url2.origin === "https://ark.cn-beijing.volces.com" && /^\/api\/(plan\/)?v3\/images\/generations\/?$/.test(url2.pathname) && /^doubao-seedream-5[.-]0-(lite|flash)(-\d{6})?$/.test(backend.model)) {
+  if (backend.vendor === "volcengine" && url2.origin === "https://ark.cn-beijing.volces.com" && /^\/api\/(plan\/)?v3\/images\/generations\/?$/.test(url2.pathname) && /^doubao-seedream-5[.-]0-(lite|flash|pro)(-\d{6})?$/.test(backend.model)) {
     return {
       whole: true,
       comments: true,
       markup: true,
-      region: false,
+      region: !backend.model.includes("-lite"),
       markupTransport: "reference",
       formats: ["image/png"],
       maxBytes: 30 * 1024 * 1024,
       maxPixels: 36e6,
       canQuery: false,
       canCancel: false,
-      profileVersion: backend.model.includes("-flash") ? "seedream-5-flash-reference-2026-10-30" : "seedream-5-lite-reference-2026-10-30"
+      profileVersion: backend.model.includes("-pro") ? "seedream-5-pro-reference-2026-11-02" : backend.model.includes("-flash") ? "seedream-5-flash-reference-2026-10-30" : "seedream-5-lite-reference-2026-10-30"
     };
   }
   if (backend.vendor !== "openai" || url2.origin !== "https://api.openai.com" || !["", "/", "/v1", "/v1/"].includes(url2.pathname)) return unsupported;
@@ -58194,9 +58200,9 @@ function ImageLayers({ width, height, markup, comments, region, mode, maskId }) 
     /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { width, height, fill: "white", mask: `url(#${maskId})` })
   ] });
   return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
-    mode === "preview" && region.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
+    (mode === "preview" || mode === "reference") && region.length > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsxs)(import_jsx_runtime.Fragment, { children: [
       /* @__PURE__ */ (0, import_jsx_runtime.jsx)("defs", { children: regionMask(true) }),
-      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { width, height, fill: "var(--ds-info)", opacity: "0.28", mask: `url(#${maskId})` })
+      /* @__PURE__ */ (0, import_jsx_runtime.jsx)("rect", { width, height, fill: mode === "preview" ? "var(--ds-info)" : "#2563eb", opacity: "0.28", mask: `url(#${maskId})` })
     ] }),
     markup.map((item) => {
       const line = { stroke: item.color, strokeWidth: item.width * scale, fill: "none", strokeLinecap: "round", strokeLinejoin: "round" };

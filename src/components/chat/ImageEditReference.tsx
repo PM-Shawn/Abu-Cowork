@@ -14,7 +14,7 @@ export function ImageEditReference({ entry }: { entry: ImageEditEntry }) {
   const labels = [
     ...(entry.draft.comments.some(item => item.text.trim()) ? [t.media.comments] : []),
     ...(entry.draft.markup.length ? [t.media.markup] : []),
-    ...(entry.draft.region.length ? [t.media.region] : []),
+    ...(entry.draft.region.length ? [t.media.regionEdited] : []),
   ];
   return <div className="mx-4 mt-3 flex items-center gap-2 rounded-control bg-fill p-2" data-testid="image-edit-reference">
     <Pressable className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => usePreviewStore.getState().openPreview(entry.originalPath)}>

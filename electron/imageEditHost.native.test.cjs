@@ -210,7 +210,7 @@ test('the response reader rejects invalid and absent JSON bodies', async () => {
   await assert.rejects(readImageResponse(new Response(null)), /empty response/);
 });
 
-for (const model of ['doubao-seedream-5.0-lite', 'doubao-seedream-5.0-flash']) test(`${model} sends the captured source and composited reference to the configured endpoint`, async t => {
+for (const model of ['doubao-seedream-5.0-lite', 'doubao-seedream-5.0-flash', 'doubao-seedream-5.0-pro']) test(`${model} sends the captured source and composited reference to the configured endpoint`, async t => {
   const f = await fixture(t);
   const service = { ...backend, vendor: 'volcengine', model, baseUrl: 'https://ark.cn-beijing.volces.com/api/plan/v3/images/generations' };
   const comments = [
@@ -233,6 +233,59 @@ for (const model of ['doubao-seedream-5.0-lite', 'doubao-seedream-5.0-flash']) t
     assert.match(body.prompt, /Make this green/);
     assert.match(body.prompt, /Comment 2 at \(0.5, 0.5\).*Make this green/);
     assert.doesNotMatch(body.prompt, /Comment 1 at/);
+    assert.equal(body.mask, undefined);
+    return { data: [{ b64_json: f.bytes.toString('base64') }] };
+  });
+  assert.equal((await f.host.execute('conversation-1', 'edit-1')).job.generationState, 'completed');
+  f.network.assertNoPendingInterceptors();
+});
+
+for (const model of ['doubao-seedream-5.0-pro', 'doubao-seedream-5-0-pro-260628', 'doubao-seedream-5.0-flash']) test(`${model} sends the source and a selected-area reference with erased areas preserved`, async t => {
+  const f = await fixture(t);
+  const service = { ...backend, vendor: 'volcengine', model, baseUrl: 'https://ark.cn-beijing.volces.com/api/v3/images/generations' };
+  const region = [
+    { id: 'select', erase: false, width: 0.2, points: [{ x: 0.5, y: 0.5 }, { x: 0.75, y: 0.5 }] },
+    { id: 'erase', erase: true, width: 0.1, points: [{ x: 0.5, y: 0.5 }] },
+  ];
+  const record = await f.host.prepare({ ...f.input, region }, service);
+  assert.deepEqual(record.request.region, region);
+  assert.deepEqual(record.request.attachmentRefs.map(item => item.kind), ['source', 'reference', 'mask']);
+  const reference = await f.captures.read('conversation-1', record.request.attachmentRefs[1].fileRef);
+  const pixel = async (bytes, left, top) => [...await sharp(bytes).extract({ left, top, width: 1, height: 1 }).removeAlpha().raw().toBuffer()];
+  assert.deepEqual(await pixel(reference.bytes, 1, 1), await pixel(f.bytes, 1, 1));
+  assert.deepEqual(await pixel(reference.bytes, 40, 30), await pixel(f.bytes, 40, 30));
+  const selected = await pixel(reference.bytes, 50, 30);
+  const source = await pixel(f.bytes, 50, 30);
+  assert.ok(selected[0] < source[0]);
+  assert.ok(selected[2] > source[2]);
+  const mask = record.request.attachmentRefs.find(item => item.kind === 'mask');
+  fs.rmSync(f.captures.get('conversation-1', mask.fileRef).path);
+  f.network.get('https://ark.cn-beijing.volces.com').intercept({ path: '/api/v3/images/generations', method: 'POST' }).reply(200, options => {
+    const body = JSON.parse(options.body);
+    assert.deepEqual(body.image, [`data:image/png;base64,${f.bytes.toString('base64')}`, `data:image/png;base64,${reference.bytes.toString('base64')}`]);
+    assert.equal(body.mask, undefined);
+    assert.equal(body.markup, undefined);
+    assert.match(body.prompt, /blue highlighted area.*where to apply the edit/);
+    assert.match(body.prompt, /Preserve the rest of the first image/);
+    assert.match(body.prompt, /Remove the blue selection tint/);
+    return { data: [{ b64_json: f.bytes.toString('base64') }] };
+  });
+  assert.equal((await f.host.execute('conversation-1', 'edit-1')).job.generationState, 'completed');
+  f.network.assertNoPendingInterceptors();
+});
+
+for (const model of ['doubao-seedream-5.0-pro', 'doubao-seedream-5.0-lite']) for (const comments of [[], [{ id: 'comment', point: { x: 0.1, y: 0.1 }, text: 'Keep the label' }]]) test(`a fully erased ${model} selection sends no selected-area instruction with ${comments.length} comments`, async t => {
+  const f = await fixture(t);
+  const service = { ...backend, vendor: 'volcengine', model, baseUrl: 'https://ark.cn-beijing.volces.com/api/v3/images/generations' };
+  const points = [{ x: 0.5, y: 0.5 }];
+  const record = await f.host.prepare({ ...f.input, comments, region: [
+    { id: 'select', erase: false, width: 0.1, points }, { id: 'erase', erase: true, width: 0.2, points },
+  ] }, service);
+  assert.deepEqual(record.request.attachmentRefs.map(item => item.kind), comments.length ? ['source', 'reference'] : ['source']);
+  f.network.get('https://ark.cn-beijing.volces.com').intercept({ path: '/api/v3/images/generations', method: 'POST' }).reply(200, options => {
+    const body = JSON.parse(options.body);
+    assert.equal(body.image.length, comments.length ? 2 : 1);
+    assert.doesNotMatch(body.prompt, /blue highlighted area/);
     assert.equal(body.mask, undefined);
     return { data: [{ b64_json: f.bytes.toString('base64') }] };
   });

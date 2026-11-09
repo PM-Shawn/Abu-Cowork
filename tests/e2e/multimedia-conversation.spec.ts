@@ -2,9 +2,27 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
+import type { Page } from 'playwright';
 import { launchAbuElectron, closeAbuElectron, createElectronDataRoot, removeElectronDataRoot, configureLocalMockProvider, dismissFirstRunOverlays } from './electronHelpers';
 import { startOpenAiMock, waitForApp, CHAT_PLACEHOLDER } from './openAiMock';
 import { persistedStoreVersion } from './storeVersions';
+
+async function changeImageModel(page: Page, model: string) {
+  const sidebar = page.getByRole('button', { name: '显示侧栏', exact: true });
+  if (await sidebar.isVisible()) await sidebar.click();
+  await page.getByRole('button', { name: /^(我|Me|登录 \/ 注册|Sign in \/ Sign up)$/ }).first().click();
+  await page.getByRole('menuitem', { name: '设置', exact: true }).click();
+  await page.getByRole('button', { name: '模型', exact: true }).click();
+  const edit = page.getByRole('button', { name: '编辑后端', exact: true });
+  if (!await edit.isVisible()) await page.getByRole('button', { name: '已配置 1 个后端', exact: true }).click();
+  await edit.click();
+  const field = page.getByRole('textbox', { name: '模型 ID', exact: true });
+  await field.fill(model);
+  await page.getByRole('button', { name: '保存', exact: true }).click();
+  await expect(field).toBeHidden();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: '设置', exact: true })).toBeHidden();
+}
 
 test('image editing preserves layers, uses the bottom toolbar and keeps one ratio line', async () => {
   test.setTimeout(180_000);
@@ -27,6 +45,12 @@ test('image editing preserves layers, uses the bottom toolbar and keeps one rati
       localStorage.setItem('abu-projects', JSON.stringify({ version, state: { projects: {
         'media-project': { id: 'media-project', name: '媒体检查', workspacePath: workspace, pinned: false, archived: false, createdAt: 1_800_000_000_000, updatedAt: 1_800_000_000_000, lastActiveAt: 1_800_000_000_000 },
       } } }));
+      const settings = JSON.parse(localStorage.getItem('abu-settings')!);
+      settings.state.imageGeneration = { defaultId: 'region-service', backends: [{
+        id: 'region-service', name: 'Region service', vendor: 'volcengine', model: 'doubao-seedream-5.0-pro',
+        baseUrl: 'https://ark.cn-beijing.volces.com/api/v3/images/generations', apiKey: 'abu-e2e-test-key-not-a-real-secret',
+      }] };
+      localStorage.setItem('abu-settings', JSON.stringify(settings));
     }, { workspace, version: persistedStoreVersion('abu-projects') });
     await dismissFirstRunOverlays(page);
     await configureLocalMockProvider(page, model.baseUrl, { supportsTools: true, permissionMode: 'standard' });
@@ -131,6 +155,7 @@ test('image editing preserves layers, uses the bottom toolbar and keeps one rati
     await page.mouse.down();
     await page.mouse.move(regionBounds!.x + regionBounds!.width * 0.35, regionBounds!.y + regionBounds!.height * 0.35, { steps: 8 });
     await page.mouse.up();
+    await expect(page.getByTestId('image-edit-reference')).toContainText('已编辑选区');
     await expect(preview.getByRole('button', { name: '撤销', exact: true })).toBeEnabled();
     await preview.getByRole('button', { name: '撤销', exact: true }).click();
     await expect(preview.getByRole('button', { name: '重做', exact: true })).toBeEnabled();
@@ -187,8 +212,22 @@ test('image editing preserves layers, uses the bottom toolbar and keeps one rati
     fs.writeFileSync(filePath, await sharp({ create: { width: 200, height: 100, channels: 3, background: '#ffffff' } }).png().toBuffer());
     await expect.poll(() => image.evaluate(element => (element as HTMLImageElement).naturalWidth)).toBe(800);
     await firstComment.press('Escape');
+    const regionPaths = image.locator('..').locator('mask path');
+    const regionCount = await regionPaths.count();
+    expect(regionCount).toBeGreaterThan(0);
+    await changeImageModel(page, 'doubao-seedream-5.0-lite');
+    await expect(preview.getByRole('button', { name: '选择区域', exact: true })).toBeDisabled();
+    await expect(preview.getByText('草稿已保留，当前图片服务不支持选择区域。', { exact: true })).toBeVisible();
+    await expect(regionPaths).toHaveCount(regionCount);
+    await expect(composer).toHaveValue('保留咖啡包装\n将宽高比设为 16:9');
+    await changeImageModel(page, 'doubao-seedream-5.0-flash');
+    await expect(preview.getByRole('button', { name: '选择区域', exact: true })).toBeEnabled();
+    await expect(regionPaths).toHaveCount(regionCount);
+    await preview.getByRole('button', { name: '选择区域', exact: true }).click();
+    await expect(preview.getByRole('button', { name: '撤销', exact: true })).toBeEnabled();
+    await changeImageModel(page, 'doubao-seedream-5.0-lite');
     await composer.press('Enter');
-    await expect(page.getByText('请在设置的 AI 服务中配置支持图片编辑的服务，当前修改要求已保留。', { exact: true })).toBeVisible();
+    await expect(page.getByText('当前图片服务不支持这组标注或区域修改。请更换图片服务，或调整修改方式；当前内容已保留。', { exact: true })).toBeVisible();
     await expect(composer).toHaveValue('保留咖啡包装\n将宽高比设为 16:9');
     await firstMarker.click();
     await expect(firstComment).toHaveValue('保留包装文字');

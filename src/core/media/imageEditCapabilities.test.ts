@@ -26,10 +26,22 @@ describe('image editing capabilities', () => {
   it('supports the Flash model with its own request profile', () => {
     for (const model of ['doubao-seedream-5.0-flash', 'doubao-seedream-5-0-flash-260915']) {
       expect(imageEditCapabilities({ ...seedream, model })).toMatchObject({
-        whole: true, comments: true, markup: true, region: false, markupTransport: 'reference',
+        whole: true, comments: true, markup: true, region: true, markupTransport: 'reference',
         profileVersion: 'seedream-5-flash-reference-2026-10-30',
       });
     }
+  });
+
+  it('supports Pro reference editing with regions at both official endpoints', () => {
+    for (const model of ['doubao-seedream-5.0-pro', 'doubao-seedream-5-0-pro-260628']) {
+      for (const baseUrl of [seedream.baseUrl, 'https://ark.cn-beijing.volces.com/api/v3/images/generations']) {
+        expect(imageEditCapabilities({ ...seedream, model, baseUrl })).toMatchObject({
+          whole: true, comments: true, markup: true, region: true, markupTransport: 'reference',
+          profileVersion: 'seedream-5-pro-reference-2026-11-02',
+        });
+      }
+    }
+    expect(imageEditCapabilities({ ...seedream, model: 'doubao-seedream-5.0-professional' }).whole).toBe(false);
   });
 
   it('enables native overlays and masks only for the verified OpenAI model profile', () => {

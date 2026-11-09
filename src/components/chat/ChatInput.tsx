@@ -1796,7 +1796,9 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
           else clearComposerDraft(draftKey);
         }
       }, draft)).then(undefined, error => {
-        useToastStore.getState().addToast({ type: 'error', title: t.media.editUnavailable, message: error instanceof Error ? error.message : String(error) });
+        const message = error instanceof Error ? error.message : String(error);
+        useToastStore.getState().addToast({ type: 'error', title: t.media.editUnavailable,
+          message: message.includes('The image service does not support these editing instructions') ? t.media.instructionsUnsupported : message });
       }).finally(finish);
       return;
     }

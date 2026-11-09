@@ -85,9 +85,11 @@ export default function AIServicesSection() {
   const enabledProviders = providers.filter(p => p.enabled);
   const hasBuiltinSearch = enabledProviders.some(p => !!p.capabilities?.webSearch);
   const searchProviderName = enabledProviders.find(p => !!p.capabilities?.webSearch)?.name;
-  const hasCustomSearch = customWebSearch?.provider === 'searxng'
-    ? (customWebSearch.baseUrl?.trim().length ?? 0) > 0
-    : (customWebSearch?.apiKey?.trim().length ?? 0) > 0;
+  const hasCustomSearch = customWebSearch?.provider === 'keenable'
+    ? true // keyless public endpoint; an API key is optional
+    : customWebSearch?.provider === 'searxng'
+      ? (customWebSearch.baseUrl?.trim().length ?? 0) > 0
+      : (customWebSearch?.apiKey?.trim().length ?? 0) > 0;
   const hasSearch = hasBuiltinSearch || hasCustomSearch;
   // Image generation is an independent config (design doc §3.1, "C-a") — no
   // longer derived from chat providers, so no "builtin via provider X" case.

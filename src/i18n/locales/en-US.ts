@@ -1122,6 +1122,9 @@ const enUS: TranslationDict = {
     webSearchProviderBrave: 'Brave Search',
     webSearchProviderTavily: 'Tavily Search',
     webSearchProviderSearXNG: 'SearXNG (Self-hosted)',
+    webSearchProviderKeenable: 'Keenable (no API key needed)',
+    webSearchApiKeyOptionalPlaceholder: 'Optional: leave empty to use the free keyless endpoint',
+    webSearchKeenableKeyDesc: 'Works without a key (rate limited per IP). Add a Keenable API key for higher limits.',
     // AI Services
     aiServices: 'Models',
     aiServicesDescription: 'Configure model, search, and image generation services',

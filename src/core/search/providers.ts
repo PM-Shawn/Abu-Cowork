@@ -6,6 +6,7 @@
  * - Brave Search API
  * - Tavily Search API
  * - SearXNG (self-hosted, no API key needed)
+ * - Keenable (keyless public endpoint, optional API key)
  *
  * All HTTP requests use getTauriFetch() to bypass CORS.
  */
@@ -232,9 +233,78 @@ export function createSearXNGProvider(baseUrl: string): SearchProvider {
   };
 }
 
+// --- Keenable Search API ---
+
+export const KEENABLE_APP_TITLE = 'Abu Cowork';
+
+const KEENABLE_FRESHNESS_DAYS: Record<string, number> = { day: 1, week: 7, month: 31 };
+
+/** Map the tool's Day/Week/Month freshness onto a `published_after` date (YYYY-MM-DD). */
+export function keenablePublishedAfter(freshness: string | undefined, now: Date = new Date()): string | undefined {
+  const days = freshness ? KEENABLE_FRESHNESS_DAYS[freshness.toLowerCase()] : undefined;
+  if (!days) return undefined;
+  return new Date(now.getTime() - days * 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * Keenable works without an API key: keyless requests go to the public
+ * endpoint (rate limited per IP) and must name the app in `X-Keenable-Title`.
+ * An optional key switches to the keyed endpoint for a higher limit.
+ */
+export function createKeenableProvider(apiKey?: string): SearchProvider {
+  const key = apiKey?.trim() ?? '';
+  return {
+    async search(query: string, options: SearchOptions): Promise<WebSearchResponse> {
+      const fetchFn = await getTauriFetch();
+      const url = key ? 'https://api.keenable.ai/v1/search' : 'https://api.keenable.ai/v1/search/public';
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (key) headers['X-API-Key'] = key;
+      else headers['X-Keenable-Title'] = KEENABLE_APP_TITLE;
+
+      const body: Record<string, unknown> = { query, max_results: options.count };
+      const publishedAfter = keenablePublishedAfter(options.freshness);
+      if (publishedAfter) body.published_after = publishedAfter;
+
+      const response = await fetchFn(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Keenable Search API error: ${response.status} ${errorText}`);
+      }
+
+      const data = await response.json() as {
+        results?: Array<{
+          title?: string;
+          url?: string;
+          description?: string;
+          snippet?: string;
+          published_at?: string;
+        }>;
+      };
+
+      const results: SearchResult[] = (data.results || [])
+        .filter((item) => !!item.url)
+        .slice(0, options.count)
+        .map((item) => ({
+          title: item.title || item.url!,
+          url: item.url!,
+          snippet: item.description || item.snippet || '',
+          source: extractDomain(item.url!),
+          publishedDate: item.published_at,
+        }));
+
+      return { query, results };
+    },
+  };
+}
+
 // --- Provider factory ---
 
-export type WebSearchProviderType = 'bing' | 'brave' | 'tavily' | 'searxng';
+export type WebSearchProviderType = 'bing' | 'brave' | 'tavily' | 'searxng' | 'keenable';
 
 export function createSearchProvider(
   providerType: WebSearchProviderType,
@@ -250,5 +320,7 @@ export function createSearchProvider(
       return createTavilyProvider(apiKey);
     case 'searxng':
       return createSearXNGProvider(baseUrl || '');
+    case 'keenable':
+      return createKeenableProvider(apiKey);
   }
 }

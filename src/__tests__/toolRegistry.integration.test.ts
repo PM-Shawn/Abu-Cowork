@@ -458,7 +458,7 @@ describe('toolRegistry integration', () => {
     });
 
     it.each([
-      'touch /Users/testuser && touch /Users/testuser/.AbU/mcp/config.json',
+      'touch /Users/testuser/notes.txt && touch /Users/testuser/.AbU/mcp/config.json',
       'Set-Content -Path "$HOME/.AbU/mcp/config.json" -Value x',
     ])('keeps the Abu hard floor across compound and PowerShell writes: %s', async (command) => {
       const previousMode = useSettingsStore.getState().permissionMode;

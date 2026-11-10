@@ -1602,6 +1602,13 @@ export async function checkWritePath(
     };
   }
 
+  // The home folder, in any spelling, or a folder above it is never one unit
+  // of a write grant: that grant would reach Library / AppData and the shell
+  // profiles, which every other rule keeps per file or closed.
+  if (isPathWithin(normalizePath(home), normalizedPath) || isPathWithin(canonicalHome, resolved.canonicalPath)) {
+    return { allowed: false, reason: '不能把整个用户文件夹（或它的上级文件夹）授权写入，请指定其中的一个文件夹', denialKind: 'blocked' };
+  }
+
   // Check if in home allowed locations — these need permission
   const permDir = await isInHomeAllowedLocation(normalizedPath);
   if (permDir) {
@@ -1626,6 +1633,20 @@ export async function checkWritePath(
     };
   }
 
+  // Outside the home folder (another drive, an external volume): the folder
+  // holding the file is the unit, so one answer covers the files written next
+  // to it. Without a safe folder the file itself is the unit, as before.
+  const outsideFolder = await outsideHomeWriteFolder(normalizedPath, resolved.canonicalPath, canonicalHome);
+  if (outsideFolder) {
+    return {
+      allowed: false,
+      needsPermission: true,
+      permissionPath: outsideFolder,
+      permissionIsFolder: true,
+      capability: 'write',
+    };
+  }
+
   // Path passed all security checks but isn't pre-authorized — offer permission dialog
   return {
     allowed: false,
@@ -1633,6 +1654,42 @@ export async function checkWritePath(
     permissionPath: normalizedPath,
     capability: 'write',
   };
+}
+
+/**
+ * The folder a write outside the home folder is granted as: the folder that
+ * holds the target, so writing several files into `D:\工作\报表` asks once
+ * rather than once per file. Never a filesystem or drive root, never the home
+ * folder or a folder that contains it (that grant would reach `AppData` and
+ * `Library`), and never a system folder. Returns null when no such folder
+ * exists; the file itself is then the unit.
+ */
+async function outsideHomeWriteFolder(
+  normalizedPath: string,
+  canonicalPath: string,
+  canonicalHome: string,
+): Promise<string | null> {
+  const home = normalizePath(await getHomeDir());
+  // Inside home the top-level folder is the unit (`canRequestPermission`), and
+  // `Library` / `AppData` stay per file: this rule is for other places only.
+  // Judged on the real location too: an 8.3 name, a junction or a /Volumes
+  // alias spells home as another folder, and a folder grant there would be a
+  // grant of home itself.
+  if (isPathWithin(normalizedPath, home) || isPathWithin(canonicalPath, canonicalHome)) return null;
+  const parent = parentFolder(normalizedPath);
+  const canonicalParent = parentFolder(canonicalPath);
+  if (parent === null || canonicalParent === null) return null;
+  if (isPathWithin(home, parent) || isPathWithin(canonicalHome, canonicalParent)) return null;
+  if (getWriteBlockedRoot(parent) || getWriteBlockedRoot(canonicalParent)) return null;
+  return parent;
+}
+
+/** The folder holding `path`, or null for a filesystem or drive root. */
+function parentFolder(path: string): string | null {
+  const lastSlash = path.lastIndexOf('/');
+  if (lastSlash <= 0) return null;
+  const parent = path.slice(0, lastSlash);
+  return /^[a-zA-Z]:$/.test(parent) ? null : parent;
 }
 
 /**

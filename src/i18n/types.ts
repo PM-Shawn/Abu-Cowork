@@ -3169,16 +3169,11 @@ export interface TranslationDict {
     rememberChoiceDescription: string;
     forgetAfterSession: string;
     // Duration options
-    durationOnce: string;
     durationSession: string;
-    duration24h: string;
     durationAlways: string;
-    durationAlwaysConfirm: string;
     // Button labels per duration
     durationLabel: string;
-    allowOnceButton: string;
     allowSessionButton: string;
-    allow24hButton: string;
     allowAlwaysButton: string;
   };
 

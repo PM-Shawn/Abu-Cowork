@@ -2560,15 +2560,10 @@ const enUS: TranslationDict = {
     rememberChoiceDescription: 'Abu will remember this and not ask again',
     forgetAfterSession: 'Only for this session, will ask again after restart',
     // Duration options
-    durationOnce: 'Just this time',
-    durationSession: 'This session',
-    duration24h: 'For 24 hours',
+    durationSession: 'Until I quit',
     durationAlways: 'Always allow',
-    durationAlwaysConfirm: 'Always allow? This will permanently remember this authorization.',
     durationLabel: 'Duration',
-    allowOnceButton: 'Allow Once',
-    allowSessionButton: 'Allow for Session',
-    allow24hButton: 'Allow for 24h',
+    allowSessionButton: 'Allow Until I Quit',
     allowAlwaysButton: 'Always Allow',
   },
 

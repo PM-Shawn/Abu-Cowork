@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { persist } from 'zustand/middleware';
 import { authorizeWorkspace, revokeWorkspace } from '../core/tools/pathSafety';
+import { isWindows } from '../utils/platform';
 
 export type PermissionDuration = 'once' | 'session' | '24h' | 'always';
 
@@ -19,6 +20,24 @@ export interface PermissionGrant {
   expiresAt: number | null;  // null = never expires
   capabilities: ('read' | 'write' | 'execute')[];
   duration: PermissionDuration;
+}
+
+/** The spelling a grant is keyed by (see `grantPermission`). */
+function grantKey(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+}
+
+/**
+ * Whether two spellings name the same granted folder. A folder listed in the
+ * settings comes from pathSafety's table, whose spelling need not be the one
+ * the grant was stored under (separators, a trailing slash, the case Windows
+ * ignores), and a revoke that misses the stored grant brings it back after the
+ * next restart.
+ */
+function sameGrantPath(a: string, b: string): boolean {
+  const left = grantKey(a);
+  const right = grantKey(b);
+  return isWindows() ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
 /**
@@ -133,9 +152,16 @@ export const usePermissionStore = create<PermissionStore>()(
         // Sync to pathSafety's authorizedWorkspaces
         revokeWorkspace(path);
 
+        // Every stored spelling of the folder goes, the persisted one included:
+        // what stays in `persistedGrants` is authorized again at the next start.
         set((state) => {
-          delete state.persistedGrants[path];
-          delete state.sessionGrants[path];
+          for (const grants of [state.persistedGrants, state.sessionGrants]) {
+            for (const key of Object.keys(grants)) {
+              if (!sameGrantPath(key, path)) continue;
+              if (key !== path) revokeWorkspace(key);
+              delete grants[key];
+            }
+          }
         });
       },
 

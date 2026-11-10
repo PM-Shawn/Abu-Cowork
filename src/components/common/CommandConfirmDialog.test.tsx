@@ -885,10 +885,17 @@ describe('command approval as an approval layer', () => {
       ['danger', 'text-danger'],
       ['block', 'text-danger'],
       ['safe', 'text-success'],
-    ] as const)('marks the %s level with a status icon above the command', (level, tone) => {
-      open(command({ level }));
+    ] as const)('marks the %s level with a status icon above the command when no reason banner does', (level, tone) => {
+      open(command({ level, reason: '' }));
       expect(levelIcon()).toHaveClass(tone);
       expect(levelIcon()).toHaveAttribute('aria-hidden', 'true');
+    });
+
+    // The banner carries its own icon; a second, larger one above it said nothing more.
+    it.each(['warn', 'danger', 'block', 'safe'] as const)('draws no second icon above the reason banner of a %s request', (level) => {
+      open(command({ level }));
+      expect(levelIcon()).toBeNull();
+      expect(screen.getByRole(level === 'danger' || level === 'block' ? 'alert' : 'status').querySelector('svg')).not.toBeNull();
     });
 
     it.each([
@@ -945,6 +952,159 @@ describe('command approval as an approval layer', () => {
       const failed = screen.getByRole('alert');
       expect(failed).toHaveTextContent('未能保存，已恢复上次确认的设置');
       expect(failed.compareDocumentPosition(screen.getByText(COMMAND)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+  });
+});
+
+// A person who cannot read code is asked in words: what the step is for, the system's own risk
+// reason, and the exact command one click away.
+describe('command approval in plain words', () => {
+  const COMMAND = "cd /var/tmp/case && python3 - <<'EOF'\nprint(1)\nEOF";
+  const PURPOSE = '把合同第 18 页转成图片';
+
+  beforeEach(() => {
+    initLanguage('zh-CN');
+    useSettingsStore.setState({ browserPermissionConfigV2: auditConfig() });
+  });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+
+  const request = (overrides: Partial<CommandConfirmRequest> = {}): CommandConfirmRequest => (
+    { command: COMMAND, level: 'warn', reason: 'needs a look', kind: 'command', purpose: PURPOSE, ...overrides }
+  );
+  function open(req: CommandConfirmRequest) {
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    const view = render(<CommandConfirmDialog request={req} onConfirm={onConfirm} onCancel={onCancel} />);
+    return { onConfirm, onCancel, view };
+  }
+  const details = () => screen.getByRole('button', { name: '技术细节' });
+  const commandText = () => screen.queryByText((_, element) => element?.tagName === 'CODE' && element.textContent === COMMAND);
+
+  it('says what the step is for, and keeps the exact command out of sight until asked', async () => {
+    open(request());
+    // The purpose is the headline; the line under it says it is the AI's own statement.
+    const dialog = screen.getByRole('alertdialog', { name: PURPOSE });
+    expect(screen.getByRole('heading', { name: PURPOSE })).toBeInTheDocument();
+    expect(dialog).toHaveAccessibleDescription('标题为 AI 自述的用途。以下命令需要你的确认才能执行：');
+    expect(commandText()).toBeNull();
+    expect(details()).toHaveAttribute('aria-expanded', 'false');
+
+    await userEvent.setup().click(details());
+    expect(details()).toHaveAttribute('aria-expanded', 'true');
+    expect(commandText()?.closest('pre')).toHaveClass('font-code');
+  });
+
+  it('still shows the system reason as its own message, apart from the purpose', () => {
+    open(request());
+    expect(screen.getByRole('status')).toHaveTextContent('needs a look');
+    expect(screen.getByRole('status')).not.toHaveTextContent(PURPOSE);
+  });
+
+  it('opens the exact command from the start when the system gives no reason to read', () => {
+    open(request({ reason: undefined }));
+    expect(details()).toHaveAttribute('aria-expanded', 'true');
+    expect(commandText()).not.toBeNull();
+  });
+
+  it('keeps the system line for the level when a purpose is given, and the system reason above the command', () => {
+    open(request({ level: 'warn' }));
+    const reason = screen.getByText('needs a look');
+    expect(reason.compareDocumentPosition(details()) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('alertdialog')).toHaveAccessibleDescription('标题为 AI 自述的用途。以下命令需要你的确认才能执行：');
+  });
+
+  it('falls back to the old title when there is no purpose', () => {
+    open(request({ purpose: undefined }));
+    expect(screen.getByRole('heading', { name: '操作确认' })).toBeInTheDocument();
+  });
+
+  it.each(['danger', 'block'] as const)('keeps the system title over the purpose for a %s command', (level) => {
+    open(request({ level }));
+    expect(screen.getByRole('heading', { name: level === 'danger' ? '危险操作确认' : '操作已阻止' })).toBeInTheDocument();
+    expect(screen.getByRole('alertdialog')).toHaveTextContent(`这一步要做的事（AI 自述）：${PURPOSE}`);
+  });
+
+  it.each(['danger', 'block'] as const)('opens the exact command from the start for a %s command', (level) => {
+    open(request({ level }));
+    expect(details()).toHaveAttribute('aria-expanded', 'true');
+    expect(commandText()).not.toBeNull();
+  });
+
+  it('shows the exact command, and no details toggle, when there is no purpose', () => {
+    open(request({ purpose: undefined }));
+    expect(screen.queryByRole('button', { name: '技术细节' })).toBeNull();
+    expect(commandText()).not.toBeNull();
+    expect(screen.getByRole('alertdialog')).toHaveAccessibleDescription('以下命令需要你的确认才能执行：');
+  });
+
+  it.each([
+    ['blank', '   '],
+    ['the command itself', COMMAND],
+    ['a path', '处理 /tmp/work/a.pdf'],
+  ])('treats a purpose that is %s as none', (_name, purpose) => {
+    open(request({ purpose }));
+    expect(screen.queryByRole('button', { name: '技术细节' })).toBeNull();
+    expect(commandText()).not.toBeNull();
+  });
+
+  it('never explains a browser action or an extension change by a purpose', () => {
+    open(request({ kind: 'browser', browserOrigin: 'https://example.invalid', browserPermissionTargets: [], browserPermissionResource: 'browse' }));
+    expect(screen.queryByRole('button', { name: '技术细节' })).toBeNull();
+    expect(screen.queryByText(new RegExp(PURPOSE))).toBeNull();
+  });
+
+  it('reads in English for the English interface', () => {
+    initLanguage('en-US');
+    open(request({ purpose: 'Convert page 18 of the contract to an image' }));
+    expect(screen.getByRole('heading', { name: 'Convert page 18 of the contract to an image' })).toBeInTheDocument();
+    expect(screen.getByRole('alertdialog')).toHaveAccessibleDescription(/AI's own description/);
+    expect(screen.getByRole('button', { name: 'Technical details' })).toBeInTheDocument();
+  });
+
+  describe('keyboard and focus', () => {
+    it('opens with the focus on 「取消」, and Enter pressed at once cancels', async () => {
+      const { onCancel, onConfirm } = open(request());
+      expect(screen.getByRole('button', { name: '取消' })).toHaveFocus();
+      await userEvent.setup().keyboard('{Enter}');
+      expect(onCancel).toHaveBeenCalledTimes(1);
+      expect(onConfirm).not.toHaveBeenCalled();
+    });
+
+    it('reaches the details toggle with Tab and opens it with Enter or Space, without answering', async () => {
+      const user = userEvent.setup();
+      const { onCancel, onConfirm } = open(request());
+      // Tab walks the dialog's own controls; the toggle is among the next stops.
+      for (let i = 0; i < 6 && document.activeElement !== details(); i += 1) await user.tab();
+      expect(document.activeElement).toBe(details());
+      await user.keyboard('{Enter}');
+      expect(details()).toHaveAttribute('aria-expanded', 'true');
+      await user.keyboard(' ');
+      expect(details()).toHaveAttribute('aria-expanded', 'false');
+      expect(onCancel).not.toHaveBeenCalled();
+      expect(onConfirm).not.toHaveBeenCalled();
+    });
+
+    it('drops the repeats of a held Enter on the toggle, and lets the first press through', async () => {
+      const user = userEvent.setup();
+      open(request());
+      for (let i = 0; i < 6 && document.activeElement !== details(); i += 1) await user.tab();
+      const toggle = details();
+      expect(auditFire.keyDown(toggle, { key: 'Enter', code: 'Enter' })).toBe(true);
+      expect(auditFire.keyDown(toggle, { key: 'Enter', code: 'Enter', repeat: true })).toBe(false);
+    });
+
+    it('confirming still takes a press on 「确认执行」 while the details are closed', async () => {
+      const { onConfirm } = open(request());
+      await userEvent.setup().click(screen.getByRole('button', { name: '确认执行' }));
+      expect(onConfirm).toHaveBeenCalledTimes(1);
+    });
+
+    it('cancels on Escape with the details toggle focused', async () => {
+      const user = userEvent.setup();
+      const { onCancel } = open(request());
+      for (let i = 0; i < 6 && document.activeElement !== details(); i += 1) await user.tab();
+      await user.keyboard('{Escape}');
+      expect(onCancel).toHaveBeenCalledTimes(1);
     });
   });
 });

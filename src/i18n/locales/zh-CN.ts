@@ -4496,6 +4496,8 @@ const zhCN: TranslationDict = {
       injWinPsHidden: '检测到 PowerShell 隐藏窗口执行',
       injWinPsNoProfile: '检测到 PowerShell NoProfile 模式，可能绕过安全策略',
       injWinCmdDel: '检测到 cmd /c 中的删除命令',
+      blockAutostart: '禁止设置开机自启动',
+      warnRemoveAutostart: '这会移除一个开机自启动项',
       levelBlock: '已阻止',
       levelDanger: '危险操作',
       levelWarn: '需要确认',

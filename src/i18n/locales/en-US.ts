@@ -4494,6 +4494,8 @@ const enUS: TranslationDict = {
       injWinPsHidden: 'PowerShell hidden-window execution detected',
       injWinPsNoProfile: 'PowerShell NoProfile mode detected — may bypass security policies',
       injWinCmdDel: 'Delete command inside cmd /c detected',
+      blockAutostart: 'Making a program start automatically when you sign in is not allowed',
+      warnRemoveAutostart: 'This removes a program that starts when you sign in',
       levelBlock: 'Blocked',
       levelDanger: 'Dangerous',
       levelWarn: 'Needs Confirmation',

@@ -5,7 +5,7 @@
 
 import { appDataDir, homeDir, tempDir } from '@tauri-apps/api/path';
 import { createConversationPaths } from '../session/conversationPaths';
-import { lstat } from '@tauri-apps/plugin-fs';
+import { lstat, readFile, stat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
 import { isMissingPathError } from '../../utils/fsErrors';
 import { normalizeLexicalPath, normalizeSeparators } from '../../utils/pathUtils';
@@ -36,6 +36,198 @@ async function getHomeDir(): Promise<string> {
     cachedHomeDir = await homeDir();
   }
   return cachedHomeDir;
+}
+
+/**
+ * The data folders of the browsers people use on macOS, relative to home.
+ * Each holds every profile's cookies, saved passwords and site storage.
+ */
+const BROWSER_DATA_PATHS_MAC = [
+  'Library/Application Support/Google/Chrome',
+  'Library/Application Support/Google/Chrome Beta',
+  'Library/Application Support/Google/Chrome Canary',
+  'Library/Application Support/Google/Chrome Dev',
+  'Library/Application Support/Chromium',
+  'Library/Application Support/Microsoft Edge',
+  'Library/Application Support/Microsoft Edge Beta',
+  'Library/Application Support/Microsoft Edge Dev',
+  'Library/Application Support/Microsoft Edge Canary',
+  'Library/Application Support/BraveSoftware',
+  'Library/Application Support/Firefox',
+  'Library/Application Support/Arc',
+  'Library/Application Support/Vivaldi',
+  'Library/Application Support/com.operasoftware.Opera',
+  'Library/Safari',
+  'Library/Cookies',
+  'Library/Containers/com.apple.Safari',
+];
+
+/** The same folders on Windows, relative to the user profile. */
+const BROWSER_DATA_PATHS_WIN = [
+  'AppData/Local/Google/Chrome/User Data',
+  'AppData/Local/Google/Chrome Beta/User Data',
+  'AppData/Local/Google/Chrome SxS/User Data',
+  'AppData/Local/Google/Chrome Dev/User Data',
+  'AppData/Local/Chromium/User Data',
+  'AppData/Local/Microsoft/Edge/User Data',
+  'AppData/Local/Microsoft/Edge Beta/User Data',
+  'AppData/Local/Microsoft/Edge Dev/User Data',
+  'AppData/Local/Microsoft/Edge SxS/User Data',
+  'AppData/Local/BraveSoftware/Brave-Browser/User Data',
+  'AppData/Roaming/Mozilla/Firefox',
+  'AppData/Roaming/Opera Software',
+  'AppData/Local/Vivaldi/User Data',
+  // Browsers common in China, each a Chromium build with its own data folder.
+  'AppData/Local/360Chrome/Chrome/User Data',
+  'AppData/Roaming/360se6/User Data',
+  'AppData/Local/Tencent/QQBrowser/User Data',
+  'AppData/Roaming/SogouExplorer',
+  'AppData/Local/2345Explorer/User Data',
+  'AppData/Local/liebao/User Data',
+  'AppData/Local/CentBrowser/User Data',
+];
+
+const PASSWORD_MANAGER_PATHS_MAC = [
+  'Library/Application Support/1Password',
+  'Library/Group Containers/2BUA8C4S2C.com.1password',
+  'Library/Application Support/Bitwarden',
+  'Library/Application Support/KeePassXC',
+];
+
+const PASSWORD_MANAGER_PATHS_WIN = [
+  'AppData/Local/1Password',
+  'AppData/Roaming/Bitwarden',
+  'AppData/Roaming/KeePass',
+  'AppData/Roaming/KeePassXC',
+];
+
+/**
+ * Where command-line tools keep their access keys and tokens, on both systems:
+ * cloud CLIs, sync and database clients, the AI coding CLIs, proxy clients
+ * whose configs hold subscription secrets, and SSH/FTP clients' saved sessions.
+ * The single-name entries (`.s3cfg`, `.pgpass`) are closed wherever they sit.
+ */
+const CLOUD_CLI_CREDENTIAL_PATHS = [
+  '.config/gh',
+  '.aliyun',
+  '.tccli',
+  '.ossutilconfig',
+  '.cos.conf',
+  '.hcloud',
+  '.volcengine',
+  '.terraform.d/credentials.tfrc.json',
+  '.config/git/credentials',
+  '.config/rclone',
+  '.s3cfg',
+  '.pgpass',
+  '.cache/huggingface/token',
+  '.cache/huggingface/stored_tokens',
+  '.huggingface/token',
+  '.codex/auth.json',
+  '.claude/.credentials.json',
+  '.gemini/oauth_creds.json',
+  '.config/clash',
+  '.config/clash.meta',
+  '.config/mihomo',
+  '.config/filezilla',
+];
+
+/** The same kind of store in the macOS application folders. */
+const CLIENT_CREDENTIAL_PATHS_MAC = [
+  'Library/Application Support/io.github.clash-verge-rev.clash-verge-rev',
+  'Library/Application Support/mihomo-party',
+  'Library/Application Support/VanDyke',
+  'Library/Application Support/Tunnelblick',
+];
+
+/** And on Windows. */
+const CLIENT_CREDENTIAL_PATHS_WIN = [
+  'AppData/Roaming/rclone',
+  'AppData/Roaming/postgresql/pgpass.conf',
+  'AppData/Roaming/io.github.clash-verge-rev.clash-verge-rev',
+  'AppData/Roaming/mihomo-party',
+  'AppData/Roaming/FileZilla',
+  'AppData/Roaming/VanDyke',
+  'AppData/Roaming/NetSarang',
+  'Documents/NetSarang Computer',
+  'AppData/Local/WireGuard',
+  'OpenVPN/config',
+];
+
+/**
+ * File names that are a private key or a password database wherever they sit.
+ * Compared without case, by the last path component. `.pfx` / `.p12` always
+ * carry a private key; `.ovpn` and `.mobileconfig` profiles carry VPN keys,
+ * passwords and certificates.
+ */
+const BLOCKED_FILE_NAMES = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519']);
+const BLOCKED_FILE_EXTENSIONS = ['.kdbx', '.ppk', '.keychain', '.keychain-db', '.pfx', '.p12', '.ovpn', '.mobileconfig'];
+
+/**
+ * `.env` and its variants (`.env.local`, `.env.production`, `.env.dev`) hold a
+ * project's keys; the copies made to be shared hold none and stay readable.
+ */
+const ENV_FILE_SHARED_SUFFIXES = new Set(['example', 'sample', 'template']);
+
+function isEnvSecretFile(filename: string): boolean {
+  if (filename === '.env') return true;
+  if (!filename.startsWith('.env.')) return false;
+  return !ENV_FILE_SHARED_SUFFIXES.has(filename.slice('.env.'.length));
+}
+
+/**
+ * Files whose extension alone does not say whether they hold a secret: a
+ * `.pem` / `.key` may be a public certificate or a Keynote deck, a `.conf` is
+ * any configuration. They are closed when their text says so: a PEM private
+ * key, or a WireGuard `[Interface]` with its `PrivateKey`. Read only when
+ * small; a key file is a few kilobytes.
+ */
+const CONTENT_CHECKED_EXTENSIONS = ['.pem', '.key', '.conf'];
+const CONTENT_CHECK_MAX_BYTES = 64 * 1024;
+const PRIVATE_KEY_MARKERS = [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/, /^\s*PrivateKey\s*=/im];
+
+/**
+ * Places a program is started from when the user signs in. Writing there makes
+ * something run on every start without anyone asking, so no mode writes there.
+ * Relative to home; the system-wide ones sit under write-blocked system roots.
+ */
+const AUTOSTART_PATHS_MAC = [
+  'Library/LaunchAgents',
+  'Library/LaunchDaemons',
+  'Library/Application Support/com.apple.backgroundtaskmanagementagent',
+];
+const AUTOSTART_PATHS_WIN = [
+  'AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup',
+];
+/**
+ * The shell login and profile scripts, run at every sign-in or new shell, on
+ * both systems (Git Bash and PowerShell 7 read them on Windows too). Some are
+ * also closed to reads on macOS (`BLOCKED_PATHS`).
+ */
+const LOGIN_SCRIPT_PATHS = [
+  '.zlogin',
+  '.zprofile',
+  '.zshrc',
+  '.zshenv',
+  '.bash_login',
+  '.bash_profile',
+  '.bashrc',
+  '.profile',
+  '.config/fish',
+  '.config/powershell',
+];
+
+/**
+ * A PowerShell profile (`profile.ps1`, `Microsoft.PowerShell_profile.ps1`,
+ * `…ISE_profile.ps1`) in a `WindowsPowerShell` or `PowerShell` folder: found by
+ * name, because Documents may be redirected (OneDrive) away from home.
+ */
+function isPowerShellProfile(foldedPath: string): boolean {
+  const parts = foldedPath.split('/');
+  const name = parts[parts.length - 1] ?? '';
+  const parent = parts[parts.length - 2] ?? '';
+  return (parent === 'windowspowershell' || parent === 'powershell')
+    && (name === 'profile.ps1' || name.endsWith('_profile.ps1'));
 }
 
 /**
@@ -70,10 +262,16 @@ const BLOCKED_PATHS = [
   'Library/Keychains',
   'Library/Application Support/Google/Chrome/Default/Login Data',
   'Library/Application Support/Firefox/Profiles',
-  // Environment files that may contain secrets
-  '.env',
-  '.env.local',
-  '.env.production',
+  // Environment files: `isEnvSecretFile`.
+  // Reading a file never asks, so every place a signed-in session or a stored
+  // password lives has to be named here. A browser keeps its cookies, saved
+  // passwords, card data and the tokens sites put in local storage in every
+  // profile folder, so the whole data folder of each browser is closed, not
+  // one file of its default profile.
+  ...BROWSER_DATA_PATHS_MAC,
+  ...PASSWORD_MANAGER_PATHS_MAC,
+  ...CLOUD_CLI_CREDENTIAL_PATHS,
+  ...CLIENT_CREDENTIAL_PATHS_MAC,
 ];
 
 /**
@@ -99,6 +297,7 @@ const SYSTEM_PATHS_READ_BLOCKED = [
   '/etc/master.passwd',
   '/private/etc/shadow',
   '/private/etc/master.passwd',
+  '/Library/Keychains',
 ];
 
 const WIN_SYSTEM_PATHS_READ_BLOCKED = [
@@ -166,9 +365,15 @@ const WIN_BLOCKED_PATHS = [
   '.docker/config.json',
   '.git-credentials',
   '.gitconfig',
-  '.env',
-  '.env.local',
-  '.env.production',
+  // Windows' own key store for the files DPAPI protects.
+  'AppData/Roaming/Microsoft/Crypto',
+  // See BLOCKED_PATHS: every store of sessions and passwords is closed by name.
+  ...BROWSER_DATA_PATHS_WIN,
+  ...PASSWORD_MANAGER_PATHS_WIN,
+  ...CLOUD_CLI_CREDENTIAL_PATHS,
+  ...CLIENT_CREDENTIAL_PATHS_WIN,
+  'AppData/Roaming/gcloud',
+  'AppData/Roaming/GitHub CLI',
 ];
 
 const WIN_SYSTEM_PATHS_WRITE_BLOCKED = [
@@ -400,9 +605,20 @@ export function isInScopedAuthorizedWorkspace(
  * prefix test lets the self-protection red line be stepped over by changing
  * one letter. Folded on every platform on purpose — over-matching a
  * differently-cased `~/.ABU` fails closed, under-matching fails open.
+ *
+ * On Windows the fold also drops what Win32 drops when it opens a name: dots
+ * and spaces at the end of a component (`id_rsa.`, `id_rsa `) and a stream
+ * suffix (`x.pem::$DATA`). The host's canonicalizer does this too, but when it
+ * is absent or fails the name checks would see the raw spelling.
  */
 function foldPath(path: string): string {
-  return normalizeForCompare(path).toLowerCase();
+  const folded = normalizeForCompare(path).toLowerCase();
+  if (!isWindows()) return folded;
+  return folded.split('/').map((component, index) => {
+    if (component === '' || component === '.' || component === '..' || component === '?' || (index === 0 && /^[a-z]:$/.test(component))) return component;
+    const name = component.replace(/:.*$/, '').replace(/[. ]+$/, '');
+    return name === '' ? component : name;
+  }).join('/');
 }
 
 /**
@@ -578,14 +794,17 @@ function relativePathResult(): PathCheckResult {
  */
 async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blocked: boolean; reason?: string }> {
   const home = homeOverride ?? await getHomeDir();
-  const comparePath = normalizeForCompare(path);
+  // Folded on every platform: macOS and Windows open `~/.SSH/id_rsa` and
+  // `~/.ssh/id_rsa` as the same file, so a case-sensitive test would hand a
+  // red line away for one capital letter (see `foldPath`).
+  const comparePath = foldPath(path);
 
   // Check absolute blocked paths for read
   const readBlocked = isWindows()
     ? [...SYSTEM_PATHS_READ_BLOCKED, ...WIN_SYSTEM_PATHS_READ_BLOCKED]
     : SYSTEM_PATHS_READ_BLOCKED;
   for (const blockedPath of readBlocked) {
-    const compareBlocked = normalizeForCompare(blockedPath);
+    const compareBlocked = foldPath(blockedPath);
     if (comparePath === compareBlocked || comparePath.startsWith(compareBlocked + '/')) {
       return { blocked: true, reason: `访问系统敏感文件被禁止: ${blockedPath}` };
     }
@@ -593,24 +812,109 @@ async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blo
 
   // Select blocked list based on platform
   const blockedPaths = isWindows() ? WIN_BLOCKED_PATHS : BLOCKED_PATHS;
+  const filename = comparePath.split('/').pop() ?? '';
 
   // Check home-relative blocked paths
   for (const blockedPath of blockedPaths) {
-    const fullBlockedPath = normalizeForCompare(`${home}/${blockedPath}`);
+    const fullBlockedPath = foldPath(`${home}/${blockedPath}`);
     if (comparePath === fullBlockedPath || comparePath.startsWith(fullBlockedPath + '/')) {
       return { blocked: true, reason: `访问敏感配置文件被禁止: ~/${blockedPath}` };
     }
     // Also check if path ends with blocked filename (e.g., any .env file)
     if (blockedPath.startsWith('.') && !blockedPath.includes('/')) {
-      const filename = comparePath.split('/').pop();
-      const compareBlockedName = isWindows() ? blockedPath.toLowerCase() : blockedPath;
-      if (filename === compareBlockedName) {
+      if (filename === blockedPath.toLowerCase()) {
         return { blocked: true, reason: `访问敏感文件被禁止: ${blockedPath}` };
       }
     }
   }
 
+  // A private key or a password database is one wherever it was saved.
+  if (isBlockedFileName(filename)) {
+    return { blocked: true, reason: `访问敏感文件被禁止: ${filename}` };
+  }
+
   return { blocked: false };
+}
+
+/** A file closed by its name alone, wherever it sits (`filename` folded to lower case). */
+function isBlockedFileName(filename: string): boolean {
+  return BLOCKED_FILE_NAMES.has(filename)
+    || BLOCKED_FILE_EXTENSIONS.some((ext) => filename.endsWith(ext))
+    || isEnvSecretFile(filename);
+}
+
+/**
+ * Whether a file of a `CONTENT_CHECKED_EXTENSIONS` kind holds a private key.
+ * A folder (a Keynote package), a missing file and a file too large to be a
+ * key are not one; a file that cannot be read to tell is treated as one.
+ */
+async function holdsPrivateKey(path: string): Promise<boolean> {
+  const filename = foldPath(path).split('/').pop() ?? '';
+  if (!CONTENT_CHECKED_EXTENSIONS.some((ext) => filename.endsWith(ext))) return false;
+  try {
+    const info = await stat(path);
+    if (info.isDirectory || (typeof info.size === 'number' && info.size > CONTENT_CHECK_MAX_BYTES)) return false;
+    const bytes = await readFile(path);
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(0, CONTENT_CHECK_MAX_BYTES));
+    return PRIVATE_KEY_MARKERS.some((marker) => marker.test(text));
+  } catch (error) {
+    return !isMissingPathError(error);
+  }
+}
+
+/**
+ * Whether a path lies in one of the places a program is started from at sign-in
+ * (`AUTOSTART_PATHS_*`). Writes there are refused in every mode.
+ */
+async function isAutostartPath(path: string, homeOverride?: string): Promise<string | null> {
+  const home = homeOverride ?? await getHomeDir();
+  const comparePath = foldPath(path);
+  const roots = [...(isWindows() ? AUTOSTART_PATHS_WIN : AUTOSTART_PATHS_MAC), ...LOGIN_SCRIPT_PATHS];
+  for (const root of roots) {
+    const full = foldPath(`${home}/${root}`);
+    if (comparePath === full || comparePath.startsWith(`${full}/`)) return `~/${root}`;
+  }
+  if (isPowerShellProfile(comparePath)) return comparePath.split('/').slice(-2).join('/');
+  return null;
+}
+
+
+/**
+ * Whether a path lies in the app's own data folders (the Electron user data and
+ * the `com.abu.*` app data). They hold the secret store, the persisted
+ * settings, the signed-in sessions of the built-in browser and the message
+ * ledgers. Reading them is refused like a credential store; the files of a
+ * conversation that tools hand back (`checkConversationResultRead`) are checked
+ * before this and are the carve-out.
+ */
+async function isAbuAppDataPath(path: string, homeOverride?: string): Promise<boolean> {
+  const home = homeOverride ?? await getHomeDir();
+  const comparePath = foldPath(path);
+  const roots = isWindows()
+    ? [`${home}/AppData/Roaming`, `${home}/AppData/Local`]
+    : [`${home}/Library/Application Support`];
+  for (const root of roots) {
+    const foldedRoot = foldPath(root);
+    if (!comparePath.startsWith(`${foldedRoot}/`)) continue;
+    const segment = comparePath.slice(foldedRoot.length + 1).split('/')[0];
+    if (isAbuAppDataSegment(segment)) return true;
+  }
+  return false;
+}
+
+/** The refusal for a write into a start-at-sign-in location (`isAutostartPath`). */
+function autostartWriteRefusal(location: string): PathCheckResult {
+  return { allowed: false, reason: `禁止写入开机自启动位置: ${location}`, denialKind: 'blocked' };
+}
+
+/** The refusal for a read of a file whose text is a private key (`holdsPrivateKey`). */
+function privateKeyReadRefusal(): PathCheckResult {
+  return { allowed: false, reason: '禁止读取私钥文件', denialKind: 'blocked' };
+}
+
+/** The refusal for a read of the app's own data folders (`isAbuAppDataPath`). */
+function appDataReadRefusal(): PathCheckResult {
+  return { allowed: false, reason: '禁止读取本应用自身的数据目录（密钥、设置和登录状态）', denialKind: 'blocked' };
 }
 
 function pathComponentPrefixes(path: string, trustedRoot?: string): string[] {
@@ -716,7 +1020,17 @@ async function canonicalizePolicyAnchor(path: string): Promise<string | null> {
 
 type ResolvedPolicyPath =
   | { ok: true; lexicalPath: string; canonicalPath: string }
-  | { ok: false; reason: string };
+  /** `blocked`: refused as a closed location would be (a short name nobody can expand). */
+  | { ok: false; reason: string; blocked?: true };
+
+function unresolvedPathResult(resolved: { reason: string; blocked?: true }): PathCheckResult {
+  return { allowed: false, reason: resolved.reason, ...(resolved.blocked ? { denialKind: 'blocked' as const } : {}) };
+}
+
+/** A Windows 8.3 short name among the components: `PROGRA~1`, `USERDA~1`. */
+function hasShortNameComponent(path: string): boolean {
+  return path.split('/').some((component) => /^[^~]{1,6}~\d+(?:\.[^.]{0,3})?$/.test(component));
+}
 
 async function resolvePathForPolicy(
   path: string,
@@ -746,6 +1060,14 @@ async function resolvePathForPolicy(
   // Legacy Tauri/Web has no canonicalization bridge. Retain the old
   // fail-closed behavior there; the dynamic temp root keeps macOS /var's own
   // symlink from being mistaken for a user-controlled descendant link.
+  //
+  // Without the host's resolver nothing expands a Windows 8.3 short name
+  // (`USERDA~1`, `TESTUS~1`), so the lexical checks cannot tell whether it
+  // names a closed store or home itself: such a path is refused, as a link
+  // nobody can resolve is.
+  if (isWindows() && hasShortNameComponent(lexicalPath)) {
+    return { ok: false, reason: '无法核实短文件名指向的位置，请使用完整路径。', blocked: true };
+  }
   if (await isSymlinkBypass(path, followFinalSymlink)) {
     return { ok: false, reason: '检测到无法安全解析的符号链接路径，请使用实际路径。' };
   }
@@ -965,7 +1287,7 @@ export async function checkConversationResultRead(path: string, conversationId: 
   const root = createConversationPaths(appData).resultsDir(conversationId);
   if (!isPathWithin(normalizePath(path), normalizePath(root))) return null;
   const resolved = await resolvePathForPolicy(path);
-  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  if (!resolved.ok) return unresolvedPathResult(resolved);
   const canonicalAppData = await canonicalizePolicyAnchor(appData);
   if (!canonicalAppData) return { allowed: false, reason: '无法安全解析会话目录' };
   const expectedRoot = createConversationPaths(canonicalAppData).resultsDir(conversationId);
@@ -991,7 +1313,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
   }
 
   const resolved = await resolvePathForPolicy(path);
-  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  if (!resolved.ok) return unresolvedPathResult(resolved);
 
   const home = await getHomeDir();
   const canonicalHome = await canonicalizePolicyAnchor(home);
@@ -1000,6 +1322,13 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
     return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
+  }
+  if (await holdsPrivateKey(resolved.canonicalPath)) return privateKeyReadRefusal();
+
+  // The app's own data folders hold the secret store, the settings and the
+  // built-in browser's signed-in sessions: closed to reads ahead of every grant.
+  if (await isAbuAppDataPath(resolved.lexicalPath, home) || await isAbuAppDataPath(resolved.canonicalPath, canonicalHome)) {
+    return appDataReadRefusal();
   }
 
   // A lexical grant is only valid when the resolved target is also contained
@@ -1084,7 +1413,12 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
 export async function checkWritePath(
   path: string,
   scopeId?: AuthorizationScopeId,
-  options: { followFinalSymlink?: boolean } = {},
+  /**
+   * `purpose: 'delete'`: the write takes the file away. Removing an entry
+   * from an autostart folder undoes an automatic start, so it is asked about
+   * like any other write there instead of being refused.
+   */
+  options: { followFinalSymlink?: boolean; purpose?: 'write' | 'delete' } = {},
 ): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {
@@ -1108,8 +1442,13 @@ export async function checkWritePath(
     return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
   }
 
+  // Start-at-sign-in locations: no mode and no grant writes there.
+  const deletes = options.purpose === 'delete';
+  const autostart = deletes ? null : await isAutostartPath(normalizedPath);
+  if (autostart) return autostartWriteRefusal(autostart);
+
   const resolved = await resolvePathForPolicy(path, options);
-  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  if (!resolved.ok) return unresolvedPathResult(resolved);
 
   const home = await getHomeDir();
   const canonicalHome = await canonicalizePolicyAnchor(home);
@@ -1122,6 +1461,8 @@ export async function checkWritePath(
   if (await isAbuSelfManagedPath(resolved.canonicalPath, canonicalHome)) {
     return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
   }
+  const canonicalAutostart = deletes ? null : await isAutostartPath(resolved.canonicalPath, canonicalHome);
+  if (canonicalAutostart) return autostartWriteRefusal(canonicalAutostart);
 
   const runtimeTemp = await getRuntimeTempDir();
   const safeRuntimeTemp = await isTrustedMacRuntimeTempWrite(
@@ -1231,7 +1572,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
   }
 
   const resolved = await resolvePathForPolicy(path, options);
-  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  if (!resolved.ok) return unresolvedPathResult(resolved);
 
   const home = await getHomeDir();
   const canonicalHome = await canonicalizePolicyAnchor(home);
@@ -1240,6 +1581,9 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
     return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
+  }
+  if (await isAbuAppDataPath(resolved.lexicalPath, home) || await isAbuAppDataPath(resolved.canonicalPath, canonicalHome)) {
+    return appDataReadRefusal();
   }
 
   const workspaceMatch = await matchAuthorizedWorkspaces(

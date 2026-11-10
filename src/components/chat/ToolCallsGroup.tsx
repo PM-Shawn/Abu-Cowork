@@ -8,6 +8,7 @@ import { Spinner } from '@/components/ds/spinner';
 import { StatusIcon } from '@/components/ds/status-icon';
 import { Tag } from '@/components/ds/tag';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { readFileImagesAreViews } from '@/core/tools/fileRead';
 import { useChatStore } from '@/stores/chatStore';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import { useI18n } from '@/i18n';
@@ -550,6 +551,8 @@ export function InlineToolResultImages({ toolCalls, conversationId }: { toolCall
     // this guard (not just the tool's return change) is what dedupes them.
     if (tc.hidden || tc.name === TOOL_NAMES.COMPUTER || tc.name === TOOL_NAMES.GENERATE_IMAGE) continue;
     if (!tc.resultContent?.some((b) => b.type === 'image')) continue;
+    // Page renders and zoomed parts are how the model read a file, not pictures for the reply.
+    if (tc.name === TOOL_NAMES.READ_FILE && readFileImagesAreViews(tc.input)) continue;
     const path = typeof tc.input?.path === 'string' ? tc.input.path : '';
     const base = path ? getBaseName(path) : '';
     if (base && isUserProvided(base, userRefs)) continue;

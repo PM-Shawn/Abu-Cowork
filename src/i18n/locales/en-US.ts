@@ -4284,6 +4284,11 @@ const enUS: TranslationDict = {
       updated: 'Personality configuration updated; takes effect in the next new conversation.',
       updateFailed: 'Update failed: {error}',
     },
+    fileRead: {
+      pdfPasswordProtected: 'Error: This PDF is password-protected, so its pages cannot be read. Reading it needs a copy without the password.',
+      pdfDamaged: 'Error: The PDF could not be opened ({detail}). It may be damaged or not a PDF.',
+      tooLarge: 'Error: {name} is too large for the document reader ({size}; the limit is {limit}). A smaller copy can be read: fewer pages, or scanned at a lower resolution.',
+    },
     file: {
       imageSkipNoVision: '[Image file {path} ({mediaType}): the current model has no vision capability; image content was not read. To analyse images, switch to a vision-capable model (e.g. Claude / GPT-4o).]',
       errFileHeldByAnotherApp: 'Error: {path} is open and locked by another program; nothing was written. This is not transient and a retry will not clear it — if the file is open in Office or WPS, ask the user to save and close it, or make this change inside that application instead.',

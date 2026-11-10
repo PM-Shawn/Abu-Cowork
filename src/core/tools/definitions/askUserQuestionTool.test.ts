@@ -23,6 +23,15 @@ const MOCK_RESULT: UserQuestionResult = {
   answers: [{ header: '格式', question: '你希望输出什么格式？', selected: ['详细'] }],
 };
 
+describe('askUserQuestionTool description', () => {
+  it('asks only when a wrong guess is costly and not findable, and never invites permission questions', () => {
+    const d = askUserQuestionTool.description;
+    expect(d).toContain('A wrong guess would be costly');
+    expect(d).toContain('do not ask permission for it');
+    expect(d).not.toContain('Implicit assumptions');
+  });
+});
+
 describe('askUserQuestionTool', () => {
   beforeEach(() => {
     bridge.drainUserQuestions();

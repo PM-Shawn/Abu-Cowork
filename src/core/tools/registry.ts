@@ -4,7 +4,7 @@ import { evaluatePlanGate, getPlanMode } from '../agent/planMode';
 import { buildTeamConfirmationIdentity } from '../agent/teamConfirmationIdentity';
 import type { ToolDefinition, ToolResult, ToolExecutionContext } from '../../types';
 import { mcpManager } from '../mcp/client';
-import { parseNamespacedToolName } from '../mcp/toolName';
+import { ENTERPRISE_SERVER_PREFIX, parseNamespacedToolName } from '../mcp/toolName';
 import { analyzeCommand, type ConfirmationInfo, type DangerLevel } from './commandSafety';
 import {
   checkReadPath,
@@ -31,6 +31,7 @@ import {
   browserToolTargetsPage,
   classifyBrowserTool,
   isScriptingBrowserTool,
+  navigatesOnly,
   normalizeBrowserOrigin,
   refuseBrowserBatch,
   summarizeBrowserBatch,
@@ -54,7 +55,11 @@ import {
   summarizeUploadFiles,
   type ApprovedUploadFile,
 } from '../permissions/browserUploadFiles';
-import { isHighRiskUrl } from '../permissions/highRiskSites';
+import { classifyHighRiskUrl } from '../permissions/highRiskSites';
+import { isPaymentPagePath, isPaymentPageTitle } from '../permissions/governmentPaymentPage';
+import { classifyConnectorAction, type ConnectorActionKind, type ConnectorToolHints } from '../permissions/connectorActionPolicy';
+import { describeConnectorTarget, shownRecipients } from '../permissions/connectorActionTarget';
+import { grantTask, hasTaskGrant } from '../permissions/taskGrants';
 import {
   notifyUnattendedDenial,
   resolveUnattendedConfirmation,
@@ -286,6 +291,28 @@ export const PLAYWRIGHT_BROWSER_TOOLS = new Set([
   'playwright__browser_handle_dialog',
   'playwright__browser_file_upload',
 ]);
+
+/**
+ * What an MCP tool says about itself, for the connector gate: the server's
+ * `destructiveHint` and `openWorldHint` when it said `true`, and its
+ * description (read when the name says nothing).
+ */
+function mcpToolHints(name: string): ConnectorToolHints | undefined {
+  const parsed = parseNamespacedToolName(name);
+  if (!parsed) return undefined;
+  try {
+    const tool = mcpManager.getServerTools(parsed.serverName).find((candidate) => candidate.name === name);
+    if (!tool) return undefined;
+    return {
+      ...(tool.mcpDestructiveHint === true ? { destructiveHint: true } : {}),
+      ...(tool.mcpOpenWorldHint === true ? { openWorldHint: true } : {}),
+      ...(typeof tool.description === 'string' && tool.description !== '' ? { description: tool.description } : {}),
+    };
+  } catch {
+    // A server half torn down has no tool list to read; the name still decides.
+    return undefined;
+  }
+}
 
 /** Explicitly disabled configuration wins even while its old connection remains. */
 function isMcpServerDisabled(serverName: string): boolean {
@@ -597,6 +624,12 @@ interface BrowserActionTarget {
   /** The tab's top-level URL, for the high-risk check when a frame is named. */
   topUrl?: string | null;
   /**
+   * The tab's title, as the page wrote it. Read only to tighten: a title that
+   * says the page takes a payment makes a government page ask every time
+   * (`governmentPaymentPage.ts`); nothing a title says loosens anything.
+   */
+  topTitle?: string;
+  /**
    * Distinct origins of the page's addressable embedded regions.
    *
    * Only regions the browser could confirm (`accessible`) are listed: the
@@ -703,6 +736,7 @@ async function resolveBrowserActionTarget(
         tabs?: Array<{
           tabId?: number;
           url?: string;
+          title?: unknown;
           authState?: unknown;
           frames?: unknown;
         }>;
@@ -714,6 +748,7 @@ async function resolveBrowserActionTarget(
         const topOrigin = normalizeBrowserOrigin(tab.url);
         const topUrl = topOrigin !== null ? (tab.url ?? null) : null;
         const authState = parseTabAuthState(tab.authState);
+        const topTitle = typeof tab.title === 'string' && tab.title !== '' ? { topTitle: tab.title } : {};
         const regions = readFrameNodes(tab.frames);
         const embeddedOrigins = embeddedOriginsOf(regions, topOrigin, namedFrames);
         if (namedFrames.length === 0) {
@@ -721,6 +756,7 @@ async function resolveBrowserActionTarget(
             origin: topOrigin,
             url: topUrl,
             authState,
+            ...topTitle,
             ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
           };
         }
@@ -770,6 +806,7 @@ async function resolveBrowserActionTarget(
           authState,
           topOrigin,
           topUrl,
+          ...topTitle,
           ...(embeddedOrigins.length > 0 ? { embeddedOrigins } : {}),
           // Present whenever the call NAMED a region, even when not one of them
           // could be confirmed (round-2 R2-G). Omitting the empty map let the
@@ -1694,9 +1731,48 @@ export async function checkToolApproval(
       // a payment page, are both "this call touches money". `consultsSiteVerdict`
       // stays in front of it so a block on some unrelated site cannot change
       // the wording of an attended read-only confirmation.
-      const highRisk = consultsSiteVerdict
-        && storedVerdict !== 'denied'
-        && [target.url, target.topUrl ?? null, ...(target.frameUrls ?? [])].some(isHighRiskUrl);
+      //
+      // What counts as acting there: opening, keeping or closing a page is
+      // not (`navigatesOnly`), and neither is reading it. A click, a fill, a
+      // script, an upload or a download is. Unattended, a money page is
+      // refused outright, reading included.
+      const touchedUrls = [target.url, target.topUrl ?? null, ...(target.frameUrls ?? [])];
+      const highRiskKinds = touchedUrls.map((url) => classifyHighRiskUrl(url)?.reason ?? null);
+      const actsOnPage = consequence === 'state-changing' && !navigatesOnly(name);
+      const considersRisk = consultsSiteVerdict && storedVerdict !== 'denied';
+      /**
+       * A government page that takes a payment (a tax, a fee: its path or its
+       * title says so, `governmentPaymentPage.ts`). Acting there moves money,
+       * so it asks every time like a money site, and the once-per-task grant
+       * of the government site does not cover it. Reading it stays as on any
+       * government page. The title belongs to the page the tab shows.
+       */
+      const topIndex = target.topUrl !== undefined ? 1 : 0;
+      const actsOnGovernmentPayment = actsOnPage && touchedUrls.some((url, index) =>
+        highRiskKinds[index] === 'government-domain'
+        && (isPaymentPagePath(url) || (index === topIndex && isPaymentPageTitle(target.topTitle))));
+      const highRisk = considersRisk && (
+        (highRiskKinds.includes('money-domain') && (actsOnPage || runMode === 'unattended'))
+        || actsOnGovernmentPayment
+      );
+      /**
+       * Acting on a government site asks once per task: the first click or
+       * fill of the task asks, and approving it covers the rest of the task on
+       * that site (`taskGrants.ts`). Browsing and reading never ask. Keyed by
+       * the government origins this call touches, so approving one site does
+       * not cover another.
+       */
+      const governmentOrigins = [...new Set(touchedUrls
+        .filter((_, index) => highRiskKinds[index] === 'government-domain')
+        .map((url) => normalizeBrowserOrigin(url ?? undefined))
+        .filter((value): value is string => value !== null))];
+      const governmentAction = considersRisk && actsOnPage && governmentOrigins.length > 0 && !actsOnGovernmentPayment;
+      const governmentTaskGranted = governmentAction && !isTeam
+        && governmentOrigins.every((site) => hasTaskGrant('government-site', toolContext?.conversationId, site));
+      // The ask whose answer covers the rest of the task: an ordinary click or
+      // fill. A script or an upload there is asked about on its own row, and
+      // approving one buys nothing for the task.
+      const asksForGovernmentTask = governmentAction && !governmentTaskGranted && opClass === 'interactive';
       /**
        * The attended read resolved an origin only to fail. The read goes
        * ahead — a human is watching it, and failing closed on a screenshot
@@ -1773,6 +1849,7 @@ export async function checkToolApproval(
         // sizes are in `browserConfirmLabel` either way, so nothing about the
         // file is lost by letting 「资金 / 政务」 have the sentence.
         if (highRisk) return t.commandConfirm.browserHighRiskReason;
+        if (asksForGovernmentTask) return t.permission.rules.governmentReason;
         if (uploadsFile(name)) return t.commandConfirm.browserUploadReason;
         if (answersPageDialog(name)) {
           // Named, because "browser action: …__handle_dialog" tells a user
@@ -1894,6 +1971,7 @@ export async function checkToolApproval(
         opClass, runMode, permissionMode, runPermissionCeiling, toolTargetsPage,
         originResolved: origin !== null, answersPageDialog: answersPageDialog(name), loginRequired,
         confirmationChannelAvailable: Boolean(onRequireConfirmation), originKnown: origin !== null, highRisk,
+        governmentAction, governmentTaskGranted,
         scriptInEmbeddedRegion: permissionResource === 'script' && permissionTargets.some((item) => item.embeddedIn),
       };
       const gate = evaluateBrowserPermissionGate({ ...gateFacts, configured: configuredPermission });
@@ -2232,6 +2310,12 @@ export async function checkToolApproval(
           return refusedByHuman(await refuseBrowser(gate.ask.refusedReason));
         }
         consented = 'dialog';
+        // The answer the government sentence promised: the rest of this task
+        // on these sites does not ask again. Never for a team member, whose
+        // approval covers its one retried step.
+        if (asksForGovernmentTask && !isTeam) {
+          for (const site of governmentOrigins) grantTask('government-site', toolContext?.conversationId, site);
+        }
       }
 
       recheckBrowserPermission = () => {
@@ -2306,11 +2390,31 @@ export async function checkToolApproval(
     }
   }
 
+  /**
+   * Connector actions that reach other people, delete in a connected service,
+   * or move money (`connectorActionPolicy.ts`). Asked in every mode, autonomous
+   * included: these are the actions the product promises to stop for. A send
+   * approved once covers that tool's sends to the same recipients for the rest
+   * of the task; a delete or a payment is asked every time. With nobody to
+   * ask, the run's own channel answers (an unattended approval, or a refusal
+   * it reports).
+   */
+  const connectorAction: ConnectorActionKind | null = classifyConnectorAction(name, mcpToolHints(name));
+  // Who the call reaches and what it carries: named in the ask, and with the
+  // tool the key of a send's task grant, so a send approved to one person
+  // does not cover the same tool sending to anyone else.
+  const connectorTarget = connectorAction !== null ? describeConnectorTarget(input) : null;
+  const connectorGrantSubject = connectorTarget ? JSON.stringify([name, connectorTarget.recipientKey]) : '';
+  const connectorGranted = connectorAction === 'send' && !isTeam
+    && hasTaskGrant('connector-tool', toolContext?.conversationId, connectorGrantSubject);
+  const connectorAsks = connectorAction !== null && !connectorGranted;
+
   // Plugin-contributed MCP tools. Without this block they would fall through
   // to `decideConsequentialTool(undefined)` → 'allow', i.e. third-party code
   // installed with one click would execute silently in all three permission
   // modes. Approval is per (conversation, server) so approving one plugin
   // never unlocks another.
+  let pluginGrantPending: string | null = null;
   {
     const consequence = classifyPluginTool(name);
     if (consequence === 'state-changing') {
@@ -2324,7 +2428,11 @@ export async function checkToolApproval(
       const serverName = pluginServerOf(name) ?? '';
       const granted = !isTeam && hasPluginGrant(toolContext?.conversationId, serverName);
       const decision = strategy.decideOtherTool(consequence, granted);
-      if (decision !== 'allow') {
+      if (decision !== 'allow' && connectorAsks) {
+        // The connector question below is asked about this very call; one
+        // answer covers both, so the user is not asked twice in a row.
+        pluginGrantPending = serverName;
+      } else if (decision !== 'allow') {
         if (!onRequireConfirmation) {
           // Fail closed. A headless run must not be the cheap way to execute
           // plugin code the user never saw.
@@ -2340,6 +2448,48 @@ export async function checkToolApproval(
         }
         if (!isTeam) grantPluginServer(toolContext?.conversationId, serverName);
       }
+    }
+  }
+
+  if (connectorAsks && connectorAction !== null && connectorTarget !== null) {
+    const rules = t.permission.rules;
+    if (!onRequireConfirmation) {
+      return { decision: 'deny', reason: `Error: ${rules.connectorDenied}` };
+    }
+    // Plain words, never the tool's own name: the connector as the user named
+    // it (an organization's connector has only an id, so it goes unnamed).
+    const serverName = parseNamespacedToolName(name)?.serverName ?? '';
+    const connector = serverName && !serverName.startsWith(ENTERPRISE_SERVER_PREFIX)
+      ? format(rules.connectorNamed, { name: serverName })
+      : rules.connectorUnnamed;
+    const { shown, more } = shownRecipients(connectorTarget);
+    const recipients = shown.join(rules.connectorRecipientSeparator)
+      + (more > 0 ? format(rules.connectorRecipientsMore, { count: String(more) }) : '');
+    const action = connectorAction === 'send'
+      ? (recipients ? format(rules.connectorSendToAction, { connector, recipients }) : format(rules.connectorSendAction, { connector }))
+      : format(connectorAction === 'money' ? rules.connectorMoneyAction : rules.connectorDestructiveAction, { connector });
+    const preview = connectorTarget.preview ? format(rules.connectorContentPreview, { preview: connectorTarget.preview }) : '';
+    const reason = connectorAction === 'send'
+      ? rules.connectorSendReason
+      : connectorAction === 'money' ? rules.connectorMoneyReason : rules.connectorDestructiveReason;
+    const confirmed = await onRequireConfirmation({
+      command: `${action}${preview}`,
+      // A sentence about what is about to happen, shown as plain text (the
+      // dialog's sentence form), never as a command line.
+      kind: 'self-extension',
+      alwaysAsks: true,
+      level: connectorAction === 'send' ? 'warn' : 'danger',
+      // One answer here also lets the plugin that serves this tool run for the
+      // rest of the conversation (`pluginGrantPending`); the ask says so.
+      reason: pluginGrantPending !== null ? `${reason}${rules.connectorPluginGrantNote}` : reason,
+      agentName: toolContext?.agentName,
+    }, toolContext?.loopId);
+    if (!confirmed) {
+      return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
+    }
+    if (!isTeam) {
+      if (connectorAction === 'send') grantTask('connector-tool', toolContext?.conversationId, connectorGrantSubject);
+      if (pluginGrantPending !== null) grantPluginServer(toolContext?.conversationId, pluginGrantPending);
     }
   }
 

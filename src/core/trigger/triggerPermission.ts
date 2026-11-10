@@ -187,6 +187,10 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
             console.log(`[Trigger] full: browser action "${info.command}" denied by the unattended browser policy`);
             return false;
           }
+          // Sending to other people, deleting in a connected service and moving
+          // money are not the tier's to approve: they go to a person (the
+          // automation's IM channel), or are refused when there is none.
+          if (info.alwaysAsks === true) return askAPerson(options, 'full')(info);
           // Allow everything except hard-blocked commands
           const allowed = info.level !== 'block';
           if (!allowed) {
@@ -203,13 +207,30 @@ export function resolveTriggerCallbacks(action: TriggerAction, options: TriggerC
       };
 
     case 'custom':
-      return buildCustomCallbacks(permissions, blockedTools);
+      return buildCustomCallbacks(permissions, blockedTools, askAPerson(options, 'custom'));
   }
+}
+
+/**
+ * The run's approval channel for what no tier approves on its own
+ * (`ConfirmationInfo.alwaysAsks`): the automation's IM binding, or a refusal.
+ */
+function askAPerson(options: TriggerCallbackOptions, tier: string) {
+  return createUnattendedConfirmation({
+    source: 'trigger',
+    ...(options.conversationId !== undefined ? { conversationId: options.conversationId } : {}),
+    ...(options.imTarget !== undefined ? { imTarget: options.imTarget } : {}),
+    ...(options.runLabel !== undefined ? { runLabel: options.runLabel } : {}),
+    onDenied: (reason, info) => {
+      console.log(`[Trigger] ${tier}: denied "${info.command}" (${reason})`);
+    },
+  });
 }
 
 function buildCustomCallbacks(
   permissions: RuntimeTriggerPermissions | undefined,
   blockedTools: string[],
+  askPerson: (info: ConfirmationInfo) => Promise<boolean>,
 ): TriggerCallbacks {
   const allowedCommands = normalizeCustomRunCommandAllowlist(permissions?.allowedCommands);
 
@@ -220,6 +241,8 @@ function buildCustomCallbacks(
         return false;
       }
       if (info.level === 'block') return false;
+      // A command glob says nothing about sending to other people (see `full`).
+      if (info.alwaysAsks === true) return askPerson(info);
       // See the `full` tier: allowedCommands is a COMMAND allowlist and says
       // nothing about browser operations, so a browser confirmation reaching
       // here is decided by the operation-class policy, never by a glob.

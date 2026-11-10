@@ -39,6 +39,14 @@ export interface ConfirmationInfo {
    */
   kind?: 'command' | 'browser' | 'browser-upload' | 'self-extension';
   /**
+   * An action the product stops for in every mode: a connector tool that
+   * sends to other people, deletes in a connected service or moves money
+   * (`connectorActionPolicy.ts`). A capability tier that approves on its own
+   * (the IM and trigger `full` tiers) still hands it to a person — the run's
+   * approval channel, or a refusal when it has none.
+   */
+  alwaysAsks?: true;
+  /**
    * Upload confirmations only: how many files this call would send. The
    * dialog puts it in the question ("上传 2 个文件到 …"), which is the part a
    * person reads before the list.

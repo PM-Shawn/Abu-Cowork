@@ -3175,6 +3175,34 @@ export interface TranslationDict {
     durationLabel: string;
     allowSessionButton: string;
     allowAlwaysButton: string;
+    /** Sentences the approval dialog shows for the actions that ask in every mode. */
+    rules: {
+      /** Asked before the first click or fill of a task on a government site. */
+      governmentReason: string;
+      /**
+       * Summary of a connector action, in plain words: `{connector}` is
+       * `connectorNamed` (with the connector's name) or `connectorUnnamed`.
+       */
+      connectorSendAction: string;
+      /** A send whose recipients the call names: `{recipients}` is the list, joined by `connectorRecipientSeparator`. */
+      connectorSendToAction: string;
+      connectorRecipientSeparator: string;
+      /** Appended to the list when more recipients than it shows are named. */
+      connectorRecipientsMore: string;
+      /** Appended to the summary: the start of what is sent, `{preview}`. */
+      connectorContentPreview: string;
+      /** Appended to the reason when the same answer also lets the tool's plugin run for the conversation. */
+      connectorPluginGrantNote: string;
+      connectorDestructiveAction: string;
+      connectorMoneyAction: string;
+      connectorNamed: string;
+      connectorUnnamed: string;
+      connectorSendReason: string;
+      connectorDestructiveReason: string;
+      connectorMoneyReason: string;
+      /** Refusal when no one can be asked (an unattended run with no approval channel). */
+      connectorDenied: string;
+    };
   };
 
   // Panels

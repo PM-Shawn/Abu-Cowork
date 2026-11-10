@@ -2567,6 +2567,23 @@ const zhCN: TranslationDict = {
     durationLabel: '授权时效',
     allowSessionButton: '允许到关闭应用',
     allowAlwaysButton: '始终允许',
+    rules: {
+      governmentReason: '这是政务网站，点击和填写可能会以你的身份办理事项。允许后，本任务接下来在这个网站上的点击和填写不再询问。',
+      connectorSendAction: '通过{connector}发给别人',
+      connectorSendToAction: '通过{connector}发给 {recipients}',
+      connectorRecipientSeparator: '、',
+      connectorRecipientsMore: ' 等 {count} 个',
+      connectorContentPreview: '，内容：「{preview}」',
+      connectorPluginGrantNote: '允许后，本次对话里这个插件的其他工具也不再询问。',
+      connectorDestructiveAction: '通过{connector}删除或改掉内容',
+      connectorMoneyAction: '通过{connector}付款或转账',
+      connectorNamed: '连接器「{name}」',
+      connectorUnnamed: '连接器',
+      connectorSendReason: '这会以你的名义发给别人，发出后收不回。允许后，本任务接下来用它发给同样的人时不再询问。',
+      connectorDestructiveReason: '这会删除或改掉连接的服务里的内容，可能无法恢复。',
+      connectorMoneyReason: '这会动用资金（付款、转账或退款）。',
+      connectorDenied: '这一步需要你确认，但现在没有人可以确认，已跳过',
+    },
   },
 
   media: {

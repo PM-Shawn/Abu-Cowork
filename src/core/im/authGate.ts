@@ -109,6 +109,10 @@ export function getCallbacksForLevel(
             console.log(`[IM] full: browser action "${info.command}" denied by the unattended browser policy`);
             return false;
           }
+          // Sending to other people, deleting in a connected service and moving
+          // money are not the tier's to approve: they go to a person, as in
+          // every other tier.
+          if (info.alwaysAsks === true) return denyingConfirm('full')(info);
           return true;
         },
         filePermissionCallback: async () => true,

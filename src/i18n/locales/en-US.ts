@@ -2565,6 +2565,23 @@ const enUS: TranslationDict = {
     durationLabel: 'Duration',
     allowSessionButton: 'Allow Until I Quit',
     allowAlwaysButton: 'Always Allow',
+    rules: {
+      governmentReason: 'This is a government site, where clicking and filling in forms may act in your name. Once allowed, clicks and form filling on this site are not asked about again for the rest of this task.',
+      connectorSendAction: 'Send to other people through {connector}',
+      connectorSendToAction: 'Send to {recipients} through {connector}',
+      connectorRecipientSeparator: ', ',
+      connectorRecipientsMore: ' and {count} more',
+      connectorContentPreview: ', with the content “{preview}”',
+      connectorPluginGrantNote: ' Once allowed, the other tools of this plugin are not asked about again in this conversation either.',
+      connectorDestructiveAction: 'Delete or change content through {connector}',
+      connectorMoneyAction: 'Pay or transfer money through {connector}',
+      connectorNamed: 'the connector “{name}”',
+      connectorUnnamed: 'a connector',
+      connectorSendReason: 'This sends something to other people in your name, and it cannot be called back. Once allowed, sending with it to the same people is not asked about again for the rest of this task.',
+      connectorDestructiveReason: 'This deletes or changes content in the connected service, and it may not be recoverable.',
+      connectorMoneyReason: 'This moves money (a payment, transfer or refund).',
+      connectorDenied: 'This step needs your confirmation, but nobody is available to confirm it, so it was skipped',
+    },
   },
 
   media: {

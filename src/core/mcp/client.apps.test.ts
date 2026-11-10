@@ -628,3 +628,21 @@ it.each(['readResource', 'readServerResource', 'listServerResources'] as const)(
   const release = acquirePluginChange('held@market');
   release();
 });
+
+describe('the destructive annotation', () => {
+  it('keeps an explicit destructiveHint: true for the approval gate, and nothing else', async () => {
+    await connect([
+      { ...tool('wipe'), annotations: { destructiveHint: true } },
+      { ...tool('safe'), annotations: { destructiveHint: false, readOnlyHint: true } },
+      { ...tool('odd'), annotations: { destructiveHint: 'yes' } },
+      { ...tool('none') },
+      { ...tool('nullish'), annotations: null },
+    ] as FakeTool[]);
+    const hint = (name: string) => mcpManager.getServerTools(SERVER).find((t) => t.name === `${SERVER}__${name}`)?.mcpDestructiveHint;
+    expect(hint('wipe')).toBe(true);
+    expect(hint('safe')).toBeUndefined();
+    expect(hint('odd')).toBeUndefined();
+    expect(hint('none')).toBeUndefined();
+    expect(hint('nullish')).toBeUndefined();
+  });
+});

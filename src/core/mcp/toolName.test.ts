@@ -20,6 +20,17 @@ describe('parseNamespacedToolName', () => {
     });
   });
 
+  it('reads the server of an organization server as `enterprise__<id>`', () => {
+    expect(parseNamespacedToolName('enterprise__crm__search')).toEqual({
+      serverName: 'enterprise__crm',
+      toolName: 'search',
+    });
+    // Still strict: a further separator is not a suffix to ignore.
+    expect(parseNamespacedToolName('enterprise__crm__search__x')).toBeNull();
+    expect(parseNamespacedToolName('enterprise__crm')).toBeNull();
+    expect(parseNamespacedToolName('enterprise____search')).toBeNull();
+  });
+
   it('returns null for a bare (builtin-shaped) name with no separator', () => {
     expect(parseNamespacedToolName('read_file')).toBeNull();
     expect(parseNamespacedToolName('execute_js')).toBeNull();

@@ -36,7 +36,22 @@ export interface NamespacedToolName {
   toolName: string;
 }
 
+/**
+ * The reserved prefix of the servers an organization provides. Their names are
+ * `enterprise__<id>`, so a tool of one reads `enterprise__<id>__<tool>`: three
+ * parts, of which the first two are the server. The prefix is fixed, so the
+ * name still round-trips (`serverName + '__' + toolName` rebuilds it).
+ */
+export const ENTERPRISE_SERVER_PREFIX = 'enterprise__';
+
 export function parseNamespacedToolName(name: string): NamespacedToolName | null {
+  if (name.startsWith(ENTERPRISE_SERVER_PREFIX)) {
+    const segments = name.slice(ENTERPRISE_SERVER_PREFIX.length).split('__');
+    if (segments.length !== 2) return null;
+    const [serverId, toolName] = segments;
+    if (serverId === '' || toolName === '') return null;
+    return { serverName: `${ENTERPRISE_SERVER_PREFIX}${serverId}`, toolName };
+  }
   const segments = name.split('__');
   if (segments.length !== 2) return null;
   const [serverName, toolName] = segments;

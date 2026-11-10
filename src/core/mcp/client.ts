@@ -1,3 +1,4 @@
+import { ENTERPRISE_SERVER_PREFIX } from './toolName';
 import { ensureBrowserRunRegistered } from '../browser/browserRunLifecycle';
 import { acquirePluginUse } from '../plugin/runtimeLease';
 import { pluginOwnerForMcp } from '../plugin/activationPolicy';
@@ -30,7 +31,6 @@ import {
 } from './appResources';
 
 const mcpLogger = createLogger('mcp');
-const ENTERPRISE_SERVER_PREFIX = 'enterprise__';
 
 /**
  * MCP request `_meta` key carrying the owning conversation id. Mirrors
@@ -429,6 +429,30 @@ function getPropType(prop: Record<string, unknown>): string {
   return 'string';
 }
 
+/**
+ * Whether the server marks a tool destructive (`annotations.destructiveHint`).
+ * Only an explicit `true` counts: the hint can make the approval gate ask, never
+ * stop it from asking (see `connectorActionPolicy.ts`).
+ */
+function readDestructiveHint(tool: unknown): boolean {
+  return readAnnotation(tool, 'destructiveHint');
+}
+
+/**
+ * Whether the server says a tool reaches the world outside it
+ * (`annotations.openWorldHint`). Like the destructive hint, only an explicit
+ * `true` counts, and the gate takes it only to confirm a sign of sending.
+ */
+function readOpenWorldHint(tool: unknown): boolean {
+  return readAnnotation(tool, 'openWorldHint');
+}
+
+function readAnnotation(tool: unknown, key: 'destructiveHint' | 'openWorldHint'): boolean {
+  const annotations = (tool as { annotations?: unknown }).annotations;
+  return typeof annotations === 'object' && annotations !== null
+    && (annotations as Record<string, unknown>)[key] === true;
+}
+
 /** Build ToolParameter map from an MCP inputSchema */
 function buildToolProperties(
   inputSchema: { properties?: Record<string, Record<string, unknown>>; required?: string[] },
@@ -711,6 +735,8 @@ export class MCPClientManager {
             return this.callTool(config.name, tool.name, input, toCallToolOpts(context));
           },
           ...(ui ? { ui } : {}),
+          ...(readDestructiveHint(tool) ? { mcpDestructiveHint: true } : {}),
+          ...(readOpenWorldHint(tool) ? { mcpOpenWorldHint: true } : {}),
         };
 
         // App-only tools stay out of the model's tool table (spec §4.1).
@@ -1216,6 +1242,8 @@ export class MCPClientManager {
             return this.callTool(config.name, tool.name, input, toCallToolOpts(context));
           },
           ...(ui ? { ui } : {}),
+          ...(readDestructiveHint(tool) ? { mcpDestructiveHint: true } : {}),
+          ...(readOpenWorldHint(tool) ? { mcpOpenWorldHint: true } : {}),
         };
 
         // App-only tools stay out of the model's tool table (spec §4.1).

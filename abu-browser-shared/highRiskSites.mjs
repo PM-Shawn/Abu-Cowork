@@ -26,25 +26,26 @@
  * If a page-derived signal is ever wanted, it may only TIGHTEN (turn a
  * not-high-risk URL into high-risk); it may never relax a URL-based verdict.
  *
- * ## Known evasion, and why it is acceptable
+ * ## What counts
  *
- * A page can shed the PATH classifier at will — `history.replaceState({}, '',
- * '/x')` rewrites the address bar without a navigation, and the next call
- * resolves a URL with no money-movement keyword in it. That is fail-safe, not
- * a hole: evasion only returns the call to the ORDINARY gate, which for an
- * unattended run still requires a standing `'allowed'` site grant, still pins
- * the origin at execution time, and still refuses scripting. The escape route
- * leads back to the fence, not past it. The domain table is unaffected by this
- * (a host cannot be rewritten without actually navigating).
+ * Two kinds of host, and nothing else: money-movement domains (payment
+ * processors, banks, brokerages, exchanges) and government hosts. The path is
+ * not read. Path keywords (`/payment`, `/transfer`, `/checkout`, …) used to
+ * flag any site, which turned a company OA's `/finance/payment/list` report
+ * page into a bank: every click asked, in every mode, with no way to remember.
+ * On a money domain the whole host is high-risk already, so a keyword added
+ * nothing there.
+ *
+ * The caller decides what each kind means: on a money domain every action asks
+ * and nothing is remembered; on a government host the first action of a task
+ * asks. Opening and reading a page is not an action (`navigatesOnly`).
  *
  * ## Deliberately minimal, deliberately incomplete
  *
- * The domain table below is a short list of unambiguous money-movement and
- * government hosts, not an attempt at completeness — an incomplete list is not
- * a hole in the fence, because everything it misses still falls through to the
- * ordinary site-verdict + operation-policy gate. The path patterns are what
- * gives it reach beyond the list: `/checkout`, `/transfer`, `/wire` and their
- * kin appear on the long tail of sites nobody can enumerate.
+ * The domain table below is a list of unambiguous money-movement hosts, not an
+ * attempt at completeness — an incomplete list is not a hole in the fence,
+ * because everything it misses still falls through to the ordinary site
+ * configuration + operation-policy gate.
  */
 
 /**
@@ -62,7 +63,7 @@ const MONEY_MOVEMENT_DOMAINS = [
   'venmo.com',
   'alipay.com',
   'unionpay.com',
-  // Banks (a representative few — the path patterns carry the long tail)
+  // Banks (a representative few; an unlisted bank falls back to the ordinary site gate)
   'chase.com',
   'bankofamerica.com',
   'wellsfargo.com',
@@ -73,12 +74,39 @@ const MONEY_MOVEMENT_DOMAINS = [
   'boc.cn',
   'abchina.com',
   'cmbchina.com',
-  // Brokerages / crypto exchanges
+  'bankcomm.com',
+  'psbc.com',
+  'cib.com.cn',
+  'spdb.com.cn',
+  'cebbank.com',
+  'citicbank.com',
+  'cmbc.com.cn',
+  'hxb.com.cn',
+  'cgbchina.com.cn',
+  'bank.pingan.com',
+  'bankofbeijing.com.cn',
+  'mybank.cn',
+  'webank.com',
+  // Payment and clearing services in China
+  'tenpay.com',
+  'pay.weixin.qq.com',
+  '95516.com',
+  '99bill.com',
+  'yeepay.com',
+  'lianlianpay.com',
+  'jdpay.com',
+  // Brokerages / crypto exchanges (the web trading hosts of the large Chinese securities firms first)
+  'citics.com',
+  'htsc.com.cn',
+  'gtja.com',
+  'cmschina.com',
+  'gf.com.cn',
   'schwab.com',
   'fidelity.com',
   'robinhood.com',
   'coinbase.com',
   'binance.com',
+  'okx.com',
 ];
 
 /**
@@ -96,25 +124,6 @@ const GOVERNMENT_HOST_SUFFIXES = [
 ];
 
 /**
- * Money-movement path keywords. Anchored to path-SEGMENT-ish boundaries on
- * purpose: a bare substring match flags `/hardwired`, `/repayments` and
- * `/checkouts-are-hard`, and a control that cries wolf on a blog post is a
- * control users switch off.
- */
-const MONEY_MOVEMENT_PATH_KEYWORDS = [
-  'transfer',
-  'payment',
-  'checkout',
-  'wire',
-  'remit',
-];
-
-const MONEY_MOVEMENT_PATH_PATTERN = new RegExp(
-  `(?:^|[/_.\\-])(${MONEY_MOVEMENT_PATH_KEYWORDS.join('|')})(?:s)?(?:[/_.\\-]|$)`,
-  'i',
-);
-
-/**
  * `host` is exactly `suffix`, or a subdomain of it. NOT `endsWith`: that would
  * hand `evilstripe.com` the verdict earned by `stripe.com`, and a lookalike
  * domain is the first thing an attacker reaches for.
@@ -122,20 +131,6 @@ const MONEY_MOVEMENT_PATH_PATTERN = new RegExp(
 function hostMatchesSuffix(host, suffix) {
   if (host === suffix) return true;
   return host.endsWith(`.${suffix}`);
-}
-
-/**
- * Percent-encoding must not be an escape hatch: `/%74%72%61%6e%73%66%65%72`
- * loads exactly the same page as `/transfer`, and `URL.pathname` keeps the
- * encoded spelling. Decoding failure (a lone `%`) falls back to the raw path —
- * matching on something is better than matching on nothing.
- */
-function decodedPath(pathname) {
-  try {
-    return decodeURIComponent(pathname);
-  } catch {
-    return pathname;
-  }
 }
 
 /**
@@ -171,11 +166,8 @@ export function classifyHighRiskUrl(url) {
     if (hostMatchesSuffix(host, suffix)) return { reason: 'government-domain', matched: suffix };
   }
 
-  // Only the PATH, never the query: `?q=payment` is a search for the word, not
-  // a payment page, and flagging it would make the control noise.
-  const match = MONEY_MOVEMENT_PATH_PATTERN.exec(decodedPath(parsed.pathname));
-  if (match) return { reason: 'money-movement-path', matched: match[1].toLowerCase() };
-
+  // A money-movement keyword in the path of any other site is no longer a
+  // verdict: see "What counts" in this module's doc.
   return null;
 }
 

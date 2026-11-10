@@ -1,5 +1,5 @@
 /** Why a URL was classified high-risk. Surfaced in the refusal/confirmation copy. */
-export type HighRiskReason = 'money-domain' | 'government-domain' | 'money-movement-path';
+export type HighRiskReason = 'money-domain' | 'government-domain';
 
 export interface HighRiskSiteMatch {
   reason: HighRiskReason;

@@ -146,15 +146,62 @@ export interface TabClaimStore {
   releaseOwner(conversationId: string, runKey?: string): number;
   /** Drop every claim — the connection that minted them is gone. */
   releaseAll(): void;
+  /** Remember that `owner`'s task opened `tabId` itself (`create_tab`). */
+  markOpened(tabId: number, owner: Owner): void;
+  /**
+   * The owner whose task opened `tabId`, or `null` for a tab the user opened.
+   * Survives `releaseOwner` (a later turn of the same conversation may close
+   * the tab it opened earlier) and ends when the tab closes or the bridge
+   * connection goes away.
+   */
+  openedBy(tabId: number): Owner | null;
+  /** Record that `owner`'s task just acted on `tabId`. */
+  noteDriven(tabId: number, owner: Owner, at: number): void;
+  /**
+   * A tab that `openerTabId` spawned (a link with target=_blank, window.open)
+   * within `SPAWN_ADOPT_WINDOW_MS` of a task interacting with the opener was
+   * opened by that task's own action, so it counts as opened by the task:
+   * claimed for it and closable by it. A tab spawned while no task was
+   * interacting with the opener is the user's and is left alone.
+   * @returns the adopting owner, or `null`.
+   */
+  adoptSpawned(tabId: number, openerTabId: number, now: number): Owner | null;
   /** Diagnostics / tests. */
   entries(): ClaimRecord[];
 }
+
+/**
+ * How long after a task's interaction with a tab a new tab spawned from it
+ * still counts as the task's. A click that opens a new tab does so within a
+ * second or two; this leaves room for a slow redirect, and little for the user
+ * to open a tab of their own from the same page in between.
+ */
+export const SPAWN_ADOPT_WINDOW_MS = 8_000;
+
+/**
+ * Actions that can make a page open a new tab: the ones that interact with it.
+ * Reading a page (snapshot, text, screenshot, find, waiting) cannot, so a tab
+ * the user opens from a page the task merely read stays the user's.
+ */
+const TAB_SPAWNING_ACTIONS: ReadonlySet<string> = new Set([
+  'click',
+  'keyboard',
+  'fill',
+  'select',
+  'navigate',
+  'execute_js',
+  'download',
+]);
 
 export function createTabClaimStore(): TabClaimStore {
   /** tabId -> the owner that claimed it. */
   const claims = new Map<number, ClaimRecord>();
   /** owner key -> that owner's most recently acted-on tab. */
   const currentTabByOwner = new Map<string, number>();
+  /** tabId -> the owner whose task opened it with `create_tab`. */
+  const openedTabs = new Map<number, Owner>();
+  /** tabId -> the owner that last acted on it, and when. */
+  const lastDriven = new Map<number, { owner: Owner; at: number }>();
 
   function inScope(owner: Owner, conversationId: string, runKey?: string): boolean {
     if (owner.conversationId !== conversationId) return false;
@@ -178,6 +225,8 @@ export function createTabClaimStore(): TabClaimStore {
     },
     releaseTab(tabId) {
       claims.delete(tabId);
+      openedTabs.delete(tabId);
+      lastDriven.delete(tabId);
       // A tab that is gone must not stay anyone's fallback target, including a
       // sibling run that only ever touched it.
       for (const [ownerKey, current] of currentTabByOwner) {
@@ -197,11 +246,35 @@ export function createTabClaimStore(): TabClaimStore {
           currentTabByOwner.delete(ownerKey);
         }
       }
+      // The run is over: nothing it does from here on can spawn a tab.
+      for (const [tabId, driven] of lastDriven) {
+        if (inScope(driven.owner, conversationId, runKey)) lastDriven.delete(tabId);
+      }
       return dropped;
     },
     releaseAll() {
       claims.clear();
       currentTabByOwner.clear();
+      openedTabs.clear();
+      lastDriven.clear();
+    },
+    markOpened(tabId, owner) {
+      if (isLegacyOwner(owner)) return;
+      openedTabs.set(tabId, owner);
+    },
+    openedBy(tabId) {
+      return openedTabs.get(tabId) ?? null;
+    },
+    noteDriven(tabId, owner, at) {
+      if (isLegacyOwner(owner)) return;
+      lastDriven.set(tabId, { owner, at });
+    },
+    adoptSpawned(tabId, openerTabId, now) {
+      const driven = lastDriven.get(openerTabId);
+      if (!driven || now - driven.at > SPAWN_ADOPT_WINDOW_MS) return null;
+      if (!claims.has(tabId)) claims.set(tabId, { tabId, owner: driven.owner, claimedAt: now });
+      openedTabs.set(tabId, driven.owner);
+      return driven.owner;
     },
     entries() {
       return Array.from(claims.values());
@@ -406,6 +479,7 @@ export async function resolveTargetTab(
       );
     }
     store.touch(explicit, owner);
+    if (TAB_SPAWNING_ACTIONS.has(action)) store.noteDriven(explicit, owner, deps.now());
     return explicit;
   }
 

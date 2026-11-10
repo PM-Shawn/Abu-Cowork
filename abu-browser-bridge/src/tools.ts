@@ -573,6 +573,29 @@ export function registerTools(
   transport: BrowserTransport = chromeWsTransport,
   options: BrowserToolRegistrationOptions = { backend: 'chrome' },
 ): void {
+  if (options.backend === 'chrome') {
+    server.tool(
+      'create_tab',
+      "Open an HTTP(S) URL in a NEW tab in the user's Chrome, next to their own tabs, instead of navigating a tab the user opened. Returns the new tab ID; continue in that tab with navigate, snapshot and the other tools.",
+      { url: z.string().url().refine((url) => /^https?:/i.test(url), 'Only HTTP(S) URLs are allowed') },
+      async ({ url }, extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'create_tab', { url, ...ownerPayloadFromExtra(extra) }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+    server.tool(
+      'close_tab',
+      "Close a tab this task opened, once you no longer need it: one from create_tab, or one a page opened in a new tab right after your click there (get_tabs marks both ownedByYou). Tabs the user opened are never closed: the result says requires_user_action and the tab stays open. Do not retry.",
+      { tabId: z.coerce.number().int().positive().describe('A tab ID this task opened') },
+      async ({ tabId }, extra) => {
+        await ensureConnected(transport);
+        const res = await sendWithSignal(transport, 'close_tab', { tabId, ...ownerPayloadFromExtra(extra) }, extra);
+        return { content: [{ type: 'text' as const, text: formatResult(res) }] };
+      },
+    );
+  }
+
   if (options.backend === 'built-in') {
     server.tool(
       'retain_tab',

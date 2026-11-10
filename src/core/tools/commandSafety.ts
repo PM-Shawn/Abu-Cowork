@@ -21,6 +21,13 @@ export interface CommandAnalysis {
 export interface ConfirmationInfo {
   teamIdentity?: import('../agent/teamConfirmationIdentity').TeamConfirmationIdentity;
   command: string;
+  /**
+   * Command confirmations: the model's own one-line statement of what the command is for, in
+   * plain words (`commandPurpose`). It explains the step to a person who cannot read the
+   * command. It is the model's claim, so the system's own `reason` keeps its place and the exact
+   * command stays one click away; nothing decides on it.
+   */
+  purpose?: string;
   level: DangerLevel;
   reason: string;
   /**

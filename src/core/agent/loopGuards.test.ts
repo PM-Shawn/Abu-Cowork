@@ -25,6 +25,19 @@ describe('detectSemanticToolLoop', () => {
     ])).toBe('repeated_call');
   });
 
+  it('treats a run_command call with a reworded purpose as the same call', () => {
+    expect(detectSemanticToolLoop([
+      observed('run_command', { command: 'make', purpose: '编译' }),
+      observed('run_command', { command: 'make', purpose: '再编译一次' }),
+      observed('run_command', { command: 'make' }),
+    ])).toBe('repeated_call');
+    expect(detectSemanticToolLoop([
+      observed('run_command', { command: 'make a', purpose: '编译' }),
+      observed('run_command', { command: 'make b', purpose: '编译' }),
+      observed('run_command', { command: 'make c', purpose: '编译' }),
+    ])).toBeNull();
+  });
+
   it('does not flag repeated calls when their observable result changes', () => {
     expect(detectSemanticToolLoop([
       observed('computer', { action: 'screenshot' }, 'state-1'),

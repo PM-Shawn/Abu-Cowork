@@ -72,8 +72,18 @@ function hashText(value: string): string {
   return (hash >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * The inputs that decide what a call does. A command's `purpose` only words the step for the
+ * person, so the same command with a reworded purpose is still the same call.
+ */
+function effectiveInput(observation: ToolLoopObservation): unknown {
+  if (observation.name !== 'run_command') return observation.input;
+  const { purpose: _purpose, ...rest } = observation.input as Record<string, unknown>;
+  return rest;
+}
+
 function observationFingerprint(observation: ToolLoopObservation): string {
-  const input = JSON.stringify(stableValue(observation.input));
+  const input = JSON.stringify(stableValue(effectiveInput(observation)));
   const images = observation.images.map(hashText).join(',');
   return `${observation.name}:${hashText(input)}:${hashText(observation.result)}:${images}:${observation.error ? 1 : 0}`;
 }
@@ -89,7 +99,7 @@ export function minimizeToolLoopObservation(
   return {
     name: observation.name,
     input: {
-      fingerprint: hashText(JSON.stringify(stableValue(observation.input))),
+      fingerprint: hashText(JSON.stringify(stableValue(effectiveInput(observation)))),
     },
     result: hashText(observation.result),
     images: observation.images.map(hashText),

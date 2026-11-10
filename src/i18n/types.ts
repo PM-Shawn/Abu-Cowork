@@ -5410,6 +5410,8 @@ export interface TranslationDict {
       pdfDamaged: string;
       /** The file is over the document reader's input limit. {name}, {size}, {limit} */
       tooLarge: string;
+      /** A picture file the viewer could not open. {detail} */
+      pictureUnopenable: string;
     };
     // read_file / write_file / edit_file
     file: {

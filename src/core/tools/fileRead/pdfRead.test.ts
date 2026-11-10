@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolResultContent } from '@/types';
-import type { PdfPageProbe, PdfReadProbe } from './documentProbe';
-import { buildPdfReadResult, lookReasons, readPdf } from './pdfRead';
+import type { PdfPageProbe, PdfReadProbe, PdfViewProbe } from './documentProbe';
+import { buildPdfReadResult, buildPdfViewResult, lookReasons, readPdf } from './pdfRead';
 import type { DocumentReadParams } from './readParams';
 
 function page(n: number, fields: Partial<PdfPageProbe> = {}): PdfPageProbe {
@@ -65,6 +65,7 @@ describe('buildPdfReadResult', () => {
     // Every page of a long scan needs its image for something; the task decides which to look at.
     expect(text).toContain('No page images come with a full read of a document of more than 3 pages; the lines above say which pages hold content seen only in their images. Look at the pages the answer needs, not at every page listed: pages="1" shows one page, pages="1-2" a range (up to 4 page images per call).');
     expect(text).not.toMatch(/need a look|pages 1–23, which/);
+    expect(text).toContain('call read_file with pages="18" and region=');
     expect(text).toContain('--- Page 18 ---\ntext of page 18');
     expect(imagesOf(result)).toHaveLength(0);
   });
@@ -80,6 +81,9 @@ describe('buildPdfReadResult', () => {
     expect(text).toContain('Little or no text: page 2.');
     expect(text).toContain('Vector drawings (300+ lines and shapes): pages 1–2.');
     expect(text).toContain('Page images attached below, in this order: pages 1, 2. Rulers on the top and left edges');
+    // The turn is named by how the content lies, and region follows the turn.
+    expect(text).toContain('270 when it lies turned a quarter clockwise (the tops of its letters face right), 90 when turned a quarter counter-clockwise');
+    expect(text).toContain('region is given on the turned image, as its rulers show: to zoom into content you have seen only unturned, call with rotate alone first.');
     expect(imagesOf(result)).toHaveLength(2);
     expect(labelsOf(result)).toEqual([
       '[Page 1 of pier.pdf, whole page, 1034×1426 px]',
@@ -112,6 +116,7 @@ describe('buildPdfReadResult', () => {
     const result = buildPdfReadResult(pdf([page(1, { chars: 0, images: 1, image_share: 1, img })]), { fileName, vision: false, explicitPages: false });
     expect(imagesOf(result)).toHaveLength(0);
     expect(textOf(result)).toContain('This model cannot see images, so no page images are attached. Page 1 holds content that is only visible as images or drawings');
+    expect(textOf(result)).not.toContain('region=');
   });
 
   it('with pages: attaches every rendered page and names the ones past the per-call limit', () => {
@@ -149,12 +154,49 @@ describe('buildPdfReadResult', () => {
   });
 });
 
+describe('buildPdfViewResult', () => {
+  const view = (fields: Partial<PdfViewProbe> = {}): PdfViewProbe => ({
+    ok: true, pages: 23, page: { ...page(18, { chars: 93, ocr: true, images: 1, image_share: 0.72 }) },
+    region: [0.25, 0.2, 0.9, 0.5], rotate: 0, rulers: [[0.25, 0.9], [0.2, 0.5]],
+    img: { data: 'ZZZZ', w: 1643, h: 1070 }, text: '乙方(签字): 张三', ...fields,
+  });
+
+  it('returns the enlarged region with its label and the OCR text inside it', () => {
+    const result = buildPdfViewResult(view(), { fileName, vision: true });
+    expect(textOf(result)).toContain('[PDF page 18 of 23: region x 0.25–0.9, y 0.2–0.5, shown at 1643×1070 px. The rulers give fractions of the whole page as shown here (x along the top, y down the side)');
+    expect(textOf(result)).toContain('Text layer inside this region (scanner OCR: it can misread characters; check them against the image):\n乙方(签字): 张三');
+    expect(labelsOf(result)).toEqual(['[Page 18 of contract.pdf, region x 0.25–0.9, y 0.2–0.5, 1643×1070 px]']);
+  });
+
+  it('names the turn before the region it was cut from, and says when there is no text there', () => {
+    const text = textOf(buildPdfViewResult(view({ rotate: 90, text: '' }), { fileName, vision: true }));
+    expect(text).toContain('turned 90° clockwise, region x 0.25–0.9, y 0.2–0.5');
+    expect(text).toContain('keeping the same rotate');
+    expect(text).toContain('No text layer inside this region; read it from the image.');
+  });
+
+  it('says when a view enlarges a scan past its own pixels, so a smaller region would only blur', () => {
+    const tight = textOf(buildPdfViewResult(view({ scan_zoom: 8 }), { fileName, vision: true }));
+    expect(tight).toContain("This view enlarges the scan's own pixels about 8 times: a smaller region shows no more detail, only more blur. Read what is legible at this size, and if a character stays unclear, say which one instead of zooming further.");
+    expect(textOf(buildPdfViewResult(view({ scan_zoom: 1.4 }), { fileName, vision: true }))).not.toContain('enlarges');
+    expect(textOf(buildPdfViewResult(view({ scan_zoom: null }), { fileName, vision: true }))).not.toContain('enlarges');
+    expect(buildPdfViewResult(view({ scan_zoom: 8, img: null }), { fileName, vision: false })).not.toContain('enlarges');
+  });
+
+  it('gives a model that cannot see the region text alone', () => {
+    const result = buildPdfViewResult(view({ img: null }), { fileName, vision: false });
+    expect(typeof result).toBe('string');
+    expect(result).toContain('only the text layer inside the region is shown');
+  });
+});
+
 describe('readPdf', () => {
   beforeEach(() => vi.mocked(invoke).mockReset());
 
   const params = (fields: Partial<DocumentReadParams> = {}): DocumentReadParams =>
-    ({ pages: null, ...fields });
+    ({ pages: null, region: null, rotate: 0, ...fields });
   const optionsOf = () => JSON.parse((vi.mocked(invoke).mock.calls[0][1] as { args: string[] }).args[3]);
+  const operationOf = () => (vi.mocked(invoke).mock.calls[0][1] as { args: string[] }).args[2];
 
   it('asks for renders only when the model can see', async () => {
     vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: JSON.stringify(pdf([page(1)])), stderr: '' });
@@ -167,6 +209,18 @@ describe('readPdf', () => {
     expect(optionsOf()).toMatchObject({ render: true, pages: [[2, 3]] });
   });
 
+  it('views one page for region or rotate, and refuses several pages', async () => {
+    vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: JSON.stringify({ ok: true, pages: 1, page: page(1), region: [0, 0, 1, 1], rotate: 90, rulers: [[1, 0], [0, 1]], img: img, text: '' }), stderr: '' });
+    await readPdf('/d/a.pdf', params({ pages: [[5, 5]], rotate: 90 }), {});
+    expect(operationOf()).toBe('pdf-view');
+    expect(optionsOf()).toMatchObject({ page: 5, rotate: 90, side: 1600, render: true });
+
+    vi.mocked(invoke).mockClear();
+    const refused = await readPdf('/d/a.pdf', params({ pages: [[5, 6]], region: [0, 0, 0.5, 0.5] }), {});
+    expect(refused).toEqual({ kind: 'done', result: expect.stringMatching(/^Error: region and rotate show one page/) });
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
   it('falls back when Python cannot run, and reports a crash or a refusal as an error', async () => {
     vi.mocked(invoke).mockResolvedValueOnce({ code: 127, stdout: '', stderr: 'python3: command not found' });
     expect(await readPdf('/d/a.pdf', params(), {})).toEqual({ kind: 'fallback', detail: 'Python was not found' });
@@ -175,7 +229,7 @@ describe('readPdf', () => {
     expect(await readPdf('/d/a.pdf', params(), {})).toEqual({ kind: 'done', result: expect.stringMatching(/^Error: The PDF reader stopped before finishing \(output too large\)/) });
 
     vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: '{"ok":false,"error":"ValueError","message":"page 30 does not exist; the document has 23 pages"}', stderr: '' });
-    expect(await readPdf('/d/a.pdf', params({ pages: [[30, 30]] }), {}))
+    expect(await readPdf('/d/a.pdf', params({ pages: [[30, 30]], region: [0, 0, 1, 0.5] }), {}))
       .toEqual({ kind: 'done', result: 'Error: page 30 does not exist; the document has 23 pages' });
 
     vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: '{"ok":false,"error":"RuntimeError","message":"password-protected"}', stderr: '' });

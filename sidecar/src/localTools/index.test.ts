@@ -254,6 +254,15 @@ describe('executeLocalTool — read_file PDF/PPTX/archive escalation (P1-3d-4)',
     expect(readTextFile).not.toHaveBeenCalled();
   });
 
+
+  it('escalates a view of part of a picture, which the bundled Python renders, and reads a whole picture locally', async () => {
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.png', region: { x0: 0, y0: 0, x1: 0.5, y1: 0.5 } }, undefined))
+      .rejects.toThrow(/run_argv_command/);
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.jpg', rotate: 90 }, undefined))
+      .rejects.toThrow(/run_argv_command/);
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.png' }, { supportsVision: false }))
+      .resolves.toContain('/tmp/scan.png');
+  });
   it('does NOT escalate a .7z path — listArchiveContents has no run_argv_command branch for it, so it returns its normal "not supported" string locally (identical to what the reverse/shell path would return, no invoke call either way)', async () => {
     const result = await executeLocalTool('read_file', { path: '/tmp/archive.7z' }, undefined);
     expect(result).toBe('Archive listing not supported for .7z. Use run_command to extract.');

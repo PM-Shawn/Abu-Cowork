@@ -7,6 +7,8 @@ import { crc32, deflateSync } from 'node:zlib';
 import {
   DOCUMENT_PROBE_SCRIPT,
   type PdfReadProbe,
+  type PdfViewProbe,
+  type RasterViewProbe,
 } from './documentProbe';
 
 /**
@@ -130,6 +132,32 @@ describe.skipIf(!hasLibraries)('the probe program on generated files', () => {
     expect(refused).toMatchObject({ ok: false, error: 'ValueError', message: expect.stringContaining('has 1 pages') });
   });
 
+  it('pdf-view: a region enlarged, with the text layer inside it only', () => {
+    const view = run<PdfViewProbe>('pdf-view', { region: [0.5, 0.8, 1, 1], side: 600 }, join(dir, 'input.pdf'));
+    expect(view.ok).toBe(true);
+    expect(view.text).toContain('Total due 678.90');
+    expect(view.text).not.toContain('Invoice');
+    expect(view.img?.w).toBe(600 + 44);
+    expect(view.rulers).toEqual([[0.5, 1], [0.8, 1]]);
+  });
+
+  it('pdf-view: turns the page first, then cuts the region off the turned page', () => {
+    const turned = run<PdfViewProbe>('pdf-view', { rotate: 90, side: 400 }, join(dir, 'input.pdf'));
+    expect(turned.rulers).toEqual([[0, 1], [0, 1]]);
+    expect(turned.img?.w).toBe(400 + 44);
+    expect(turned.img?.h).toBe(300 + 26);
+    // Turned a quarter clockwise, the total at the original bottom right sits at the bottom left.
+    const corner = run<PdfViewProbe>('pdf-view', { rotate: 90, region: [0, 0.5, 0.3, 1], side: 400 }, join(dir, 'input.pdf'));
+    expect(corner.text).toContain('Total due 678.90');
+    expect(corner.text).not.toContain('Invoice');
+    expect(corner.rulers).toEqual([[0, 0.3], [0.5, 1]]);
+    const upsideDown = run<PdfViewProbe>('pdf-view', { rotate: 180, region: [0, 0, 0.5, 0.2], side: 400 }, join(dir, 'input.pdf'));
+    expect(upsideDown.text).toContain('Total due 678.90');
+    // Turned a quarter counter-clockwise, the heading at the original top left sits at the bottom left.
+    const counter = run<PdfViewProbe>('pdf-view', { rotate: 270, region: [0, 0.5, 0.3, 1], side: 400 }, join(dir, 'input.pdf'));
+    expect(counter.text).toContain('Invoice 12345');
+  });
+
   it('pdf-read: gives an OCR layer written in no order as lines sorted by their place on the page', () => {
     const [page] = run<PdfReadProbe>('pdf-read', {}, join(dir, 'ocr.pdf')).list;
     expect(page.ocr).toBe(true);
@@ -144,5 +172,33 @@ describe.skipIf(!hasLibraries)('the probe program on generated files', () => {
     expect(drawn.ocr).toBe(false);
     // Text a program drew where it wanted keeps the order it was drawn in.
     expect(drawn.text?.indexOf('Clause 4')).toBeLessThan(drawn.text?.indexOf('Clause 1') ?? -1);
+  });
+
+  it('pdf-view: the sorted OCR lines inside the region only, on a turned page too', () => {
+    const view = run<PdfViewProbe>('pdf-view', { region: [0, 0.3, 1, 0.65], render: false }, join(dir, 'ocr.pdf'));
+    expect(view.text).toBe('Clause 3 text\nClause 4 text\nClause 5 text');
+    // Turned a quarter clockwise, the page's lower half lies on the left.
+    const turned = run<PdfViewProbe>('pdf-view', { rotate: 90, region: [0, 0, 0.45, 1], render: false }, join(dir, 'ocr.pdf'));
+    expect(turned.text).toBe('Clause 5 text\nClause 6 ends the term');
+  });
+
+  it('image-view: crop, enlarge and turn a picture', () => {
+    const view = run<RasterViewProbe>('image-view', { region: [0.5, 0, 1, 1], side: 80 }, join(dir, 'input.png'));
+    expect(view).toMatchObject({ ok: true, format: 'PNG', size: [40, 20], region: [0.5, 0, 1, 1] });
+    expect(view.img?.w).toBe(80 + 44);
+  });
+
+  it('image-view: the size of a JPEG is the file\'s own, upright, also when it is decoded at a fraction of it', () => {
+    // 400×300; turned.jpg is stored the same way with EXIF orientation 6 (shown turned a quarter clockwise).
+    const made = spawnSync(python, ['-c', [
+      'import sys', 'from PIL import Image', "im = Image.new('RGB', (400, 300), 'white')",
+      "im.save(sys.argv[1] + '/photo.jpg')", 'exif = Image.Exif()', 'exif[0x0112] = 6',
+      "im.save(sys.argv[1] + '/turned.jpg', exif=exif.tobytes())",
+    ].join('\n'), dir], { encoding: 'utf8' });
+    expect(made.status).toBe(0);
+    // side 80: Pillow decodes the whole picture at half size (200×150).
+    expect(run<RasterViewProbe>('image-view', { side: 80 }, join(dir, 'photo.jpg')).size).toEqual([400, 300]);
+    expect(run<RasterViewProbe>('image-view', { side: 80 }, join(dir, 'turned.jpg')).size).toEqual([300, 400]);
+    expect(run<RasterViewProbe>('image-view', { region: [0, 0, 0.25, 0.25], side: 80 }, join(dir, 'turned.jpg')).size).toEqual([300, 400]);
   });
 });

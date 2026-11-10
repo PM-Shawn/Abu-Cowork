@@ -7,12 +7,19 @@ import {
   type PdfPageFacts,
   type PdfPageProbe,
   type PdfReadProbe,
+  type PdfViewProbe,
   type ProbeOutcome,
 } from './documentProbe';
 import {
+  asksForView,
+  describeView,
+  enlargedNote,
   formatPageList,
   pagesArgument,
   READ_TEXT_BYTE_BUDGET,
+  singlePage,
+  TURN_HINT,
+  viewRulerNote,
   type DocumentReadParams,
 } from './readParams';
 import { labeledImage, withImages } from './resultImages';
@@ -27,7 +34,7 @@ import { labeledImage, withImages } from './resultImages';
  * says nothing about figures, stamps, signatures or vector drawings; a page
  * picture shows all of that but can blur small print. The manifest says which
  * is which, so the model knows where to trust the text and where to look, and
- * how to look closer (`pages`).
+ * how to look closer (`pages`, `region`, `rotate`).
  */
 
 /**
@@ -52,6 +59,8 @@ export const PDF_MAX_PAGE_IMAGES = 4;
 export const PDF_TEXT_BUDGET = 100_000;
 /** Long side of a whole-page image, before its rulers. */
 const PAGE_SIDE = 1400;
+/** Long side of a region or a turned page, before its rulers. */
+const VIEW_SIDE = 1600;
 /** A page with this many vector paths is mentioned as holding lines or shapes. */
 const SOME_PATHS = 10;
 
@@ -77,6 +86,10 @@ export function lookReasons(page: PdfPageFacts): string[] {
 const needsLook = (page: PdfPageFacts) => lookReasons(page).length > 0;
 
 const RULER_NOTE = 'Rulers on the top and left edges mark fractions of the page in tenths (0 = top/left, 1 = bottom/right).';
+
+function zoomHint(example: number): string {
+  return `To look closer, call read_file with pages="${example}" and region={"x0":…,"y0":…,"x1":…,"y1":…} in those fractions: it shows that part of the page enlarged, with the text layer inside it. ${TURN_HINT}`;
+}
 
 /** "page 18" or "pages 1–3, 7". */
 function pagesText(pages: readonly number[]): string {
@@ -145,6 +158,8 @@ export function buildPdfReadResult(
   const attached = options.vision
     ? pages.filter((p) => p.img && (options.explicitPages || needsLook(p)))
     : [];
+  // The page most likely to need a closer look makes the example.
+  const example = pages.find((p) => p.chars < PDF_LOOK_RULE.littleText)?.n ?? look[0] ?? pages[0]?.n ?? 1;
   if (!options.vision) {
     if (look.length) {
       lines.push(`This model cannot see images, so no page images are attached. ${look.length === 1 ? 'Page' : 'Pages'} ${formatPageList(look)} ${look.length === 1 ? 'holds' : 'hold'} content that is only visible as images or drawings; if the answer depends on it, say that it could not be checked.`);
@@ -174,6 +189,7 @@ export function buildPdfReadResult(
     if (!look.length && !options.explicitPages) {
       lines.push('No page needs a look: the text layer carries the content. To see a page anyway, call read_file with pages.');
     }
+    lines.push(zoomHint(attached[0]?.n ?? example));
   }
   if (probe.text_cut_at !== null) {
     lines.push(`The text stops at page ${probe.text_cut_at} (about ${PDF_TEXT_BUDGET.toLocaleString('en-US')} characters per read). To read on, call read_file with pages="${probe.text_cut_at}-".`);
@@ -186,6 +202,38 @@ export function buildPdfReadResult(
     `${pageLabel(options.fileName, page.n)}, whole page, ${page.img!.w}×${page.img!.h} px`,
     page.img!,
   )));
+}
+
+/** The result of a region or rotated view of one page. */
+export function buildPdfViewResult(
+  view: PdfViewProbe,
+  options: { fileName: string; vision: boolean },
+): string | ToolResultContent[] {
+  const page = view.page;
+  const where = describeView(view.region, view.rotate, 'whole page');
+  const lines: string[] = [];
+  if (options.vision && view.img) {
+    lines.push(`[PDF page ${page.n} of ${view.pages}: ${where}, shown at ${view.img.w}×${view.img.h} px. ${viewRulerNote('page')}]`);
+  } else {
+    lines.push(`[PDF page ${page.n} of ${view.pages}: ${where}]`);
+    lines.push(options.vision
+      ? 'The view came out too large to return; ask for a smaller region.'
+      : 'This model cannot see images, so only the text layer inside the region is shown. If the answer depends on what the page shows, say that it could not be checked.');
+  }
+  const enlarged = options.vision && view.img ? enlargedNote(view.scan_zoom, 'scan') : '';
+  if (enlarged) lines.push(enlarged);
+  const text = view.text.trim();
+  if (!text) {
+    lines.push('No text layer inside this region; read it from the image.');
+  } else if (page.garbled) {
+    lines.push(`Text layer inside this region (garbled on this page: do not trust these characters):\n${text}`);
+  } else if (page.ocr) {
+    lines.push(`Text layer inside this region (scanner OCR: it can misread characters; check them against the image):\n${text}`);
+  } else {
+    lines.push(`Text layer inside this region (exact characters):\n${text}`);
+  }
+  if (!options.vision || !view.img) return lines.join('\n');
+  return withImages(lines.join('\n'), labeledImage(`${pageLabel(options.fileName, page.n)}, ${where}, ${view.img.w}×${view.img.h} px`, view.img));
 }
 
 function probeFailure(outcome: Exclude<ProbeOutcome<unknown>, { status: 'ok' }>, fileName: string): DocumentReadOutcome {
@@ -221,6 +269,17 @@ export async function readPdf(
 ): Promise<DocumentReadOutcome> {
   const vision = context?.supportsVision !== false;
   const fileName = getBaseName(filePath);
+  if (asksForView(params)) {
+    const page = singlePage(params.pages);
+    if (params.pages && page === null) {
+      return { kind: 'done', result: 'Error: region and rotate show one page; pass pages with a single page number, e.g. pages="18".' };
+    }
+    const outcome = await runDocumentProbe<PdfViewProbe>(filePath, 'pdf-view', {
+      page, region: params.region, rotate: params.rotate, side: VIEW_SIDE, render: vision,
+    }, context);
+    if (outcome.status !== 'ok') return probeFailure(outcome, fileName);
+    return { kind: 'done', result: buildPdfViewResult(outcome.value, { fileName, vision }) };
+  }
   const outcome = await runDocumentProbe<PdfReadProbe>(filePath, 'pdf-read', {
     pages: params.pages,
     render: vision,

@@ -1,9 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
+  describeView,
   formatPageList,
   pagesArgument,
   parseDocumentReadParams,
   parsePages,
+  parseRegion,
+  parseRotation,
+  singlePage,
 } from './readParams';
 
 describe('parsePages', () => {
@@ -24,10 +28,38 @@ describe('parsePages', () => {
   });
 });
 
+describe('parseRegion', () => {
+  it('takes an object, an array or JSON text, with numbers as strings', () => {
+    expect(parseRegion({ x0: 0.5, y0: 0.6, x1: 1, y1: 1 })).toEqual([0.5, 0.6, 1, 1]);
+    expect(parseRegion([0, 0, 0.5, 0.5])).toEqual([0, 0, 0.5, 0.5]);
+    expect(parseRegion('{"x0":"0.1","y0":0.2,"x1":0.3,"y1":0.4}')).toEqual([0.1, 0.2, 0.3, 0.4]);
+    expect(parseRegion(undefined)).toBeNull();
+  });
+
+  it('refuses pixels, missing corners, an empty box and garbage', () => {
+    expect(parseRegion({ x0: 0, y0: 0, x1: 800, y1: 600 })).toEqual({ error: expect.stringMatching(/fractions between 0 and 1/) });
+    expect(parseRegion({ x0: 0, y0: 0, x1: 0.5 })).toHaveProperty('error');
+    expect(parseRegion({ x0: 0.5, y0: 0, x1: 0.5, y1: 1 })).toEqual({ error: expect.stringMatching(/empty/) });
+    expect(parseRegion('lower right')).toHaveProperty('error');
+    expect(parseRegion(7)).toHaveProperty('error');
+  });
+});
+
+describe('parseRotation', () => {
+  it('takes quarter turns clockwise, -90 as 270', () => {
+    expect(parseRotation(90)).toBe(90);
+    expect(parseRotation('180')).toBe(180);
+    expect(parseRotation(-90)).toBe(270);
+    expect(parseRotation(undefined)).toBe(0);
+    expect(parseRotation(45)).toHaveProperty('error');
+  });
+});
+
 describe('parseDocumentReadParams', () => {
   it('collects every parameter, or the first one that cannot be used', () => {
-    expect(parseDocumentReadParams({ path: '/a.pdf', pages: '18' })).toEqual({ pages: [[18, 18]] });
-    expect(parseDocumentReadParams({ path: '/a.pdf', pages: 'x' })).toEqual({ error: expect.stringMatching(/^pages/) });
+    expect(parseDocumentReadParams({ path: '/a.pdf', pages: '18', region: [0, 0, 0.5, 0.5], rotate: 90 }))
+      .toEqual({ pages: [[18, 18]], region: [0, 0, 0.5, 0.5], rotate: 90 });
+    expect(parseDocumentReadParams({ path: '/a.pdf', pages: 'x', rotate: 45 })).toEqual({ error: expect.stringMatching(/^pages/) });
   });
 });
 
@@ -36,6 +68,15 @@ describe('page lists', () => {
     expect(formatPageList([1, 2, 3, 5, 9, 10, 2])).toBe('1–3, 5, 9–10');
     expect(pagesArgument([7, 8, 9])).toBe('7-9');
     expect(pagesArgument([18])).toBe('18');
+    expect(singlePage([[18, 18]])).toBe(18);
+    expect(singlePage([[3, 5]])).toBeNull();
+    expect(singlePage(null)).toBeNull();
+  });
+
+  it('describes a view', () => {
+    expect(describeView([0, 0, 1, 1], 0, 'whole page')).toBe('whole page');
+    expect(describeView([0.25, 0.2, 0.9, 0.5], 90, 'whole page')).toBe('turned 90° clockwise, region x 0.25–0.9, y 0.2–0.5');
+    expect(describeView([0, 0, 1, 1], 270, 'whole page')).toBe('turned 270° clockwise, whole page');
   });
 
   it('asks for exactly the pages of the list: pages apart stay apart, so a call never asks for more than the cap', () => {

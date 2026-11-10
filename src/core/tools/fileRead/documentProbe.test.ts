@@ -20,7 +20,7 @@ describe('DOCUMENT_PROBE_SCRIPT', () => {
 
   it('reads the file from its last argument and answers every operation', () => {
     expect(DOCUMENT_PROBE_SCRIPT).toContain('OP, O, SRC = A[1], json.loads(A[2] or \'{}\'), A[3]');
-    for (const operation of ['pdf-read']) {
+    for (const operation of ['pdf-read', 'pdf-view', 'image-view']) {
       expect(DOCUMENT_PROBE_SCRIPT).toContain(`'${operation}'`);
     }
   });
@@ -46,10 +46,10 @@ describe('runDocumentProbe', () => {
 
   it('passes the operation and the options as separate arguments, and the path last', async () => {
     vi.mocked(invoke).mockResolvedValueOnce(answer('{"ok":true}'));
-    await runDocumentProbe('/tmp/a b.pdf', 'pdf-read', { page: 2 }, undefined);
+    await runDocumentProbe('/tmp/a b.pdf', 'pdf-view', { page: 2 }, undefined);
     const [command, payload] = vi.mocked(invoke).mock.calls[0] as [string, { program: string; args: string[]; timeout: number }];
     expect(command).toBe('run_argv_command');
-    expect(payload.args).toEqual(['-c', DOCUMENT_PROBE_SCRIPT, 'pdf-read', '{"page":2}', '/tmp/a b.pdf']);
+    expect(payload.args).toEqual(['-c', DOCUMENT_PROBE_SCRIPT, 'pdf-view', '{"page":2}', '/tmp/a b.pdf']);
     expect(payload.timeout).toBe(30);
   });
 
@@ -57,14 +57,14 @@ describe('runDocumentProbe', () => {
     const runProcessor = vi.fn().mockResolvedValue(answer('{"ok":true}'));
     const stat = vi.fn().mockResolvedValue({ size: 1024 });
     const context = { files: { runProcessor, stat } as unknown as ToolFileAccess } as ToolExecutionContext;
-    await runDocumentProbe('/tmp/a.pdf', 'pdf-read', { render: true }, context);
-    expect(runProcessor).toHaveBeenCalledWith('/tmp/a.pdf', 'python3', ['-c', DOCUMENT_PROBE_SCRIPT, 'pdf-read', '{"render":true}', null]);
+    await runDocumentProbe('/tmp/a.png', 'image-view', { rotate: 90 }, context);
+    expect(runProcessor).toHaveBeenCalledWith('/tmp/a.png', 'python3', ['-c', DOCUMENT_PROBE_SCRIPT, 'image-view', '{"rotate":90}', null]);
     expect(invoke).not.toHaveBeenCalled();
   });
 
   it('reports what the program said about the file', async () => {
     vi.mocked(invoke).mockResolvedValueOnce(answer('{"ok":false,"error":"ValueError","message":"page 9 does not exist"}'));
-    expect(await runDocumentProbe('/tmp/a.pdf', 'pdf-read', {}, undefined))
+    expect(await runDocumentProbe('/tmp/a.pdf', 'pdf-view', {}, undefined))
       .toEqual({ status: 'failed', error: 'ValueError', message: 'page 9 does not exist' });
   });
 
@@ -101,7 +101,7 @@ describe('runDocumentProbe', () => {
     expect(crashed.status).toBe('crashed');
     expect(JSON.stringify(crashed)).not.toContain('zhangsan');
     vi.mocked(invoke).mockResolvedValueOnce(answer('{"ok":false,"error":"UnidentifiedImageError","message":"cannot identify image file \'C:\\\\Users\\\\张三\\\\a.png\'"}'));
-    expect(JSON.stringify(await runDocumentProbe('C:\\Users\\张三\\a.png', 'pdf-read', {}, undefined))).not.toContain('张三');
+    expect(JSON.stringify(await runDocumentProbe('C:\\Users\\张三\\a.png', 'image-view', {}, undefined))).not.toContain('张三');
   });
 
   it('reports an abort that happened while the program ran', async () => {

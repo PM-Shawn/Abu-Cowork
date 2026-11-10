@@ -19,6 +19,11 @@ import type { CommandOutput } from '../helpers/toolHelpers';
  *   An OCR layer whose lines were written in no order (they keep jumping back
  *   up the page) is given as lines sorted by their place on the page; any
  *   other text keeps the order its producer wrote it in.
+ * - `pdf-view`: one page, optionally turned and a region of it, rendered at
+ *   the scale the region needs, with the text the text layer holds inside it.
+ *   The page is turned first: a region is given on the turned page, the way
+ *   the model sees it, and the rulers mark that page's fractions.
+ * - `image-view`: the same for a raster image file (EXIF orientation applied).
  *
  * The program never writes a file. It is passed with `python -c`, without its
  * comment lines, so it stays well under the 32,768-character argument limit of
@@ -99,6 +104,27 @@ def rulers(im, hx, vy):
     return out
 
 
+def unturn(region, rot):
+    # region is given on the page as turned by rot degrees clockwise; this is the same box on the unturned page
+    u0, v0, u1, v1 = region
+    return {0: (u0, v0, u1, v1), 90: (v0, 1 - u1, v1, 1 - u0), 180: (1 - u1, 1 - v1, 1 - u0, 1 - v0), 270: (1 - v1, u0, 1 - v0, u1)}[rot]
+
+
+def ruled(reg):
+    # the rulers of a view mark fractions of the turned page or picture
+    return ((reg[0], reg[2]), (reg[1], reg[3]))
+
+
+def turn(im, rot):
+    from PIL import Image
+    T = Image.Transpose
+    return im.transpose({90: T.ROTATE_270, 180: T.ROTATE_180, 270: T.ROTATE_90}[rot]) if rot else im
+
+
+# raster formats only: Pillow also opens EPS/PS (Ghostscript) and other vector or odd formats from untrusted documents
+RASTER = ['PNG', 'JPEG', 'GIF', 'BMP', 'TIFF', 'WEBP', 'ICO', 'MPO']
+
+
 def jbytes(t):
     return len(json.dumps(t, ensure_ascii=False).encode('utf-8', 'surrogatepass')) - 2
 
@@ -114,6 +140,15 @@ def jpeg(im, budget):
         if len(s) <= budget:
             return {'data': s, 'w': img.width, 'h': img.height}
     return None
+
+
+def norm_region(r):
+    if not r:
+        return (0.0, 0.0, 1.0, 1.0)
+    x0, y0, x1, y1 = [min(1.0, max(0.0, float(v))) for v in r]
+    if x1 - x0 < 0.005 or y1 - y0 < 0.005:
+        raise ValueError('region is empty: x1 must be greater than x0 and y1 greater than y0')
+    return (x0, y0, x1, y1)
 
 
 BAD = re.compile('[�-\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]')
@@ -304,8 +339,119 @@ def pdf_read():
     emit({'ok': True, 'pages': n, 'unexamined_from': late, 'text_cut_at': cut, 'list': pages, 'seconds': round(time.time() - T0, 2)})
 
 
+def scan_density(page, c, ct):
+    # pixels per point of the largest picture on the page when it covers half the page or more (a scan), else None
+    if not hasattr(c, 'FPDFImageObj_GetImagePixelSize'):
+        return None
+    W, H = page.get_size()
+    L, B, R, T = ct.c_float(), ct.c_float(), ct.c_float(), ct.c_float()
+    pw, ph = ct.c_uint(), ct.c_uint()
+    best = [0.0, 0]
+
+    def walk(parent, form, depth):
+        m = c.FPDFFormObj_CountObjects(parent) if form else c.FPDFPage_CountObjects(parent)
+        for j in range(min(m, 20000)):
+            o = c.FPDFFormObj_GetObject(parent, j) if form else c.FPDFPage_GetObject(parent, j)
+            t = c.FPDFPageObj_GetType(o)
+            if t == c.FPDF_PAGEOBJ_IMAGE and c.FPDFPageObj_GetBounds(o, L, B, R, T) and c.FPDFImageObj_GetImagePixelSize(o, pw, ph):
+                area = abs(R.value - L.value) * abs(T.value - B.value)
+                if area > best[0]:
+                    best[0], best[1] = area, pw.value * ph.value
+            elif t == c.FPDF_PAGEOBJ_FORM and depth < 6:
+                walk(o, True, depth + 1)
+    walk(page.raw, False, 0)
+    if best[0] < 0.5 * W * H or not best[1]:
+        return None
+    return (best[1] / best[0]) ** 0.5
+
+
+def pdf_view():
+    import pypdfium2.raw as c, ctypes as ct
+    doc = pdf_open()
+    n = len(doc)
+    p = O.get('page')
+    if p is None:
+        if n > 1:
+            raise ValueError('region and rotate show one page: pass pages with one page number (this document has %d pages)' % n)
+        p = 1
+    if not 1 <= p <= n:
+        raise ValueError('page %d does not exist; the document has %d pages' % (p, n))
+    reg, rot = norm_region(O.get('region')), int(O.get('rotate') or 0)
+    page = doc[p - 1]
+    s, _, tp = pdf_stats(page, c, ct)
+    s['n'] = p
+    W, H = page.get_size()
+    x0, y0, x1, y1 = unturn(reg, rot)
+    # region corners in page space, through the page's own rotation
+    DW = 10000
+    DH = max(1, int(DW * H / W))
+    px, py = ct.c_double(), ct.c_double()
+    xs, ys = [], []
+    for dx, dy in ((x0, y0), (x1, y0), (x0, y1), (x1, y1)):
+        c.FPDF_DeviceToPage(page.raw, 0, 0, DW, DH, 0, int(dx * DW), int(dy * DH), px, py)
+        xs.append(px.value)
+        ys.append(py.value)
+    text = ocr_text(page, tp, c, ct, (x0, y0, x1, y1)) if s['ocr'] else None
+    if text is None:
+        text = tp.get_text_bounded(min(xs), min(ys), max(xs), max(ys)).replace('\r\n', '\n').replace('\r', '\n')
+    text = text.strip()
+    tp.close()
+    got, zoom = None, None
+    hx, vy = ruled(reg)
+    if O.get('render', True):
+        side = O.get('side', 1600)
+        scale = min(side / max((x1 - x0) * W, (y1 - y0) * H, 1), 16.0)
+        im = render_page(page, scale, (x0 * W, (1 - y1) * H, (1 - x1) * W, y0 * H))
+        got = jpeg(rulers(turn(im, rot), hx, vy), O.get('image_chars', 1300000))
+        # how many times the view enlarges the scan's own pixels
+        d = scan_density(page, c, ct)
+        zoom = round(scale / d, 1) if d else None
+    page.close()
+    emit({'ok': True, 'pages': n, 'page': s, 'region': reg, 'rotate': rot, 'rulers': [hx, vy], 'img': got, 'text': text[:20000], 'scan_zoom': zoom})
+
+
+def view(im, budget):
+    from PIL import Image, ImageOps
+    reg, rot, side = norm_region(O.get('region')), int(O.get('rotate') or 0), O.get('side', 1600)
+    x0, y0, x1, y1 = unturn(reg, rot)
+    if getattr(im, 'n_frames', 1) > 1:
+        im.seek(0)
+    # the picture's own size, upright: draft() decodes a JPEG at a fraction of it
+    W, H = im.size
+    if im.format == 'JPEG':
+        need = int(side / min(x1 - x0, y1 - y0))
+        im.draft('RGB', (need, need))
+    stored = im.size
+    im = ImageOps.exif_transpose(im)
+    if im.size != stored:
+        W, H = H, W
+    if im.mode in ('RGBA', 'LA', 'P', 'PA'):
+        im = im.convert('RGBA')
+        bg = Image.new('RGB', im.size, 'white')
+        bg.paste(im, mask=im.split()[-1])
+        im = bg
+    im = im.convert('RGB')
+    w, h = im.size
+    box = (int(x0 * w), int(y0 * h), max(int(x0 * w) + 1, round(x1 * w)), max(int(y0 * h) + 1, round(y1 * h)))
+    im = im.crop(box)
+    k = min(side / max(im.size), 4.0 if O.get('region') else 2.0)
+    if abs(k - 1) > 0.01:
+        im = im.resize((max(1, round(im.width * k)), max(1, round(im.height * k))), Image.LANCZOS)
+    hx, vy = ruled(reg)
+    return {'size': [W, H], 'region': reg, 'rotate': rot, 'rulers': [hx, vy], 'img': jpeg(rulers(turn(im, rot), hx, vy), budget), 'zoom': round(k, 1)}
+
+
+def image_view():
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 250000000
+    im = Image.open(SRC, formats=RASTER)
+    v = view(im, O.get('image_chars', 1300000))
+    v.update({'ok': True, 'format': im.format})
+    emit(v)
+
+
 try:
-    {'pdf-read': pdf_read}[OP]()
+    {'pdf-read': pdf_read, 'pdf-view': pdf_view, 'image-view': image_view}[OP]()
 except Exception as e:
     emit({'ok': False, 'error': type(e).__name__, 'message': str(e)[:500]})
 `;
@@ -359,7 +505,43 @@ export interface PdfReadProbe {
   seconds: number;
 }
 
-export type ProbeOperation = 'pdf-read';
+/** Corners of a view in page or picture fractions: [x0, y0, x1, y1]. */
+export type Region = [number, number, number, number];
+
+/** The page fractions at the start and end of the top ruler, then of the left ruler. */
+export type Rulers = [[number, number], [number, number]];
+
+export interface PdfViewProbe {
+  ok: true;
+  pages: number;
+  page: PdfPageFacts;
+  region: Region;
+  rotate: number;
+  rulers: Rulers;
+  img: ProbeImage | null;
+  /** Text layer characters inside the region. */
+  text: string;
+  /** On a scanned page: how many times the view enlarges the scan's own pixels. */
+  scan_zoom?: number | null;
+}
+
+export interface ImageViewProbe {
+  /** Size of the whole picture in pixels, after its EXIF orientation. */
+  size: [number, number];
+  region: Region;
+  rotate: number;
+  rulers: Rulers;
+  img: ProbeImage | null;
+  /** How many times the view enlarges the picture's own pixels. */
+  zoom?: number;
+}
+
+export interface RasterViewProbe extends ImageViewProbe {
+  ok: true;
+  format: string | null;
+}
+
+export type ProbeOperation = 'pdf-read' | 'pdf-view' | 'image-view';
 
 export type ProbeOutcome<T> =
   | { status: 'ok'; value: T }
@@ -390,6 +572,8 @@ export const PROBE_TIMEOUT_SECONDS = 30;
 
 const COMMAND_PREFIX: Record<ProbeOperation, string> = {
   'pdf-read': 'read-pdf',
+  'pdf-view': 'view-pdf',
+  'image-view': 'view-image',
 };
 
 /** The interpreter used for the probe on this platform (the host resolves it to the bundled one). */

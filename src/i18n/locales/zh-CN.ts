@@ -4290,6 +4290,7 @@ const zhCN: TranslationDict = {
       pdfPasswordProtected: 'Error: 这份 PDF 设有打开密码，读不到它的页面。要读它，需要一份没有密码的版本。',
       pdfDamaged: 'Error: 这份 PDF 打不开（{detail}），可能已损坏，或者并不是 PDF。',
       tooLarge: 'Error: {name} 太大了（{size}，文档读取器最多处理 {limit}），读不了。小一些的版本可以读，比如少几页，或者扫描分辨率低一些。',
+      pictureUnopenable: 'Error: 这张图片打不开（{detail}）。',
     },
     file: {
       imageSkipNoVision: '[图片文件 {path}（{mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]',

@@ -625,14 +625,12 @@ describe('outputSnapshots', () => {
   });
 
   describe('snapshotResultImage', () => {
-    it('copies a read_file image and records it as a result-image manifest entry', async () => {
-      const sourcePath = '/Users/testuser/Desktop/chart.png';
-      memFs.addUserFile(sourcePath, 256);
+    it('records the returned bytes of a read_file picture, never a copy of the file it was read from', async () => {
+      // A PDF page render: the file the tool read is the PDF, the picture is a JPEG.
+      memFs.addUserFile('/Users/testuser/Desktop/scan.pdf', 432_842, '%PDF-1.4');
+      const render = btoa('\xff\xd8\xff\xe0 rendered page');
 
-      await mod.snapshotResultImage(CONV_ID, 'toolu_read', {
-        mediaType: 'image/png',
-        base64: 'aWdub3JlZA==',
-      }, sourcePath);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_read', { mediaType: 'image/jpeg', base64: render });
 
       const manifest = await mod.__testing.loadManifest(CONV_ID);
       const entry = manifest.entries['tool-result://toolu_read'];
@@ -640,10 +638,15 @@ describe('outputSnapshots', () => {
         source: 'tool-output',
         refKind: 'result-image',
         refId: 'toolu_read',
-        basename: 'result.png',
-        snapshotRelPath: expect.stringMatching(/^files\/.+\/result\.png$/),
+        basename: 'result.jpg',
+        size: atob(render).length,
+        snapshotRelPath: expect.stringMatching(/^files\/.+\/result\.jpg$/),
       });
-      expect(memFs.copyFile).toHaveBeenCalledWith(sourcePath, expect.stringMatching(/result\.png$/));
+      expect(memFs.copyFile).not.toHaveBeenCalled();
+      expect(memFs.writeFile).toHaveBeenCalledWith(
+        expect.stringMatching(/files\/.+\/result\.jpg$/),
+        expect.any(Uint8Array),
+      );
     });
 
     it('writes base64 screenshot bytes and records the manifest entry', async () => {
@@ -662,30 +665,6 @@ describe('outputSnapshots', () => {
         refKind: 'result-image',
         refId: 'toolu_screen',
         basename: 'result.png',
-        size: 3,
-      });
-    });
-
-    it('materializes base64 under a stable manifest identity when the read_file source path is relative', async () => {
-      await mod.snapshotResultImage(CONV_ID, 'toolu_relative', {
-        mediaType: 'image/png',
-        base64: 'AQID',
-      }, 'assets/chart.png');
-
-      expect(memFs.copyFile).not.toHaveBeenCalled();
-      expect(memFs.writeFile).toHaveBeenCalledWith(
-        expect.stringMatching(/files\/.+\/result\.png$/),
-        expect.any(Uint8Array),
-      );
-
-      const manifest = await mod.__testing.loadManifest(CONV_ID);
-      const entry = manifest.entries['tool-result://toolu_relative'];
-      expect(entry).toMatchObject({
-        source: 'tool-output',
-        refKind: 'result-image',
-        refId: 'toolu_relative',
-        basename: 'result.png',
-        snapshotRelPath: expect.stringMatching(/^files\/.+\/result\.png$/),
         size: 3,
       });
     });
@@ -756,27 +735,16 @@ describe('outputSnapshots', () => {
       expect(Object.values(manifest.entries)).toHaveLength(1);
     });
 
-    it('keeps separate identities when different tool calls read the same changing path', async () => {
-      const sourcePath = '/Users/testuser/Desktop/chart.png';
-      memFs.addUserFile(sourcePath, 100);
-      await mod.snapshotResultImage(CONV_ID, 'toolu_first', {
-        mediaType: 'image/png',
-        base64: 'AQID',
-      }, sourcePath);
-
-      memFs.addUserFile(sourcePath, 200);
-      await mod.snapshotResultImage(CONV_ID, 'toolu_second', {
-        mediaType: 'image/png',
-        base64: 'BAUG',
-      }, sourcePath);
+    it('keeps separate identities and bytes for different tool calls', async () => {
+      await mod.snapshotResultImage(CONV_ID, 'toolu_first', { mediaType: 'image/png', base64: 'AQID' });
+      await mod.snapshotResultImage(CONV_ID, 'toolu_second', { mediaType: 'image/png', base64: 'BAUGBw==' });
 
       const manifest = await mod.__testing.loadManifest(CONV_ID);
       const first = manifest.entries['tool-result://toolu_first'];
       const second = manifest.entries['tool-result://toolu_second'];
-      expect(first).toMatchObject({ refId: 'toolu_first', size: 100 });
-      expect(second).toMatchObject({ refId: 'toolu_second', size: 200 });
+      expect(first).toMatchObject({ refId: 'toolu_first', size: 3 });
+      expect(second).toMatchObject({ refId: 'toolu_second', size: 4 });
       expect(first.snapshotRelPath).not.toBe(second.snapshotRelPath);
-      expect(memFs.copyFile.mock.calls[0][1]).not.toBe(memFs.copyFile.mock.calls[1][1]);
     });
 
     it.each([
@@ -1183,8 +1151,7 @@ describe('outputSnapshots', () => {
 
     it('neither counts nor evicts tool-result images and shared attachments', async () => {
       const base64 = btoa('x');
-      memFs.addUserFile(`${DESKTOP}/shot.png`, 150 * MB);
-      await mod.snapshotResultImage(CONV_ID, 'toolu_1', { type: 'image', mediaType: 'image/png', base64 }, `${DESKTOP}/shot.png`);
+      await mod.snapshotResultImage(CONV_ID, 'toolu_1', { type: 'image', mediaType: 'image/png', base64 });
       await mod.installSharedAttachments(CONV_ID, {
         shared: { basename: 'shared.pdf', originalPath: '/elsewhere/shared.pdf', source: 'tool-output', sizeBytes: 900 * MB, data: base64 },
       });

@@ -833,16 +833,15 @@ export async function snapshotUserUpload(
 /**
  * Persist an image returned in a tool result.
  *
- * A read_file result can retain the original path and therefore uses the same
- * copy-based snapshot route as every other filesystem file. Computer-use
- * screenshots have no source path, so their base64 bytes are materialised
- * directly under the ordinary outputs/files/{hash}/ layout instead.
+ * The record is always the bytes the tool returned: the file a tool read may
+ * only be the source of the picture (a PDF, an Office file, a region or scaled
+ * view), and later turns refill the picture from this record. The bytes are
+ * written under the ordinary outputs/files/{hash}/ layout.
  */
 export async function snapshotResultImage(
   convId: string,
   toolCallId: string,
   imageBlock: ToolResultImage,
-  sourcePath?: string,
 ): Promise<void> {
   if (!toolCallId || !imageBlock.base64) return;
   const imageBase64 = imageBlock.base64;
@@ -871,17 +870,6 @@ export async function snapshotResultImage(
       (entry) => entry.source === meta.source && entry.refId === meta.refId && entry.refKind === meta.refKind,
     );
     if (alreadySnapshotted) return;
-
-    if (sourcePath) {
-      const expanded = await expandTilde(sourcePath);
-      const normalized = normalizePath(expanded);
-      if (!isAbsolutePath(normalized)) {
-        logger.warn('[snapshot] rejected non-absolute result image path', { sourcePath, normalized });
-      } else {
-        await snapshotFileNormalized(convId, normalized, meta, originalPath, basename);
-        return;
-      }
-    }
 
     let decodedSize = 0;
     try {

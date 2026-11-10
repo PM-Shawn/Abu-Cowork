@@ -1102,6 +1102,8 @@ const zhCN: TranslationDict = {
     imageGenAddBackend: '添加后端',
     imageGenEditBackend: '编辑后端',
     imageGenNoBackends: '尚未配置图片生成后端',
+    imageGenWatermark: '生成图片时添加 AI 水印',
+    imageGenWatermarkDesc: '火山 Seedream 会在图片上加「AI 生成」标识。按 AI 生成内容标识的规定，除非确定用途不需要，建议保持开启。',
     imageGenNoBackendsHint: '添加一个后端（如火山 Seedream、DALL·E），供 AI 生成图片时使用',
     imageGenSetDefault: '设为默认',
     imageGenDefaultBadge: '默认',

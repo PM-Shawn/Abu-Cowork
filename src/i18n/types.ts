@@ -1462,6 +1462,8 @@ export interface TranslationDict {
     imageGenEditBackend: string;
     imageGenNoBackends: string;
     imageGenNoBackendsHint: string;
+    imageGenWatermark: string;
+    imageGenWatermarkDesc: string;
     imageGenSetDefault: string;
     imageGenDefaultBadge: string;
     imageGenDeleteConfirmTitle: string;

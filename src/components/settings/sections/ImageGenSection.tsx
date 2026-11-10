@@ -8,6 +8,8 @@ import { Dialog, DialogClose } from '@/components/ds/dialog';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { Select, type SelectOption } from '@/components/ds/select';
+import { SettingGroup, SettingRow } from '@/components/ds/setting-row';
+import { Switch } from '@/components/ds/switch';
 import { Tag } from '@/components/ds/tag';
 import { TextField } from '@/components/ds/text-field';
 import SecretField from '@/components/settings/SecretField';
@@ -194,6 +196,8 @@ export function ImageGenBackendsPanel({ onEdit }: { onEdit: (backend: ImageGenBa
   const imageGeneration = useSettingsStore((s) => s.imageGeneration);
   const removeImageGenBackend = useSettingsStore((s) => s.removeImageGenBackend);
   const setDefaultImageBackend = useSettingsStore((s) => s.setDefaultImageBackend);
+  const watermark = useSettingsStore((s) => s.imageGeneration.watermark !== false);
+  const setImageGenWatermark = useSettingsStore((s) => s.setImageGenWatermark);
   const confirm = useConfirm();
 
   const { backends, defaultId } = imageGeneration;
@@ -260,6 +264,11 @@ export function ImageGenBackendsPanel({ onEdit }: { onEdit: (backend: ImageGenBa
           })}
         </div>
       )}
+      <SettingGroup>
+        <SettingRow title={t.settings.imageGenWatermark} description={t.settings.imageGenWatermarkDesc} htmlFor="setting-image-gen-watermark">
+          <Switch id="setting-image-gen-watermark" checked={watermark} onCheckedChange={setImageGenWatermark} />
+        </SettingRow>
+      </SettingGroup>
     </div>
   );
 }

@@ -23,6 +23,8 @@ export interface ImageGenRequestParams {
    *  transfer. Each entry is already encoded for the wire: a `data:` URI or an
    *  http(s) URL. Order matters — the backend addresses them as image 1, 2, …. */
   referenceImages?: string[];
+  /** Volcengine only: ask the API to stamp its "AI generated" mark. Defaults to true, the API's own default. */
+  watermark?: boolean;
 }
 
 /** The JSON body a vendor mapper POSTs to `/images/generations` (or

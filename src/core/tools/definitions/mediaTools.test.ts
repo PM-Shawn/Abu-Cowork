@@ -143,12 +143,18 @@ describe('generateImageTool', () => {
     expect(body).not.toHaveProperty('size');
   });
 
-  it('sends watermark:false to a Volcengine backend (the API stamps a watermark by default)', async () => {
+  it('sends watermark:true to a Volcengine backend by default and false when the setting is off', async () => {
+    const sent = () => {
+      const genCall = mockFetch.mock.calls.find(([u]) => String(u).includes('/images/generations'));
+      return JSON.parse((genCall![1] as RequestInit).body as string);
+    };
     await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+    expect(sent().watermark).toBe(true);
 
-    const genCall = mockFetch.mock.calls.find(([u]) => String(u).includes('/images/generations'));
-    const body = JSON.parse((genCall![1] as RequestInit).body as string);
-    expect(body.watermark).toBe(false);
+    mockFetch.mockClear();
+    useSettingsStore.getState().setImageGenWatermark(false);
+    await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+    expect(sent().watermark).toBe(false);
   });
 
 

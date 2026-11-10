@@ -410,6 +410,18 @@ describe('ImageGenBackendModal while it fades out', () => {
 });
 
 describe('ImageGenBackendsPanel', () => {
+  it('shows the AI watermark switch on by default and turns it off and on', async () => {
+    const user = userEvent.setup();
+    renderPanel([SEEDREAM], SEEDREAM.id);
+    const toggle = screen.getByRole('switch', { name: t().settings.imageGenWatermark });
+    expect(toggle).toBeChecked();
+    await user.click(toggle);
+    expect(useSettingsStore.getState().imageGeneration.watermark).toBe(false);
+    expect(toggle).not.toBeChecked();
+    await user.click(toggle);
+    expect(useSettingsStore.getState().imageGeneration.watermark).toBe(true);
+  });
+
   it('says so when there is no backend', () => {
     renderPanel([]);
 

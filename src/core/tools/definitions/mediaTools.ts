@@ -196,7 +196,7 @@ export const generateImageTool: ToolDefinition = {
       // Build request body via the per-vendor mapper (field names, size
       // normalization/snapping, and response_format quirks all differ by
       // vendor — see src/core/llm/imageGen/).
-      const reqBody = buildImageRequest(vendor, { model: modelId, prompt, size, style, referenceImages });
+      const reqBody = buildImageRequest(vendor, { model: modelId, prompt, size, style, referenceImages, watermark: state.imageGeneration.watermark !== false });
 
       const response = await runFileOperationStage(files, () => fetchFn(endpoint, {
         method: 'POST',

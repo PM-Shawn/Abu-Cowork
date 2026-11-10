@@ -20,8 +20,8 @@ export function volcengineMaxReferenceImages(model: string | undefined): number 
  * has no surface for it, so it is not configurable per call.
  */
 export function buildVolcengineRequest(params: ImageGenRequestParams): ImageGenRequestBody {
-  const { model, prompt, size, referenceImages } = params;
-  const body: ImageGenRequestBody = { model, prompt, n: 1, response_format: 'b64_json', watermark: false };
+  const { model, prompt, size, referenceImages, watermark = true } = params;
+  const body: ImageGenRequestBody = { model, prompt, n: 1, response_format: 'b64_json', watermark };
 
   if (size) {
     body.size = normalizeSeedreamSize(size, model);

@@ -513,6 +513,7 @@ interface SettingsActions {
   updateImageGenBackend: (id: string, patch: Partial<Omit<ImageGenBackend, 'id'>>) => void;
   /** Removes a backend; if it was the default, falls back to the next remaining backend (if any). */
   removeImageGenBackend: (id: string) => void;
+  setImageGenWatermark: (on: boolean) => void;
   setDefaultImageBackend: (id: string | undefined) => void;
 
   // ── General settings actions (unchanged) ──
@@ -1291,7 +1292,7 @@ export const useSettingsStore = create<SettingsStore>()(
       recentModels: [],
       favoriteModels: [],
       auxiliaryServices: {},
-      imageGeneration: { backends: [] },
+      imageGeneration: { backends: [], watermark: true },
       pendingImageGenSecretBridge: undefined,
 
       // ── General settings defaults ──
@@ -1623,6 +1624,9 @@ export const useSettingsStore = create<SettingsStore>()(
         fafSecretWrite(SECRET_KEYS.imageGenBackend(id), deleteSecret(SECRET_KEYS.imageGenBackend(id)), `removeImageGenBackend(${id})`);
       },
 
+      setImageGenWatermark: (on) => set((s) => ({
+        imageGeneration: { ...s.imageGeneration, watermark: on },
+      })),
       setDefaultImageBackend: (id) => set((s) => ({
         imageGeneration: { ...s.imageGeneration, defaultId: id },
       })),
@@ -2005,7 +2009,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 55,
+      version: 56,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -2943,6 +2947,12 @@ export const useSettingsStore = create<SettingsStore>()(
         // V55: apply these models' published image capabilities once. Declarations
         // saved from V55 onward remain authoritative. Other models keep their
         // shared provider declarations.
+        // V56: the image-generation watermark became a setting; it was the API default (on) before.
+        if (version < 56) {
+          const ig = state.imageGeneration as { watermark?: boolean } | undefined;
+          if (ig && typeof ig === 'object' && ig.watermark === undefined) ig.watermark = true;
+        }
+
         if (version < 55 && Array.isArray(state.providers)) {
           for (const provider of state.providers as ProviderInstance[]) {
             if (!provider || !Array.isArray(provider.models)) continue;

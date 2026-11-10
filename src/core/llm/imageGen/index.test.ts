@@ -73,11 +73,11 @@ describe('buildImageRequest', () => {
       expect(body).not.toHaveProperty('style');
     });
 
-    // The API stamps a watermark unless told otherwise (default true).
-    it('always asks for no watermark, with or without reference images', () => {
+    it('asks for the watermark by default and passes the setting through, with or without reference images', () => {
       for (const model of ['doubao-seedream-4-5', 'doubao-seedream-5-0-pro-260628']) {
-        expect(buildImageRequest('volcengine', { model, prompt: 'x' }).watermark).toBe(false);
-        expect(buildImageRequest('volcengine', { model, prompt: 'x', referenceImages: ['https://example.com/a.png'] }).watermark).toBe(false);
+        expect(buildImageRequest('volcengine', { model, prompt: 'x' }).watermark).toBe(true);
+        expect(buildImageRequest('volcengine', { model, prompt: 'x', watermark: false }).watermark).toBe(false);
+        expect(buildImageRequest('volcengine', { model, prompt: 'x', watermark: false, referenceImages: ['https://example.com/a.png'] }).watermark).toBe(false);
       }
     });
 

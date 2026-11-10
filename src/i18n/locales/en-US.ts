@@ -1101,6 +1101,8 @@ const enUS: TranslationDict = {
     imageGenAddBackend: 'Add Backend',
     imageGenEditBackend: 'Edit Backend',
     imageGenNoBackends: 'No image-generation backends configured yet',
+    imageGenWatermark: 'Add AI watermark to generated images',
+    imageGenWatermarkDesc: 'Volcengine Seedream stamps an "AI generated" mark into each picture. Keep it on unless you are sure your use does not need the label required for AI-generated content.',
     imageGenNoBackendsHint: 'Add a backend (e.g. Volcano Seedream, DALL·E) for the AI to use when generating images',
     imageGenSetDefault: 'Set as default',
     imageGenDefaultBadge: 'Default',

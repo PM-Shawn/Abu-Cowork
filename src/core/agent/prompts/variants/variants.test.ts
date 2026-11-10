@@ -1,8 +1,12 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { MODEL_FAMILIES, type ModelFamily } from '@/core/llm/model-data/families';
 import { resolveModelProfile } from '@/core/llm/modelProfile';
 import { PROMPT_VARIANTS, familyNotesFor, resolvePromptVariant } from './index';
-import { DEFAULT_PLANNING, SYSTEM_SETTINGS_TOOL_LINE, defaultVariant } from './default';
+import {
+  DEFAULT_PLANNING, PARALLEL_TOOL_CALLS_LINE, PLANNING_SITUATIONS, SYSTEM_SETTINGS_TOOL_LINE, defaultVariant,
+} from './default';
 import { gptVariant } from './gpt';
 import { deepseekVariant } from './deepseek';
 import { kimiVariant } from './kimi';
@@ -121,5 +125,29 @@ describe('resolvePromptVariant', () => {
         expect(text).not.toMatch(/[一-鿿]/);
       }
     }
+  });
+
+  describe('text shared between families is defined once', () => {
+    it('gpt planning is the shared situations plus its own rules, and the default is the situations alone', () => {
+      expect(DEFAULT_PLANNING.startsWith(PLANNING_SITUATIONS)).toBe(true);
+      expect(gptVariant.planning?.startsWith(PLANNING_SITUATIONS)).toBe(true);
+      expect(gptVariant.planning?.match(/### Situation A/g)).toHaveLength(1);
+    });
+
+    it('the parallel-call line reaches every family that carries it, from one definition', () => {
+      for (const variant of [gptVariant, deepseekVariant, kimiVariant, claudeVariant]) {
+        expect(variant.familyNotes).toContain(PARALLEL_TOOL_CALLS_LINE);
+      }
+      const dir = path.dirname(new URL(import.meta.url).pathname);
+      for (const file of readdirSync(dir).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts') && name !== 'default.ts')) {
+        expect(readFileSync(path.join(dir, file), 'utf8'), file).not.toContain('Independent tool calls go out together');
+      }
+    });
+
+    it('no family restates the reply language or leading with the result: the always-on sections say it', () => {
+      for (const variant of [gptVariant, deepseekVariant, kimiVariant, claudeVariant]) {
+        expect(variant.familyNotes).not.toMatch(/user's language|Lead with the (outcome|result)/);
+      }
+    });
   });
 });

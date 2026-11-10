@@ -1,3 +1,4 @@
+import { PARALLEL_TOOL_CALLS_LINE } from './default';
 import type { PromptVariant } from './types';
 
 /**
@@ -24,10 +25,10 @@ const DEEPSEEK_FAMILY_NOTES = `
 
 ### Commands
 - Check the exit code and the output of every run_command result; investigate a failure before moving on instead of repeating the same command.
-- Independent tool calls go out together in one response; dependent ones run in order.
+${PARALLEL_TOOL_CALLS_LINE}
 
 ### Replies
-- Reply in the user's language, lead with the result, and keep explanations short. Thoroughness belongs in the actions and the verification, not in the prose.`;
+- Thoroughness belongs in the actions and the verification, not in the prose.`;
 
 export const deepseekVariant: PromptVariant = {
   familyNotes: DEEPSEEK_FAMILY_NOTES,

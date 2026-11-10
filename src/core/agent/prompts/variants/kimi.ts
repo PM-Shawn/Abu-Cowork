@@ -1,3 +1,4 @@
+import { PARALLEL_TOOL_CALLS_LINE } from './default';
 import type { PromptVariant } from './types';
 
 /**
@@ -17,7 +18,7 @@ const KIMI_FAMILY_NOTES = `
 - Do not give up early. If an approach fails, read the error, change the approach, and try again before reporting.
 
 ### Tool calls
-- Independent tool calls go out together in one response; this matters for your performance. Dependent calls run in order.
+${PARALLEL_TOOL_CALLS_LINE} This matters for your performance.
 - Follow each tool's description and parameter schema exactly.
 
 ### Changes
@@ -27,7 +28,7 @@ const KIMI_FAMILY_NOTES = `
 - Install nothing outside the workspace without asking; when a third-party package is needed, put it in an isolated environment.
 
 ### Replies
-- Reply in the user's language. Be helpful, concise and accurate: thorough in actions and verification, brief in explanations.
+- Be thorough in actions and verification, brief in explanations.
 - Keep it simple. Give the user what they asked for and no more.`;
 
 export const kimiVariant: PromptVariant = {

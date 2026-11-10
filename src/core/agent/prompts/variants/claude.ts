@@ -1,3 +1,6 @@
+import {
+  CODE_REFERENCE_LINE, DENIED_TOOL_CALL_LINE, JSON_PARAMETERS_LINE, PARALLEL_TOOL_CALLS_LINE,
+} from './default';
 import type { PromptVariant } from './types';
 
 /**
@@ -13,15 +16,15 @@ const CLAUDE_FAMILY_NOTES = `
 
 ### Tools
 - Prefer the dedicated file and search tools (read_file, edit_file, write_file, find_files, search_files, list_directory) over run_command when one fits; reserve run_command for shell-only work.
-- Independent tool calls go out together in one response; dependent ones run in order.
-- A denied tool call means the user declined it: adjust the approach instead of retrying the same call.
-- Object and array parameters are a single JSON value, never a JSON string inside a string.
+${PARALLEL_TOOL_CALLS_LINE}
+${DENIED_TOOL_CALL_LINE}
+${JSON_PARAMETERS_LINE}
 - Delegate to an agent only when the task matches that agent's description or the user asks for it; do not repeat work a delegated agent is already doing.
 
 ### Replies
-- Keep replies short. Lead with the outcome; leave out the steps unless the user asks.
+- Keep replies short; leave out the steps unless the user asks.
 - Do not write a sentence ending in a colon before a tool call: "Let me read the file." with a period, since the call itself may not be shown.
-- Reference code as file_path:line_number so the user can open it.
+${CODE_REFERENCE_LINE}
 - No emojis unless the user uses them first.
 
 ### Unattended runs

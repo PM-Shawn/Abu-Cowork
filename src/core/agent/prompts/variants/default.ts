@@ -26,8 +26,20 @@ ${SYSTEM_SETTINGS_TOOL_LINE}
 
 The last step of a multi-step task should be verification (e.g. list_directory to confirm file operations) — do not rely solely on execution output.`;
 
-// Planning instruction - AI must call report_plan for complex tasks, but simple questions can be answered directly
-export const DEFAULT_PLANNING = `
+/**
+ * Lines that more than one family's working notes carry. Each family still states them in its own
+ * notes (a family is only told what applies to it), but the wording is defined once.
+ */
+export const PARALLEL_TOOL_CALLS_LINE = '- Independent tool calls go out together in one response; dependent ones run in order.';
+export const DENIED_TOOL_CALL_LINE = '- A denied tool call means the user declined it: change the approach instead of retrying the same call.';
+export const JSON_PARAMETERS_LINE = '- Object and array parameters are a single JSON value, never a JSON string inside a string.';
+export const CODE_REFERENCE_LINE = '- Reference code as file_path:line_number so the user can open it.';
+
+/**
+ * The situations A to E and their priority: the part of the planning text every family shares.
+ * A family that adds rules of its own puts them between this and the tool-selection principles.
+ */
+export const PLANNING_SITUATIONS = `
 ## Execution Rules (must follow)
 
 **After receiving a task, choose an execution approach based on the situation:**
@@ -54,9 +66,13 @@ export const DEFAULT_PLANNING = `
 **Decision priority: B > C > D/E > A**
 When a skill's TRIGGER condition matches, prefer using the skill.
 When a task matches an agent's expertise, prefer delegating to that agent.
+`;
 
+// Planning instruction - AI must call report_plan for complex tasks, but simple questions can be answered directly
+export const DEFAULT_PLANNING = `${PLANNING_SITUATIONS}
 ${TOOL_SELECTION_PRINCIPLES}
 `;
+
 
 /**
  * The text every family starts from. `persona` stays unset so the caller's

@@ -952,7 +952,7 @@ describe('settingsStore labs flags', () => {
       const stored = {
         theme: 'light', language: 'zh-CN', permissionMode: 'smart', sandboxEnabled: false,
         closeAction: 'minimize', composerEnterBehavior: 'modEnter', userNickname: 'e2e', guideShown: true,
-        labs: { pet: true }, disabledSkills: ['docx'], imChannel: { allowLanWebhook: true },
+        labs: { pet: true }, disabledSkills: ['canvas-design'], imChannel: { allowLanWebhook: true },
         browserPermissionConfigV2: { schemaVersion: 1, marker: 'kept as stored' },
         providers: [{ id: 'p1', apiKey: '', models: [{ id: 'm1' }] }], activeModel: { providerId: 'p1', modelId: 'm1' },
       };
@@ -960,6 +960,45 @@ describe('settingsStore labs flags', () => {
       const { theme: _after, ...migratedRest } = getMigrate()(structuredClone(stored), 53);
       void _before; void _after;
       expect(migratedRest).toEqual(rest);
+    });
+  });
+
+  describe('v56 migration (office-document skills on by default)', () => {
+    const getMigrate = () =>
+      (useSettingsStore as unknown as {
+        persist: { getOptions: () => { migrate: (data: unknown, version: number) => Record<string, unknown> } };
+      }).persist.getOptions().migrate;
+    const OFFICE = ['docx', 'xlsx', 'pptx', 'pdf'];
+
+    it('a fresh install does not disable any of the four office skills', () => {
+      const disabled = useSettingsStore.getInitialState().disabledSkills;
+      for (const name of OFFICE) expect(disabled).not.toContain(name);
+      // the other default-off skills stay off
+      expect(disabled).toContain('canvas-design');
+    });
+
+    it.each([7, 30, 55])('a store at version %i loses the four office skills and keeps the rest', (version) => {
+      const migrated = getMigrate()({
+        disabledSkills: ['alert-sop', 'docx', 'canvas-design', 'pdf', 'pptx', 'xlsx', 'my-own-skill'],
+      }, version);
+      expect(migrated.disabledSkills).toEqual(['alert-sop', 'canvas-design', 'my-own-skill']);
+    });
+
+    it('a store older than 7 ends without them too (V7 writes the old default, V56 removes four)', () => {
+      const migrated = getMigrate()({}, 6);
+      for (const name of OFFICE) expect(migrated.disabledSkills).not.toContain(name);
+      expect(migrated.disabledSkills).toContain('canvas-design');
+    });
+
+    it('a store at version 56 keeps a deliberate choice to disable one', () => {
+      const migrated = getMigrate()({ disabledSkills: ['docx'] }, 56);
+      expect(migrated.disabledSkills).toEqual(['docx']);
+    });
+
+    it('does not fail on a store without the list or with a damaged one', () => {
+      expect(getMigrate()({ theme: 'dark' }, 55).disabledSkills).toBeUndefined();
+      expect(getMigrate()({ disabledSkills: 'docx' }, 55).disabledSkills).toBe('docx');
+      expect(getMigrate()({ disabledSkills: ['docx', 3, null, 'x'] }, 55).disabledSkills).toEqual([3, null, 'x']);
     });
   });
 

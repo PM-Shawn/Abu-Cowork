@@ -1316,10 +1316,10 @@ export const useSettingsStore = create<SettingsStore>()(
       capabilitySetupTarget: null,
       disabledSkills: [
         'alert-sop', 'algorithmic-art', 'brand-guidelines', 'canvas-design',
-        'claude-api', 'create-agent', 'doc-coauthoring', 'docx',
-        'frontend-design', 'infographic', 'internal-comms', 'pdf',
-        'pptx', 'slack-gif-creator', 'theme-factory', 'web-artifacts-builder',
-        'webapp-testing', 'xlsx',
+        'claude-api', 'create-agent', 'doc-coauthoring',
+        'frontend-design', 'infographic', 'internal-comms',
+        'slack-gif-creator', 'theme-factory', 'web-artifacts-builder',
+        'webapp-testing',
       ],
       disabledAgents: [],
       sandboxEnabled: true,
@@ -2005,7 +2005,7 @@ export const useSettingsStore = create<SettingsStore>()(
       // in this source file, so that a seeded localStorage entry can never
       // drift from the app's own version. A constant here would break it.
       name: 'abu-settings',
-      version: 55,
+      version: 56,
       // The default is `createJSONStorage(() => localStorage)`; this is the
       // same thing with a per-field merge and a read-back confirmation for the
       // browser authorization fields (S18). See `settingsStateStorage`.
@@ -2956,6 +2956,17 @@ export const useSettingsStore = create<SettingsStore>()(
               model.declaredCapabilities = { ...model.declaredCapabilities, supportsImages: vision };
             }
           }
+        }
+
+        // V56: the four office-document skills (docx, xlsx, pptx, pdf) are on by
+        // default, so the pre-delivery check they carry runs. Stores older than 56
+        // had them in the default disabled list, so drop them from it once; a
+        // choice made from V56 on is kept.
+        if (version < 56 && Array.isArray(state.disabledSkills)) {
+          const officeSkills = new Set(['docx', 'xlsx', 'pptx', 'pdf']);
+          state.disabledSkills = (state.disabledSkills as unknown[]).filter(
+            (name) => !(typeof name === 'string' && officeSkills.has(name)),
+          );
         }
         return state;
       },

@@ -1021,6 +1021,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         subagentCaps,
         settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
         reserveWindowSize,
+        declared?.thinkingEffort,
       );
       // True output ceiling (distinct from the conservative per-turn budget below):
       // max_tokens-recovery escalation may climb toward this, never above a known limit.

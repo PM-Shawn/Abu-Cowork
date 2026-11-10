@@ -728,4 +728,172 @@ describe('modelRequestProcessors', () => {
       expect((messages[1] as Record<string, unknown>).extra_content).toBeUndefined();
     });
   });
+
+  // ── thinkingEffortOverride (the user's 思考强度 pick) ───────────────────────
+
+  describe('thinkingEffortOverride', () => {
+    const withEffort = (thinkingEffort: NonNullable<DeclaredCapabilities['thinkingEffort']>, extra: DeclaredCapabilities = {}) =>
+      ({ supportsReasoning: true, thinkingEffort, ...extra });
+    const deepseek = { modelId: 'deepseek-flash', requestHost: 'api.deepseek.com' };
+
+    describe('deepseek', () => {
+      it.each(['low', 'high', 'max'] as const)('%s: thinking enabled and reasoning_effort set', (effort) => {
+        const b = run({ model: 'deepseek-flash' }, { ...deepseek, hasTools: false, caps: withEffort(effort) });
+        expect(b.thinking).toEqual({ type: 'enabled' });
+        expect(b.reasoning_effort).toBe(effort);
+      });
+
+      it('off: thinking disabled and no reasoning_effort, even if a default put one in', () => {
+        const b = run({ model: 'deepseek-flash', reasoning_effort: 'medium' }, { ...deepseek, hasTools: true, caps: withEffort('off') });
+        expect(b.thinking).toEqual({ type: 'disabled' });
+        expect(b.reasoning_effort).toBeUndefined();
+      });
+
+      it('the pick replaces a default effort the caller derived', () => {
+        const b = run({ model: 'deepseek-flash', reasoning_effort: 'medium' }, { ...deepseek, hasTools: true, caps: withEffort('max') });
+        expect(b.thinking).toEqual({ type: 'enabled' });
+        expect(b.reasoning_effort).toBe('max');
+      });
+
+      it('max survives the supportedEfforts clamp, which only knows low / medium / high', () => {
+        for (const supportedEfforts of [['low', 'medium'], ['low', 'medium', 'high'], ['high']] as const) {
+          const b = run({ model: 'deepseek-flash' }, { ...deepseek, hasTools: false, caps: withEffort('max', { supportedEfforts: [...supportedEfforts] }) });
+          expect(b.reasoning_effort).toBe('max');
+        }
+      });
+
+      it('the clamp itself leaves a value it has no level for (max) alone', () => {
+        const b = run({ model: 'deepseek-flash', reasoning_effort: 'max' }, {
+          ...deepseek, hasTools: false, caps: { supportsReasoning: true, supportedEfforts: ['low', 'medium'] },
+        });
+        expect(b.reasoning_effort).toBe('max');
+        expect(b.thinking).toEqual({ type: 'enabled' });
+      });
+
+      it('without a pick nothing is added: DeepSeek keeps its server default', () => {
+        const b = run({ model: 'deepseek-flash' }, { ...deepseek, hasTools: true, caps: { supportsReasoning: true } });
+        expect(b.thinking).toBeUndefined();
+        expect(b.reasoning_effort).toBeUndefined();
+      });
+
+      it('a reasoning_effort the endpoint rejected stays off the wire; thinking is still switched', () => {
+        const profile = resolveModelProfile({
+          modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', declared: withEffort('high'), overrides: ['reasoning_effort'],
+        });
+        const b: Record<string, unknown> = {};
+        applyModelRequestProcessors(b, { profile, hasTools: false });
+        expect(b.thinking).toEqual({ type: 'enabled' });
+        expect(b.reasoning_effort).toBeUndefined();
+      });
+
+      it('a rejected thinking field silences the pick, off included', () => {
+        const profile = resolveModelProfile({
+          modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', declared: withEffort('off'), overrides: ['thinking'],
+        });
+        const b: Record<string, unknown> = {};
+        applyModelRequestProcessors(b, { profile, hasTools: false });
+        expect(b.thinking).toBeUndefined();
+      });
+
+      it('a declared non-reasoning model sends nothing, whatever a stale pick says', () => {
+        const b = run({ model: 'deepseek-flash' }, { ...deepseek, hasTools: false, caps: { supportsReasoning: false, thinkingEffort: 'max' } });
+        expect(b.thinking).toBeUndefined();
+        expect(b.reasoning_effort).toBeUndefined();
+      });
+
+      it('keeps reasoning_effort off the request where the model rejects it next to tools', () => {
+        // gpt-5.5's profile rule: reasoning_effort + tools is a 400, on every host.
+        const caps = withEffort('high', { thinkingFormat: 'deepseek' });
+        const withTools = run({ model: 'gpt-5.5' }, { modelId: 'gpt-5.5', requestHost: 'gateway.example.com', hasTools: true, caps });
+        expect(withTools.thinking).toEqual({ type: 'enabled' });
+        expect(withTools.reasoning_effort).toBeUndefined();
+        const noTools = run({ model: 'gpt-5.5' }, { modelId: 'gpt-5.5', requestHost: 'gateway.example.com', hasTools: false, caps });
+        expect(noTools.reasoning_effort).toBe('high');
+      });
+    });
+
+    describe('qwen and zai (enable_thinking)', () => {
+      it.each([
+        ['dashscope.aliyuncs.com', 'qwen3-max'],
+        ['api.z.ai', 'glm-5'],
+      ])('%s: off writes enable_thinking=false and drops the budget', (requestHost, modelId) => {
+        const b = run({ thinking_budget: 4096, reasoning_effort: 'low' }, { modelId, requestHost, hasTools: false, caps: withEffort('off') });
+        expect(b.enable_thinking).toBe(false);
+        expect(b.thinking_budget).toBeUndefined();
+        expect(b.reasoning_effort).toBeUndefined();
+      });
+
+      it.each(['low', 'high', 'max'] as const)('dashscope: %s writes enable_thinking=true and leaves the budget alone', (effort) => {
+        const b = run({ thinking_budget: 4096 }, { modelId: 'qwen3-max', requestHost: 'dashscope.aliyuncs.com', hasTools: false, caps: withEffort(effort) });
+        expect(b.enable_thinking).toBe(true);
+        expect(b.thinking_budget).toBe(4096);
+        expect(b.reasoning_effort).toBeUndefined();
+      });
+
+      it('a pick turns thinking on even when the caller derived no budget (a z.ai model not flagged as reasoning)', () => {
+        const b = run({}, { modelId: 'glm-5', requestHost: 'api.z.ai', hasTools: false, caps: withEffort('high') });
+        expect(b.enable_thinking).toBe(true);
+      });
+    });
+
+    describe('qwen-chat-template (self-hosted)', () => {
+      const setting = (effort: NonNullable<DeclaredCapabilities['thinkingEffort']>) => ({
+        modelId: 'qwen3-32b', requestHost: 'vllm.internal', hasTools: false,
+        caps: withEffort(effort, { thinkingFormat: 'qwen-chat-template' as const }),
+      });
+      it('off: chat_template_kwargs.enable_thinking=false, other kwargs kept', () => {
+        const b = run({ chat_template_kwargs: { preserve_thinking: true }, reasoning_effort: 'low' }, setting('off'));
+        expect(b.chat_template_kwargs).toEqual({ preserve_thinking: true, enable_thinking: false });
+        expect(b.reasoning_effort).toBeUndefined();
+      });
+      it('high: chat_template_kwargs.enable_thinking=true', () => {
+        const b = run({}, setting('high'));
+        expect(b.chat_template_kwargs).toEqual({ enable_thinking: true });
+      });
+    });
+
+    describe('kimi', () => {
+      const kimi = { modelId: 'kimi-k2.6', requestHost: 'api.moonshot.cn', hasTools: true };
+      it('off: thinking disabled, no reasoning_effort and no thinking-mode temperature', () => {
+        const b = run({ reasoning_effort: 'medium', temperature: 1 }, { ...kimi, caps: withEffort('off') });
+        expect(b.thinking).toEqual({ type: 'disabled' });
+        expect(b.reasoning_effort).toBeUndefined();
+        expect(b.temperature).toBeUndefined();
+      });
+      it.each(['low', 'high', 'max'] as const)('%s: thinking enabled with the profile temperature', (effort) => {
+        const b = run({}, { ...kimi, caps: withEffort(effort) });
+        expect(b.thinking).toEqual({ type: 'enabled' });
+        expect(b.temperature).toBe(1);
+        expect(b.reasoning_effort).toBeUndefined();
+      });
+    });
+
+    describe('formats without an on/off switch', () => {
+      it('openai: the pick travels as the reasoning_effort computeReasoningParams derived; the clamp leaves it', () => {
+        const b = run({ reasoning_effort: 'low' }, {
+          modelId: 'gpt-5', requestHost: 'api.openai.com', hasTools: false,
+          caps: withEffort('low', { supportedEfforts: ['medium', 'high'] }),
+        });
+        expect(b.reasoning_effort).toBe('low');
+        expect(b.thinking).toBeUndefined();
+      });
+
+      it('openai: without a pick the clamp still applies', () => {
+        const b = run({ reasoning_effort: 'low' }, {
+          modelId: 'gpt-5', requestHost: 'api.openai.com', hasTools: false,
+          caps: { supportsReasoning: true, supportedEfforts: ['medium', 'high'] },
+        });
+        expect(b.reasoning_effort).toBe('medium');
+      });
+
+      it('openrouter: nothing but the existing translation', () => {
+        const b = run({ reasoning_effort: 'high' }, {
+          modelId: 'openai/gpt-5', requestHost: 'openrouter.ai', hasTools: false, caps: withEffort('high'),
+        });
+        expect(b.reasoning).toEqual({ effort: 'high' });
+        expect(b.reasoning_effort).toBeUndefined();
+        expect(b.thinking).toBeUndefined();
+      });
+    });
+  });
 });

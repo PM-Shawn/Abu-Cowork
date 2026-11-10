@@ -25,6 +25,7 @@ import {
 import { applyDeclaredCapabilities } from './applyDeclaredCapabilities';
 import { resolveModelDeclared } from './resolveModelDeclared';
 import { deriveThinkingFormat } from './model-data/thinkingFormat';
+import { THINKING_SWITCH_FORMATS, isThinkingEffort } from './thinkingEffort';
 import type { CapabilityRejectionClass } from './capabilityRejection';
 import {
   FAMILY_PROFILE_DEFAULTS,
@@ -153,6 +154,7 @@ export function resolveModelProfile(input: ResolveModelProfileInput): ModelProfi
     if (declared.supportedEfforts && declared.supportedEfforts.length > 0) {
       wire.supportedEfforts = [...declared.supportedEfforts];
     }
+    if (isThinkingEffort(declared.thinkingEffort)) wire.thinkingEffort = declared.thinkingEffort;
     if (declared.thinkingFormat) wire.thinkingFormat = declared.thinkingFormat;
     if (declared.maxTokensField) wire.maxTokensField = declared.maxTokensField;
     if (declared.requiresToolResultName !== undefined) wire.toolResultName = declared.requiresToolResultName;
@@ -168,6 +170,17 @@ export function resolveModelProfile(input: ResolveModelProfileInput): ModelProfi
 
   applyCapabilityOverrides(input.overrides, wire, capabilities);
 
+  // With thinking switched off (and the switch really sent, which a rejected
+  // `thinking` field rules out) nothing is thought, so there is no reasoning to
+  // hand back on the earlier assistant turns.
+  if (
+    wire.thinkingEffort === 'off'
+    && !wire.stripReasoningParams
+    && THINKING_SWITCH_FORMATS.has(wire.thinkingFormat)
+  ) {
+    wire.reasoningReplay = 'none';
+  }
+
   return {
     family,
     modelId,
@@ -177,4 +190,16 @@ export function resolveModelProfile(input: ResolveModelProfileInput): ModelProfi
     wire,
     harness,
   };
+}
+
+/**
+ * What 思考强度「默认」means for a model, when the vendor documents it: DeepSeek
+ * thinks by default at high effort (thinking on, reasoning_effort high). The
+ * settings UI shows it as 「默认（高）」 so people need not guess. Undefined
+ * when the default is not a documented effort or the model does not think.
+ */
+export function documentedDefaultThinkingEffort(modelId: string, baseUrl?: string): 'high' | undefined {
+  const profile = resolveModelProfile({ modelId, baseUrl, providerSource: 'builtin' });
+  if (!profile.capabilities.thinking) return undefined;
+  return profile.wire.thinkingFormat === 'deepseek' ? 'high' : undefined;
 }

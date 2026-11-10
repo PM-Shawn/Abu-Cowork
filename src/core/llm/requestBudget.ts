@@ -42,6 +42,6 @@ export function resolveRequestBudget(
     localServer: localServerKind(provider) !== null,
     outputCeiling: discovered?.maxOutputTokens ?? modelCaps.outputCeiling ?? modelCaps.maxOutputTokens,
     requestedMaxOutputTokens,
-    reasoningParams: computeReasoningParams(effectiveCaps, requestedMaxOutputTokens, window.uncappedSize),
+    reasoningParams: computeReasoningParams(effectiveCaps, requestedMaxOutputTokens, window.uncappedSize, declared?.thinkingEffort),
   };
 }

@@ -14,6 +14,7 @@
  *  - `FAMILY_PROFILE_DEFAULTS` + `MODEL_ID_RULES`: the wire and harness
  *    defaults per family, and the few per-id patches on top of them.
  */
+import type { ThinkingEffort } from '@/types/provider';
 import type { ModelCapabilities } from '../modelCapabilities';
 import { classifyThinkingProtocol } from './classify';
 
@@ -166,6 +167,11 @@ export interface ProfileWire {
   stripReasoningParams: boolean;
   /** The efforts the endpoint accepts; a request outside them is clamped to the nearest. */
   supportedEfforts: ReadonlyArray<'low' | 'medium' | 'high'> | null;
+  /**
+   * The user's own thinking-effort pick for the model (null = Abu's default). It wins
+   * over the defaults the request is built with, per thinking format.
+   */
+  thinkingEffort: ThinkingEffort | null;
   /** `reasoning_effort` leaves the request; off once the endpoint rejected the field. */
   sendReasoningEffort: boolean;
   /** `parallel_tool_calls` may be written; off once the endpoint rejected the field. */
@@ -208,6 +214,7 @@ const BASE_WIRE: ProfileWire = {
   reasoningEffortWithTools: true,
   stripReasoningParams: false,
   supportedEfforts: null,
+  thinkingEffort: null,
   sendReasoningEffort: true,
   sendParallelToolCalls: true,
   toolSchemaDialect: 'standard',

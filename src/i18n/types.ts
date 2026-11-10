@@ -2021,6 +2021,13 @@ export interface TranslationDict {
     effortLow: string;
     effortMedium: string;
     effortHigh: string;
+    capThinkingEffort: string;
+    capThinkingEffortHint: string;
+    thinkingEffortDefault: string;
+    /** Appended to 「默认」 when the model's default effort is known: 「（{effort}）」. {effort} */
+    thinkingEffortDefaultIs: string;
+    thinkingEffortOff: string;
+    thinkingEffortMax: string;
     capContextLength: string;
     capContextLengthHint: string;
     /** Supported context length reported by the service. {size} */

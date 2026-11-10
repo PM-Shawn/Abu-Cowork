@@ -2589,6 +2589,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             effectiveCaps,
             requestedMaxOutputTokens,
             recoveryReserveWindowSize,
+            modelDeclared?.thinkingEffort,
           );
           const recoveryMaxOutputTokens = recoveryReasoningParams.maxTokens;
           const recoveryRequestOptions = {

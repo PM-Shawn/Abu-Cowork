@@ -49,6 +49,18 @@ describe('resolveRequestBudget', () => {
     expect(result.reasoningParams.thinkingBudget).toBeLessThan(result.reasoningParams.maxTokens);
   });
 
+  it('carries the thinking effort picked for the model into the reasoning params', () => {
+    const picked: ProviderInstance = {
+      ...provider,
+      models: [{ id: 'gpt-4o', label: 'Model', contextWindow: 128_000, declaredCapabilities: { thinkingEffort: 'off' } }],
+    };
+    const claude: ModelCapabilities = { ...caps, thinking: 'anthropic' };
+    const settings = { contextWindowSize: 200_000, maxOutputTokens: 4096 };
+
+    expect(resolveRequestBudget('gpt-4o', claude, provider, settings).reasoningParams).toMatchObject({ enableThinking: true, thinkingBudget: 10000 });
+    expect(resolveRequestBudget('gpt-4o', claude, picked, settings).reasoningParams.enableThinking).toBe(false);
+  });
+
   it('discards a learned input window after the service reports a changed window', () => {
     const result = resolveRequestBudget('gpt-4o', caps, provider, { contextWindowSize: 200_000, maxOutputTokens: 4096 }, {
       contextWindow: 8192, contextWindowProbe: 32_768, source: 'error-derived', updatedAt: 1,

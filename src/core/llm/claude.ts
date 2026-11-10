@@ -3,6 +3,7 @@ import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
 import { LLMError, classifyError, buildToolParseError } from './adapter';
 import { resolveModelProfile } from './modelProfile';
 import { rejectedCapabilities } from './rejectionMemory';
+import { ANTHROPIC_THINKING_BUDGET } from './thinkingEffort';
 import type { Message, StreamEvent, TokenUsage, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
@@ -323,13 +324,18 @@ export class ClaudeAdapter implements LLMAdapter {
 
     // Extended thinking — auto-enabled when model supports 'anthropic' thinking
     // protocol. Withheld once the endpoint rejected the thinking field
-    // (profile.wire.stripReasoningParams through the rejection memory).
-    if (options.enableThinking && !profile.wire.stripReasoningParams) {
+    // (profile.wire.stripReasoningParams through the rejection memory), and when the
+    // user switched thinking off for this model. A caller that left the budget out gets
+    // the one the user's effort names, else 10k.
+    const thinkingEffort = profile.wire.thinkingEffort;
+    if (options.enableThinking && !profile.wire.stripReasoningParams && thinkingEffort !== 'off') {
       // Anthropic API requires temperature=1 when extended thinking is enabled
       params.temperature = 1;
       (params as unknown as Record<string, unknown>).thinking = {
         type: 'enabled',
-        budget_tokens: options.thinkingBudget ?? 10000,
+        budget_tokens: options.thinkingBudget
+          ?? (thinkingEffort ? ANTHROPIC_THINKING_BUDGET[thinkingEffort] : undefined)
+          ?? 10000,
       };
     } else if (options.temperature !== undefined) {
       params.temperature = options.temperature;

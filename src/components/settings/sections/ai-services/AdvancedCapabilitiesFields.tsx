@@ -5,6 +5,7 @@ import { Checkbox } from '@/components/ds/checkbox';
 import { TextField } from '@/components/ds/text-field';
 import { formatContextLength, positiveInteger, type ResolvedContextWindow } from '@/core/llm/contextWindow';
 import { toggleEffort } from './providerCapabilities';
+import ThinkingEffortSelect from './ThinkingEffortSelect';
 import type { ApiFormat } from '@/types';
 import type { ModelDeclaredCapabilities } from '@/types/provider';
 
@@ -59,17 +60,31 @@ export default function AdvancedCapabilitiesFields({
             label={t.settings.capReasoning}
           />
         </div>
-        {!isAnthropic && declared.supportsReasoning && (
-          <div className="flex items-center gap-3 border-l border-separator pl-3">
-            <span className="text-ui text-label-secondary">{t.settings.capEffort}</span>
-            {(['low', 'medium', 'high'] as const).map(e => (
-              <Checkbox
-                key={e}
-                checked={!!declared.supportedEfforts?.includes(e)}
-                onCheckedChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))}
-                label={{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}
-              />
-            ))}
+        {declared.supportsReasoning && (
+          <div className="space-y-2 border-l border-separator pl-3">
+            {!isAnthropic && (
+              <div className="flex items-center gap-3">
+                <span className="text-ui text-label-secondary">{t.settings.capEffort}</span>
+                {(['low', 'medium', 'high'] as const).map(e => (
+                  <Checkbox
+                    key={e}
+                    checked={!!declared.supportedEfforts?.includes(e)}
+                    onCheckedChange={() => setDeclared(d => ({ ...d, supportedEfforts: toggleEffort(d.supportedEfforts, e) }))}
+                    label={{ low: t.settings.effortLow, medium: t.settings.effortMedium, high: t.settings.effortHigh }[e]}
+                  />
+                ))}
+              </div>
+            )}
+            <div className="space-y-1">
+              <div className="flex items-center gap-3">
+                <span className="text-ui text-label-secondary">{t.settings.capThinkingEffort}</span>
+                <ThinkingEffortSelect
+                  value={declared.thinkingEffort}
+                  onChange={(thinkingEffort) => setDeclared(d => ({ ...d, thinkingEffort }))}
+                />
+              </div>
+              <div className="text-ui-sm text-label-tertiary">{t.settings.capThinkingEffortHint}</div>
+            </div>
           </div>
         )}
         <div className="grid grid-cols-2 gap-2 pt-1">

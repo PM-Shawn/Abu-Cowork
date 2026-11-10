@@ -1,4 +1,5 @@
 import type { ModelProfile } from './modelProfile';
+import { THINKING_SWITCH_FORMATS } from './thinkingEffort';
 
 /**
  * Recursively delete Gemini-unsupported JSON Schema keys from a node.
@@ -109,11 +110,19 @@ const toolsGate: ModelRequestProcessor = {
   apply: (b) => { delete b.tools; delete b.tool_choice; },
 };
 
+/**
+ * Clamp the default `reasoning_effort` to the levels the user ticked for the endpoint.
+ * Two things are left alone: a value outside low/medium/high (DeepSeek's `max`), which
+ * the nearest-level search below has no place for, and any request while the user has
+ * picked a thinking effort themselves, whose value is authoritative.
+ */
 const effortClamp: ModelRequestProcessor = {
   name: 'effort-clamp',
   priority: 30,
   matches: (b, ctx) =>
     typeof b.reasoning_effort === 'string' &&
+    (EFFORT_ORDER as readonly string[]).includes(b.reasoning_effort) &&
+    ctx.profile.wire.thinkingEffort === null &&
     ctx.profile.wire.supportedEfforts !== null &&
     ctx.profile.wire.supportedEfforts.length > 0 &&
     !ctx.profile.wire.supportedEfforts.includes(b.reasoning_effort as 'low' | 'medium' | 'high'),
@@ -219,6 +228,73 @@ const thinkingFormatTranslator: ModelRequestProcessor = {
         break;
       }
       // 'openai' is excluded by matches() above — no default branch needed.
+    }
+  },
+};
+
+/**
+ * The user's own thinking-effort pick (设置 → 思考强度), written in the dialect of the
+ * profile's `thinkingFormat`. It runs after the delete/clamp rules and the format
+ * translator, so the pick replaces whatever the caller's defaults put in the body.
+ *
+ * Unlike the translator it also writes the OFF position, because here thinking is off
+ * on the user's word, not guessed from a model name. It stays silent where the profile
+ * says the endpoint cannot take the field: a declared non-reasoning model
+ * (`stripReasoningParams`, which a rejected `thinking` field also sets), and a
+ * `reasoning_effort` the endpoint rejected or does not accept next to tools.
+ *
+ * The formats without an on/off switch (`openai`, `openrouter`, `together`) are not
+ * handled here: they take the effort through `reasoning_effort`, which
+ * `computeReasoningParams` already derived from the same pick.
+ */
+const thinkingEffortOverride: ModelRequestProcessor = {
+  name: 'thinking-effort-override',
+  priority: 42,
+  matches: (_b, ctx) =>
+    ctx.profile.wire.thinkingEffort !== null &&
+    !ctx.profile.wire.stripReasoningParams &&
+    THINKING_SWITCH_FORMATS.has(ctx.profile.wire.thinkingFormat),
+  apply(body, ctx) {
+    const { wire } = ctx.profile;
+    const effort = wire.thinkingEffort!;
+    const on = effort !== 'off';
+    switch (wire.thinkingFormat) {
+      case 'deepseek': {
+        // Official shape: `thinking: {type: 'enabled' | 'disabled'}` plus
+        // `reasoning_effort` low | high | max, which only exists while thinking is on.
+        body.thinking = { type: on ? 'enabled' : 'disabled' };
+        const effortAllowed = wire.sendReasoningEffort && (!ctx.hasTools || wire.reasoningEffortWithTools);
+        if (on && effortAllowed) body.reasoning_effort = effort;
+        else delete body.reasoning_effort;
+        break;
+      }
+      case 'zai':
+      case 'qwen': {
+        // A switch only: the budget stays what the caller derived while thinking is on.
+        body.enable_thinking = on;
+        delete body.reasoning_effort;
+        if (!on) delete body.thinking_budget;
+        break;
+      }
+      case 'qwen-chat-template': {
+        const kt = (body.chat_template_kwargs ?? {}) as Record<string, unknown>;
+        kt.enable_thinking = on;
+        body.chat_template_kwargs = kt;
+        delete body.reasoning_effort;
+        if (!on) delete body.thinking_budget;
+        break;
+      }
+      case 'kimi': {
+        // Moonshot's switch is `thinking: {type: 'enabled' | 'disabled'}`, and `reasoning_effort`
+        // is not accepted. The profile's fixed temperature belongs to thinking mode only.
+        body.thinking = { type: on ? 'enabled' : 'disabled' };
+        if (wire.temperatureWhenThinking !== null) {
+          if (on) body.temperature = wire.temperatureWhenThinking;
+          else delete body.temperature;
+        }
+        delete body.reasoning_effort;
+        break;
+      }
     }
   },
 };
@@ -384,6 +460,7 @@ const PROCESSORS: ModelRequestProcessor[] = [
   maxTokensField,
   effortClamp,
   thinkingFormatTranslator,
+  thinkingEffortOverride,
   temperatureGate,
   geminiToolSchemaCleanup,
   deepseekToolSchemaCleanup,

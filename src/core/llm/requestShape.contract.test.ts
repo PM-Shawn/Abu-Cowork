@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Message, ToolDefinition } from '../../types';
+import type { ProviderInstance } from '../../types/provider';
 import type { ChatOptions } from './adapter';
 
 // The global setup mocks the Anthropic SDK with inert stubs; this file needs the
@@ -28,6 +29,8 @@ vi.mock('./tauriFetch', () => ({
 import { OpenAICompatibleAdapter } from './openai-compatible';
 import { ClaudeAdapter } from './claude';
 import { recordCapabilityRejection, resetRejectionMemory } from './rejectionMemory';
+import { computeReasoningParams, resolveCapabilities } from './modelCapabilities';
+import { resolveModelDeclared } from './resolveModelDeclared';
 
 const FIXED_TIMESTAMP = 1_700_000_000_000;
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
@@ -174,6 +177,74 @@ describe('request shapes by model family', () => {
     });
   });
 
+  describe('deepseek with the user\'s thinking effort', () => {
+    const effortOptions = (thinkingEffort: 'off' | 'low' | 'high' | 'max'): ChatOptions => ({
+      model: 'deepseek-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com/v1',
+      tools: [readFileTool], supportsVision: false,
+      // What the agent loop hands the adapter: the reasoning params computed with the pick.
+      ...computeReasoningParams(resolveCapabilities('deepseek-flash'), 8192, undefined, thinkingEffort),
+      maxTokens: 8192,
+      declaredCapabilities: { supportsTools: true, supportsReasoning: true, thinkingEffort },
+    });
+
+    it('max: thinking enabled, reasoning_effort max, the earlier turn\'s reasoning handed back', async () => {
+      const body = await recordOpenAI(toolHistory(), effortOptions('max'));
+      await expect(body).toMatchFileSnapshot(fixture('deepseek-flash-effort-max'));
+    });
+
+    it('off: thinking disabled, no reasoning_effort, no reasoning_content on the replayed turn', async () => {
+      const body = await recordOpenAI(toolHistory(), effortOptions('off'));
+      await expect(body).toMatchFileSnapshot(fixture('deepseek-flash-effort-off'));
+    });
+
+    // The curated built-in DeepSeek preset has no provider-level declarations and no advanced
+    // section: the pick sits on the model alone and reaches the wire through
+    // resolveModelDeclared, the way the agent loop hands it to the adapter.
+    describe('on the built-in DeepSeek provider', () => {
+      const builtinDeepseek = (thinkingEffort?: 'off' | 'max'): ProviderInstance => ({
+        id: 'deepseek', source: 'builtin', name: 'DeepSeek', enabled: true, apiFormat: 'openai-compatible',
+        baseUrl: 'https://api.deepseek.com', apiKey: 'k', status: 'unchecked', sortOrder: 0,
+        models: [{
+          id: 'deepseek-flash',
+          label: 'DeepSeek V4.1 Flash',
+          ...(thinkingEffort ? { declaredCapabilities: { thinkingEffort } } : {}),
+        }],
+      });
+      const builtinOptions = (provider: ProviderInstance): ChatOptions => {
+        const declared = resolveModelDeclared(provider, 'deepseek-flash');
+        return {
+          model: 'deepseek-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com/v1',
+          tools: [readFileTool], supportsVision: false,
+          ...computeReasoningParams(resolveCapabilities('deepseek-flash'), 8192, undefined, declared?.thinkingEffort),
+          maxTokens: 8192,
+          declaredCapabilities: declared,
+        };
+      };
+
+      it('max on the model sends the same request as the same pick on a custom endpoint', async () => {
+        const body = await recordOpenAI(toolHistory(), builtinOptions(builtinDeepseek('max')));
+        await expect(body).toMatchFileSnapshot(fixture('deepseek-flash-effort-max'));
+      });
+
+      it('off on the model sends the same request as the same pick on a custom endpoint', async () => {
+        const body = await recordOpenAI(toolHistory(), builtinOptions(builtinDeepseek('off')));
+        await expect(body).toMatchFileSnapshot(fixture('deepseek-flash-effort-off'));
+      });
+
+      it('no pick leaves the request as it was before the setting existed', async () => {
+        const withoutProvider = await recordOpenAI(toolHistory(), {
+          model: 'deepseek-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com/v1',
+          tools: [readFileTool], supportsVision: false,
+          ...computeReasoningParams(resolveCapabilities('deepseek-flash'), 8192),
+          maxTokens: 8192,
+        });
+        mockFetch.mockClear();
+        const withBuiltin = await recordOpenAI(toolHistory(), builtinOptions(builtinDeepseek()));
+        expect(withBuiltin).toBe(withoutProvider);
+      });
+    });
+  });
+
   describe('kimi', () => {
     it('kimi-k2.6 with thinking', async () => {
       const body = await recordOpenAI([user('m1', 'hi')], {
@@ -301,6 +372,24 @@ describe('request shapes by model family', () => {
         volatileContextTail: '[context] todo: none', supportsVision: true,
       });
       await expect(body).toMatchFileSnapshot(fixture('claude-sections-tools-thinking-history'));
+    });
+
+    it('thinking effort low: a 4096-token budget under the same max_tokens', async () => {
+      const body = await recordClaude([user('m1', 'hi')], {
+        model: 'claude-opus-5-5', apiKey: 'k', systemPrompt: 'You are Abu.',
+        ...computeReasoningParams(resolveCapabilities('claude-opus-4-8'), 32768, 200000, 'low'),
+        declaredCapabilities: { supportsReasoning: true, thinkingEffort: 'low' },
+      });
+      await expect(body).toMatchFileSnapshot(fixture('claude-effort-low'));
+    });
+
+    it('thinking effort off: no thinking block and no forced temperature', async () => {
+      const body = await recordClaude([user('m1', 'hi')], {
+        model: 'claude-opus-5-5', apiKey: 'k', systemPrompt: 'You are Abu.',
+        ...computeReasoningParams(resolveCapabilities('claude-opus-4-8'), 32768, 200000, 'off'),
+        declaredCapabilities: { supportsReasoning: true, thinkingEffort: 'off' },
+      });
+      await expect(body).toMatchFileSnapshot(fixture('claude-effort-off'));
     });
 
     it('plain system prompt with temperature', async () => {

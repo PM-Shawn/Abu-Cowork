@@ -1,21 +1,28 @@
 // @vitest-environment happy-dom
 /// <reference types="@testing-library/jest-dom" />
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getLanguageSetting, initLanguage, type LanguageSetting } from '@/i18n';
+import { DesignSystemProvider } from '@/components/ds/provider';
+import type { ApiFormat } from '@/types';
 import type { ModelDeclaredCapabilities } from '@/types/provider';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 
-function Harness({ detected, estimated }: { detected?: number; estimated: number }) {
-  const [declared, setDeclared] = useState<ModelDeclaredCapabilities>({});
+function Harness({ detected, estimated, initial, apiFormat = 'openai-compatible' }: {
+  detected?: number;
+  estimated: number;
+  initial?: ModelDeclaredCapabilities;
+  apiFormat?: ApiFormat;
+}) {
+  const [declared, setDeclared] = useState<ModelDeclaredCapabilities>(initial ?? {});
   return (
     <>
       <AdvancedCapabilitiesFields
         declared={declared}
         setDeclared={setDeclared}
-        apiFormat="openai-compatible"
+        apiFormat={apiFormat}
         contextWindow={{
           size: Math.min(detected ?? estimated, 200000),
           uncappedSize: detected ?? estimated,
@@ -23,6 +30,7 @@ function Harness({ detected, estimated }: { detected?: number; estimated: number
         }}
       />
       <output data-testid="context-length">{declared.maxInputTokens ?? ''}</output>
+      <output data-testid="declared">{JSON.stringify(declared)}</output>
     </>
   );
 }
@@ -132,5 +140,86 @@ describe('AdvancedCapabilitiesFields', () => {
     render(<Harness estimated={32768} />);
     expect(screen.getByRole('checkbox', { name: '能看图' })).toHaveAccessibleDescription('模型能识别图片和屏幕截图');
     expect(screen.getByRole('checkbox', { name: '工具调用' })).not.toHaveAttribute('aria-describedby');
+  });
+
+  describe('思考强度', () => {
+    const renderWithProvider = (ui: ReactElement) => render(ui, { wrapper: DesignSystemProvider });
+    const declaredNow = () => JSON.parse(screen.getByTestId('declared').textContent ?? '{}') as ModelDeclaredCapabilities;
+    const effortSelect = () => screen.getByRole('combobox', { name: '思考强度' });
+    const pick = async (label: string) => {
+      await userEvent.click(effortSelect());
+      await userEvent.click(screen.getByRole('option', { name: label }));
+    };
+
+    it('appears only once 思考模式 is ticked, and starts on 默认', async () => {
+      renderWithProvider(<Harness estimated={32768} />);
+      expect(screen.queryByRole('combobox', { name: '思考强度' })).toBeNull();
+      await userEvent.click(screen.getByRole('checkbox', { name: '思考模式' }));
+      expect(effortSelect()).toHaveTextContent('默认');
+      expect(declaredNow().thinkingEffort).toBeUndefined();
+    });
+
+    it('offers 默认 / 关闭 / 低 / 高 / 最高', async () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true }} />);
+      await userEvent.click(effortSelect());
+      expect(screen.getAllByRole('option').map((option) => option.textContent))
+        .toEqual(['默认', '关闭', '低', '高', '最高']);
+    });
+
+    it.each([
+      ['关闭', 'off'],
+      ['低', 'low'],
+      ['高', 'high'],
+      ['最高', 'max'],
+    ] as const)('picking %s stores %s on the model', async (label, value) => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true }} />);
+      await pick(label);
+      expect(declaredNow().thinkingEffort).toBe(value);
+      expect(effortSelect()).toHaveTextContent(label);
+    });
+
+    it('picking 默认 again clears the stored effort', async () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true, thinkingEffort: 'max' }} />);
+      expect(effortSelect()).toHaveTextContent('最高');
+      await pick('默认');
+      expect(declaredNow().thinkingEffort).toBeUndefined();
+      expect(effortSelect()).toHaveTextContent('默认');
+    });
+
+    it('keeps the other declared fields when the effort changes', async () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true, supportsTools: true, supportedEfforts: ['high'], maxInputTokens: 65536 }} />);
+      await pick('低');
+      expect(declaredNow()).toEqual({ supportsReasoning: true, supportsTools: true, supportedEfforts: ['high'], maxInputTokens: 65536, thinkingEffort: 'low' });
+    });
+
+    it('shows a stored value the list does not know as 默认 rather than guessing', () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true, thinkingEffort: 'ultra' as never }} />);
+      expect(effortSelect()).toHaveTextContent('默认');
+    });
+
+    it('stays next to 思考档位 on an OpenAI-compatible endpoint', () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true }} />);
+      expect(screen.getByText('思考档位')).toBeInTheDocument();
+      expect(effortSelect()).toBeInTheDocument();
+    });
+
+    it('is offered on an Anthropic-format endpoint too, where 思考档位 does not apply', () => {
+      renderWithProvider(<Harness estimated={32768} apiFormat="anthropic" initial={{ supportsReasoning: true }} />);
+      expect(screen.queryByText('思考档位')).toBeNull();
+      expect(effortSelect()).toBeInTheDocument();
+    });
+
+    it('explains what 默认 and 关闭 mean', () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true }} />);
+      expect(screen.getByText(/默认沿用阿布对该模型的内置设置/)).toBeInTheDocument();
+    });
+
+    it('speaks English in the English interface', async () => {
+      initLanguage('en-US');
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true }} />);
+      await userEvent.click(screen.getByRole('combobox', { name: 'Thinking effort' }));
+      expect(screen.getAllByRole('option').map((option) => option.textContent))
+        .toEqual(['Default', 'Off', 'Low', 'High', 'Max']);
+    });
   });
 });

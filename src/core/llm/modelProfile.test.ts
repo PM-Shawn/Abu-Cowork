@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveModelProfile } from './modelProfile';
+import { resolveModelProfile, documentedDefaultThinkingEffort } from './modelProfile';
 import type { ProviderInstance } from '@/types/provider';
 
 function provider(partial: Partial<ProviderInstance>): ProviderInstance {
@@ -121,6 +121,55 @@ describe('resolveModelProfile', () => {
       });
     });
 
+    describe('thinkingEffort', () => {
+      it('is unset (null) by default', () => {
+        expect(resolveModelProfile({ modelId: 'deepseek-flash' }).wire.thinkingEffort).toBeNull();
+        expect(resolveModelProfile({ modelId: 'deepseek-flash', declared: { supportsReasoning: true } }).wire.thinkingEffort).toBeNull();
+      });
+
+      it('comes from the model\'s declaration, through the provider', () => {
+        const p = resolveModelProfile({
+          modelId: 'deepseek-flash',
+          provider: provider({ models: [{ id: 'deepseek-flash', label: 'f', declaredCapabilities: { thinkingEffort: 'max' } }] }),
+        });
+        expect(p.wire.thinkingEffort).toBe('max');
+      });
+
+      it('ignores a stored value that is not one of the four efforts', () => {
+        const p = resolveModelProfile({ modelId: 'deepseek-flash', declared: { thinkingEffort: 'ultra' as never } });
+        expect(p.wire.thinkingEffort).toBeNull();
+      });
+
+      it('off drops the reasoning replay where the switch is really sent', () => {
+        const base = resolveModelProfile({ modelId: 'deepseek-flash', requestHost: 'api.deepseek.com' });
+        expect(base.wire.reasoningReplay).toBe('reasoning_content-or-empty');
+        const off = resolveModelProfile({
+          modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', declared: { thinkingEffort: 'off' },
+        });
+        expect(off.wire.reasoningReplay).toBe('none');
+        const on = resolveModelProfile({
+          modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', declared: { thinkingEffort: 'max' },
+        });
+        expect(on.wire.reasoningReplay).toBe('reasoning_content-or-empty');
+      });
+
+      it('off keeps the replay when the switch is withheld: DeepSeek then thinks and wants its reasoning back', () => {
+        const rejected = resolveModelProfile({
+          modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', declared: { thinkingEffort: 'off' }, overrides: ['thinking'],
+        });
+        expect(rejected.wire.reasoningReplay).toBe('reasoning_content-or-empty');
+        const noReasoning = resolveModelProfile({
+          modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', declared: { thinkingEffort: 'off', supportsReasoning: false },
+        });
+        expect(noReasoning.wire.reasoningReplay).toBe('reasoning_content-or-empty');
+      });
+
+      it('off on a format with no switch leaves the replay alone', () => {
+        const p = resolveModelProfile({ modelId: 'gpt-5.5', requestHost: 'api.openai.com', declared: { thinkingEffort: 'off' } });
+        expect(p.wire.reasoningReplay).toBe('reasoning_content-or-empty');
+      });
+    });
+
     it('a declared thinking format beats the gateway host', () => {
       const p = resolveModelProfile({
         modelId: 'glm-5',
@@ -219,5 +268,18 @@ describe('resolveModelProfile', () => {
   it('is plain data: survives a JSON round trip', () => {
     const p = resolveModelProfile({ modelId: 'kimi-k2.6', requestHost: 'api.moonshot.cn' });
     expect(JSON.parse(JSON.stringify(p))).toEqual(p);
+  });
+});
+
+describe('documentedDefaultThinkingEffort', () => {
+  it('is high for DeepSeek thinking models, whose API thinks at high effort by default', () => {
+    expect(documentedDefaultThinkingEffort('deepseek-flash', 'https://api.deepseek.com')).toBe('high');
+    expect(documentedDefaultThinkingEffort('deepseek-v4-pro', 'https://api.deepseek.com')).toBe('high');
+  });
+
+  it('says nothing for families whose default is not a documented effort', () => {
+    expect(documentedDefaultThinkingEffort('gpt-5.5', 'https://api.openai.com/v1')).toBeUndefined();
+    expect(documentedDefaultThinkingEffort('claude-sonnet-4-5', 'https://api.anthropic.com')).toBeUndefined();
+    expect(documentedDefaultThinkingEffort('qwen3-max', 'https://dashscope.aliyuncs.com/compatible-mode/v1')).toBeUndefined();
   });
 });

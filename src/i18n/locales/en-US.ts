@@ -4232,6 +4232,12 @@ const enUS: TranslationDict = {
       errProcessImage: 'Error processing image: {error}',
       imageProcessed: 'Image processed successfully: {path}',
       hintVolcChatEndpoint: 'Hint: this backend\'s baseUrl points at Volcengine Ark\'s chat endpoint (/api/coding/), not the image-generation endpoint. In Settings → Image Generation, change the baseUrl to {url} and set the model to an image-generation model (doubao-seedream series).',
+      errRefNotSupported: 'Error: the current image backend ({vendor}) does not support reference images. In Settings → Models → Image generation, add or switch to a Volcengine Seedream backend.',
+      errTooManyRefs: 'Error: at most {max} reference images are allowed, but {count} were given.',
+      errRefTooLarge: 'Error: reference image {path} is {sizeMb} MB, over the {maxMb} MB limit. Compress or shrink it with process_image first, then try again.',
+      errRefUnsupportedType: 'Error: reference image {path} is not a supported format (jpeg, png, webp, bmp, tiff, gif, heic, heif).',
+      errRefRead: 'Error: could not read reference image {path}: {error}',
+      refsUsed: '\n(Used {count} reference image(s))',
       hintCheckImageBackend: 'Hint: in Settings → Image Generation, check that the baseUrl is an image-generation endpoint and the model is an image-generation model (for Volcengine use the doubao-seedream series, not a chat model), and confirm the API key is valid.',
     },
     todo: {

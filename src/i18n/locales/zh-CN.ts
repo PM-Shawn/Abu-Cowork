@@ -4234,6 +4234,12 @@ const zhCN: TranslationDict = {
       errProcessImage: 'Error: 图片处理失败：{error}',
       imageProcessed: '图片处理完成：{path}',
       hintVolcChatEndpoint: '提示：当前生图后端的 baseUrl 指向的是火山方舟的聊天端点（/api/coding/），不是图片生成端点。请在 设置 → 图片生成 中把 baseUrl 改为 {url}，并将模型设置为生图模型（doubao-seedream 系列）。',
+      errRefNotSupported: 'Error: 当前生图后台（{vendor}）不支持参考图。请在 设置 → 模型 → 图片生成 中添加或切换到火山引擎 Seedream 后台。',
+      errTooManyRefs: 'Error: 参考图最多 {max} 张，当前传入了 {count} 张。',
+      errRefTooLarge: 'Error: 参考图 {path} 大小为 {sizeMb} MB，超过 {maxMb} MB 的上限。请先用 process_image 压缩或缩小后再试。',
+      errRefUnsupportedType: 'Error: 参考图 {path} 的格式不受支持，支持 jpeg、png、webp、bmp、tiff、gif、heic、heif。',
+      errRefRead: 'Error: 无法读取参考图 {path}：{error}',
+      refsUsed: '\n（使用了 {count} 张参考图）',
       hintCheckImageBackend: '提示：请在 设置 → 图片生成 中检查 baseUrl 是否为图片生成端点、模型是否为生图模型（火山引擎需使用 doubao-seedream 系列而非聊天模型），并确认 API Key 有效。',
     },
     todo: {

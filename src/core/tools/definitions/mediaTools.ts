@@ -4,29 +4,116 @@ import type { ToolDefinition } from '../../../types';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { getTauriFetch } from '../../llm/tauriFetch';
 import { normalizeImageGenerationsUrl } from '../../llm/urlUtils';
-import { buildImageRequest, parseImageResponse, resolveImageVendor, isVolcengineChatEndpoint, VOLCENGINE_IMAGE_BASE_URL } from '../../llm/imageGen';
+import { buildImageRequest, parseImageResponse, resolveImageVendor, isVolcengineChatEndpoint, volcengineMaxReferenceImages, VOLCENGINE_IMAGE_BASE_URL } from '../../llm/imageGen';
 import { getUsableImageBackend } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
-import { runFileOperationStage } from '@/core/tools/fileOperation';
+import { runFileOperationStage, type ToolFileAccess } from '@/core/tools/fileOperation';
+import { uint8ArrayToBase64 } from '../../../utils/base64';
+import { readFile as readBinFile } from '../fsBridge';
 
 // `process_image` lives in its own file (P1-3d-5 slice 1) so the sidecar can
 // register it locally without dragging in generateImageTool's store imports
 // (getUsableImageBackend/useWorkspaceStore, above) — import it from
 // `./processImageTool` directly.
 
+// Seedream allows 30 MB per reference image, but a local file goes out as
+// base64, which inflates it by a third, so cap the file well below that to keep
+// the request body reasonable. The count limit depends on the model
+// (volcengineMaxReferenceImages).
+const MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024;
+
+const REFERENCE_EXTENSION_MIME: Readonly<Record<string, string>> = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
+  gif: 'image/gif', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff',
+  heic: 'image/heic', heif: 'image/heif',
+};
+
+/** The model may pass one string or an array; blanks are noise, not references. */
+function parseReferenceImages(raw: unknown): string[] {
+  const list = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [];
+  return list.flatMap((entry) => (typeof entry === 'string' && entry.trim() ? [entry.trim()] : []));
+}
+
+/** URLs and inline data go to the backend as given; anything else is a local file. */
+function isRemoteReference(entry: string): boolean {
+  return /^(https?:\/\/|data:)/i.test(entry);
+}
+
+/** Magic bytes first: a file's extension says what it was named, not what it is. */
+function sniffImageMime(bytes: Uint8Array): string | null {
+  const at = (offset: number, ...expected: number[]) => expected.every((byte, i) => bytes[offset + i] === byte);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (at(0, 0x47, 0x49, 0x46, 0x38)) return 'image/gif'; // "GIF8"
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return 'image/webp'; // "RIFF"....."WEBP"
+  if (at(0, 0x42, 0x4d)) return 'image/bmp'; // "BM"
+  if (at(0, 0x49, 0x49, 0x2a, 0x00) || at(0, 0x4d, 0x4d, 0x00, 0x2a)) return 'image/tiff';
+  // ISO base media: "ftyp" at byte 4, the brand right after it.
+  if (at(4, 0x66, 0x74, 0x79, 0x70)) {
+    const brand = String.fromCharCode(bytes[8], bytes[9], bytes[10], bytes[11]);
+    if (brand === 'heic' || brand === 'heix') return 'image/heic';
+    if (brand === 'mif1' || brand === 'heif') return 'image/heif';
+  }
+  return null;
+}
+
+/**
+ * Turn the model's reference entries into what the backend accepts: URLs and
+ * data URIs pass through, local files are read and inlined as data URIs. The
+ * result is either the encoded list or a ready-to-return error text.
+ */
+async function encodeReferenceImages(
+  entries: string[],
+  files: ToolFileAccess | undefined,
+): Promise<{ images: string[] } | { error: string }> {
+  const tm = getI18n().toolResult.media;
+  const images: string[] = [];
+  for (const entry of entries) {
+    if (isRemoteReference(entry)) {
+      images.push(entry);
+      continue;
+    }
+    let bytes: Uint8Array;
+    try {
+      bytes = await runFileOperationStage(files, () => (files ? files.readFile(entry) : readBinFile(entry)));
+    } catch (err) {
+      return { error: format(tm.errRefRead, { path: entry, error: err instanceof Error ? err.message : String(err) }) };
+    }
+    if (bytes.byteLength > MAX_REFERENCE_IMAGE_BYTES) {
+      return {
+        error: format(tm.errRefTooLarge, {
+          path: entry,
+          sizeMb: (bytes.byteLength / 1024 / 1024).toFixed(1),
+          maxMb: MAX_REFERENCE_IMAGE_BYTES / 1024 / 1024,
+        }),
+      };
+    }
+    const extension = /\.([a-z0-9]+)$/i.exec(entry)?.[1].toLowerCase();
+    const mime = sniffImageMime(bytes) ?? (extension ? REFERENCE_EXTENSION_MIME[extension] : undefined);
+    if (!mime) return { error: format(tm.errRefUnsupportedType, { path: entry }) };
+    images.push(`data:${mime};base64,${uint8ArrayToBase64(bytes)}`);
+  }
+  return { images };
+}
+
 export const generateImageTool: ToolDefinition = {
   name: TOOL_NAMES.GENERATE_IMAGE,
-  description: 'Generate an image from a text description, using the default image-generation backend configured in Settings → Image Generation. Use when the user asks to generate photorealistic images, illustrations, logos, etc. For charts and data visualizations, output an HTML code block directly. Returns the saved image file path and displays the image inline.',
+  description: 'Generate an image from a text description, using the default image-generation backend configured in Settings → Image Generation. Use when the user asks to generate photorealistic images, illustrations, logos, etc. Pass reference_images to edit, restyle, extend or combine existing images (image-to-image); reference images are only supported when the backend is Volcengine Seedream. For Seedream 5.0 the size should be one of 1K / 1.5K / 2K. For charts and data visualizations, output an HTML code block directly. Returns the saved image file path and displays the image inline.',
   inputSchema: {
     type: 'object',
     properties: {
       prompt: { type: 'string', description: 'Text description of the image to generate' },
-      size: { type: 'string', description: 'Optional image size — the accepted values depend on the backend (e.g. 1024x1024 or 2048x2048). Omit to use the backend\'s own default.' },
+      size: { type: 'string', description: 'Optional image size — the accepted values depend on the backend (e.g. 1024x1024 or 2048x2048). For Seedream 5.0 pro/flash use 1K, 1.5K or 2K (default 2K) and describe the aspect ratio in the prompt. Omit to use the backend\'s own default.' },
       style: { type: 'string', description: 'Image style: vivid or natural (default: vivid)' },
       save_path: { type: 'string', description: 'Optional absolute path to save the image. If not provided, saves to Downloads folder.' },
+      reference_images: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Optional reference images (up to 10 for Seedream 5.0 pro/flash, up to 14 for 5.0 lite/4.5/4.0): absolute local file paths (under 20 MB each; compress or resize larger ones with process_image first) or http(s) URLs. Use when the user wants to edit, restyle, extend or combine existing images, including images the user attached (their file paths are given in the conversation) and images you generated earlier. The backend refers to them as image 1, image 2, ... in array order, so the prompt can say e.g. "put the product from image 1 into the scene of image 2". The prompt should describe the desired output, not repeat the reference.',
+      },
     },
     required: ['prompt'],
   },
@@ -42,6 +129,7 @@ export const generateImageTool: ToolDefinition = {
     const size = input.size as string | undefined;
     const style = (input.style as string) || 'vivid';
     const savePath = input.save_path as string | undefined;
+    const referenceEntries = parseReferenceImages(input.reference_images);
     const files = context?.files;
 
     try {
@@ -84,13 +172,31 @@ export const generateImageTool: ToolDefinition = {
       // inference. See imageGen/vendorResolve.ts.
       const vendor = resolveImageVendor(backend.baseUrl, backend.vendor);
 
+      // Only the Volcengine mapper puts reference images on the wire; the other
+      // vendors would silently drop them and return an unrelated picture, so
+      // refuse before reading any file or calling the API.
+      let referenceImages: string[] = [];
+      if (referenceEntries.length > 0) {
+        const tm = getI18n().toolResult.media;
+        if (vendor !== 'volcengine') {
+          return format(tm.errRefNotSupported, { vendor });
+        }
+        const maxReferences = volcengineMaxReferenceImages(modelId);
+        if (referenceEntries.length > maxReferences) {
+          return format(tm.errTooManyRefs, { max: maxReferences, count: referenceEntries.length });
+        }
+        const encoded = await encodeReferenceImages(referenceEntries, files);
+        if ('error' in encoded) return encoded.error;
+        referenceImages = encoded.images;
+      }
+
       // Call image generation API via Tauri fetch (bypasses CORS)
       const fetchFn = await getTauriFetch();
 
       // Build request body via the per-vendor mapper (field names, size
       // normalization/snapping, and response_format quirks all differ by
       // vendor — see src/core/llm/imageGen/).
-      const reqBody = buildImageRequest(vendor, { model: modelId, prompt, size, style });
+      const reqBody = buildImageRequest(vendor, { model: modelId, prompt, size, style, referenceImages });
 
       const response = await runFileOperationStage(files, () => fetchFn(endpoint, {
         method: 'POST',
@@ -157,6 +263,11 @@ export const generateImageTool: ToolDefinition = {
       let msg = format(tm.imageSaved, { path: finalPath });
       if (revisedPrompt) {
         msg += format(tm.revisedPrompt, { prompt: revisedPrompt });
+      }
+      // After the first line on purpose: the preview card reads the saved path
+      // up to the first newline.
+      if (referenceImages.length > 0) {
+        msg += format(tm.refsUsed, { count: referenceImages.length });
       }
 
       // Return just the text summary. The saved file already renders inline as

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildImageRequest, parseImageResponse } from './index';
+import { buildImageRequest, parseImageResponse, volcengineMaxReferenceImages } from './index';
 
 describe('buildImageRequest', () => {
   describe('openai', () => {
@@ -38,9 +38,78 @@ describe('buildImageRequest', () => {
       expect(body).not.toHaveProperty('size');
     });
 
+    describe('Seedream 5.0 pro/flash size contract', () => {
+      it('passes the 1K / 1.5K / 2K tiers through', () => {
+        for (const tier of ['1K', '1.5K', '2K']) {
+          expect(buildImageRequest('volcengine', { model: 'doubao-seedream-5-0-pro-260628', prompt: 'x', size: tier }).size).toBe(tier);
+        }
+      });
+
+      it('keeps an in-range WxH instead of scaling it up to the older floor', () => {
+        const pro = buildImageRequest('volcengine', { model: 'doubao-seedream-5-0-pro-260628', prompt: 'x', size: '1024x1024' });
+        const flash = buildImageRequest('volcengine', { model: 'doubao-seedream-5-0-flash-260628', prompt: 'x', size: '1024x1024' });
+        const older = buildImageRequest('volcengine', { model: 'doubao-seedream-4-5', prompt: 'x', size: '1024x1024' });
+        expect(pro.size).toBe('1024x1024');
+        expect(flash.size).toBe('1024x1024');
+        expect(older.size).toBe('1920x1920');
+      });
+
+      it('clamps a too-large WxH under the 4,624,220px ceiling', () => {
+        const body = buildImageRequest('volcengine', { model: 'doubao-seedream-5-0-pro-260628', prompt: 'x', size: '4096x4096' });
+        expect(body.size).toBe('2144x2144');
+      });
+    });
+
+    it('lets the model id, not the endpoint, set the max reference count', () => {
+      expect(volcengineMaxReferenceImages('doubao-seedream-5-0-pro-260628')).toBe(10);
+      expect(volcengineMaxReferenceImages('doubao-seedream-5-0-flash-260628')).toBe(10);
+      expect(volcengineMaxReferenceImages('doubao-seedream-5-0-lite-260128')).toBe(14);
+      expect(volcengineMaxReferenceImages('doubao-seedream-4-5-251128')).toBe(14);
+      expect(volcengineMaxReferenceImages('doubao-seedream-4-0-250828')).toBe(14);
+    });
+
     it('does not add a dall-e-only style field', () => {
       const body = buildImageRequest('volcengine', { model: 'doubao-seedream-4-5', prompt: 'x', style: 'vivid' });
       expect(body).not.toHaveProperty('style');
+    });
+
+    // The API stamps a watermark unless told otherwise (default true).
+    it('always asks for no watermark, with or without reference images', () => {
+      for (const model of ['doubao-seedream-4-5', 'doubao-seedream-5-0-pro-260628']) {
+        expect(buildImageRequest('volcengine', { model, prompt: 'x' }).watermark).toBe(false);
+        expect(buildImageRequest('volcengine', { model, prompt: 'x', referenceImages: ['https://example.com/a.png'] }).watermark).toBe(false);
+      }
+    });
+
+    it('sends watermark only to Volcengine, not to other vendors', () => {
+      for (const vendor of ['openai', 'custom', 'siliconflow', 'zhipu'] as const) {
+        expect(buildImageRequest(vendor, { model: 'm', prompt: 'x' })).not.toHaveProperty('watermark');
+      }
+    });
+
+    describe('reference images', () => {
+      const A = 'data:image/png;base64,AAAA';
+      const B = 'https://example.com/b.jpg';
+
+      it('omits image when there are no reference images (undefined or empty)', () => {
+        expect(buildImageRequest('volcengine', { model: 'm', prompt: 'x' })).not.toHaveProperty('image');
+        expect(buildImageRequest('volcengine', { model: 'm', prompt: 'x', referenceImages: [] })).not.toHaveProperty('image');
+      });
+
+      it('sends a single reference image as a plain string', () => {
+        const body = buildImageRequest('volcengine', { model: 'm', prompt: 'x', referenceImages: [A] });
+        expect(body.image).toBe(A);
+      });
+
+      it('sends several reference images as an array in the given order', () => {
+        const body = buildImageRequest('volcengine', { model: 'm', prompt: 'x', referenceImages: [A, B] });
+        expect(body.image).toEqual([A, B]);
+      });
+
+      it('never sends sequential_image_generation (Seedream 5.0 rejects it even when "disabled")', () => {
+        const body = buildImageRequest('volcengine', { model: 'm', prompt: 'x', referenceImages: [A, B] });
+        expect(body).not.toHaveProperty('sequential_image_generation');
+      });
     });
   });
 

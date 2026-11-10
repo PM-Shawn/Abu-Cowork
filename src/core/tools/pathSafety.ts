@@ -1176,6 +1176,8 @@ async function matchAuthorizedWorkspaces(
   canonicalPath: string,
   capability: 'read' | 'write',
   scopeId?: AuthorizationScopeId,
+  /** Count only the grants of folders inside this one (a grant of the folder itself included). */
+  grantsWithin?: string,
 ): Promise<CanonicalMatch> {
   const target = getAuthorizationMap(scopeId);
   if (!target) return { lexical: false, canonical: false };
@@ -1183,6 +1185,7 @@ async function matchAuthorizedWorkspaces(
   let canonical = false;
   for (const [workspace, grant] of target) {
     if (isBlankWorkspaceGrant(workspace) || !grant.capabilities.has(capability)) continue;
+    if (grantsWithin !== undefined && !isPathWithin(workspace, grantsWithin)) continue;
     if (isPathWithin(lexicalPath, workspace)) lexical = true;
     const canonicalRoot = await grant.canonicalRoot;
     if (canonicalRoot && isPathWithin(canonicalPath, canonicalRoot)) {
@@ -1309,9 +1312,13 @@ async function canRequestPermission(normalizedPath: string): Promise<string | nu
     return null;
   }
 
-  // Block platform-sensitive directories
+  // Block platform-sensitive directories. Compared without case: on Windows
+  // `normalizePath` has already lowercased `firstDir`, so a literal `'AppData'`
+  // never matched and the whole AppData folder was offered (and, where
+  // permission is granted automatically, granted) as one unit; macOS opens
+  // `~/library` as `~/Library` too.
   const sensitiveDirs = isWindows() ? SENSITIVE_HOME_DIRS_WIN : SENSITIVE_HOME_DIRS_MAC;
-  if (sensitiveDirs.includes(firstDir)) {
+  if (sensitiveDirs.some((dir) => dir.toLowerCase() === firstDir.toLowerCase())) {
     return null;
   }
 
@@ -1629,6 +1636,22 @@ export async function checkWritePath(
 }
 
 /**
+ * The system-ish folder of home a listing of `path` lies in (`~/Library`,
+ * `~/.Trash`; `~/AppData`, `~/$Recycle.Bin`), or null. Folded: macOS lists
+ * `~/library` as `~/Library`.
+ */
+function closedListingRoot(path: string, home: string): { root: string; name: string } | null {
+  const names = isWindows() ? ['$Recycle.Bin', 'AppData'] : ['.Trash', 'Library'];
+  const folded = foldPath(path);
+  for (const name of names) {
+    const root = `${home}/${name}`;
+    const foldedRoot = foldPath(root);
+    if (folded === foldedRoot || folded.startsWith(`${foldedRoot}/`)) return { root: normalizePath(root), name };
+  }
+  return null;
+}
+
+/**
  * Check if a path is safe for listing (more permissive than read/write)
  */
 export async function checkListPath(path: string, scopeId?: AuthorizationScopeId, options: { followFinalSymlink?: boolean } = {}): Promise<PathCheckResult> {
@@ -1661,11 +1684,17 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     return appDataReadRefusal();
   }
 
+  // `~/Library`, `~/AppData` and the trash are not listed through a grant of
+  // a folder above them (reading never asks, so a read of home leaves home
+  // read-granted); a grant of a folder inside them (an iCloud Drive folder)
+  // still lists that folder.
+  const listingClosedRoot = closedListingRoot(normalizedPath, home);
   const workspaceMatch = await matchAuthorizedWorkspaces(
     resolved.lexicalPath,
     resolved.canonicalPath,
     'read',
     scopeId,
+    listingClosedRoot?.root,
   );
   if (isAuthorizedWorkspaceMatch(workspaceMatch, scopeId)) {
     return { allowed: true, resolvedPath: resolved.canonicalPath };
@@ -1681,6 +1710,8 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
   if (scopeId !== undefined && implicitMatch.lexical) return canonicalScopeEscapeResult();
+  // (The Windows temp folder, inside AppData, is an implicit root above.)
+  if (listingClosedRoot) return { allowed: false, reason: `禁止列出目录: ~/${listingClosedRoot.name}` };
 
   if (scopeId === undefined && (workspaceMatch.lexical || implicitMatch.lexical)) {
     return {
@@ -1693,19 +1724,9 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     };
   }
 
-  // For listing under home, require permission (but still block system-ish paths)
+  // For listing under home, require permission (system-ish paths are closed above)
   const normalizedHome = normalizePath(home);
   if (normalizedPath.startsWith(normalizedHome)) {
-    // Block system-ish paths under home
-    const blockedHomePaths = isWindows()
-      ? ['$Recycle.Bin', 'AppData']
-      : ['.Trash', 'Library'];
-    for (const blocked of blockedHomePaths) {
-      const fullBlocked = normalizePath(`${home}/${blocked}`);
-      if (normalizedPath.startsWith(fullBlocked)) {
-        return { allowed: false, reason: `禁止列出目录: ~/${blocked}` };
-      }
-    }
 
     // Home directory itself — need permission
     const permDir = getPermissionDirectory(normalizedPath, normalizedHome);
@@ -1738,4 +1759,18 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     permissionIsFolder: true,
     capability: 'read',
   };
+}
+
+/**
+ * Whether the hard blocks close `path` to reads (credential stores, private
+ * keys, the app's own data), judged on the spelling alone. A recursive search
+ * path-checks the folder it starts in and then meets every file below it; it
+ * asks this of each one, so the search reads exactly what `read_file` would.
+ */
+export async function isReadClosed(path: string): Promise<boolean> {
+  if (!isAbsolutePolicyPath(path) || isUNCPath(path)) return true;
+  const normalized = normalizePath(path);
+  return (await isBlockedPath(normalized)).blocked
+    || await isAbuAppDataPath(normalized)
+    || await holdsPrivateKey(path);
 }

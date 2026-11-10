@@ -4,7 +4,7 @@ import type { ToolDefinition, ToolResultContent } from '../../../types';
 import { isWindows } from '../../../utils/platform';
 import { ensureParentDir, normalizeSeparators } from '../../../utils/pathUtils';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
-import { isCatastrophicDeleteTarget } from '../pathSafety';
+import { isCatastrophicDeleteTarget, isReadClosed } from '../pathSafety';
 import {
   getFileExtension,
   IMAGE_EXTENSIONS,
@@ -619,6 +619,35 @@ export const listDirectoryTool: ToolDefinition = {
   isConcurrencySafe: true,
 };
 
+/**
+ * Drop the lines of a recursive search's output that name a file the hard
+ * blocks close to reads (see `isReadClosed`). `pathOf` pulls the file path out
+ * of one line; a line it cannot read a path from is kept.
+ */
+async function dropClosedPaths(lines: string[], pathOf: (line: string) => string | null): Promise<string[]> {
+  const closed = new Map<string, boolean>();
+  const kept: string[] = [];
+  for (const line of lines) {
+    const path = pathOf(line);
+    if (path !== null) {
+      let isClosed = closed.get(path);
+      if (isClosed === undefined) {
+        isClosed = await isReadClosed(path);
+        closed.set(path, isClosed);
+      }
+      if (isClosed) continue;
+    }
+    kept.push(line);
+  }
+  return kept;
+}
+
+/** `path:12:text` (grep -n, Select-String); the path may hold a drive colon. */
+function grepLinePath(line: string): string | null {
+  const match = /^(.*?):\d+:/.exec(line);
+  return match ? match[1] : null;
+}
+
 export const searchFilesTool: ToolDefinition = {
   name: TOOL_NAMES.SEARCH_FILES,
   description: 'Search file contents in a directory (similar to grep). Use this to search file contents; use find_files to search by file name. Returns matching lines with their file paths and line numbers.',
@@ -648,6 +677,7 @@ export const searchFilesTool: ToolDefinition = {
         const lines: string[] = [];
         for await (const entry of entries) {
           if (includeMatcher && !includeMatcher.match(entry.name)) continue;
+          if (await isReadClosed(entry.path)) continue;
           const result = await context.files.searchLines(entry.path, pattern, safeMaxResults - lines.length);
           for (const match of result.matches) lines.push(`${entry.path}:${match.lineNumber}:${match.line}`);
           if (lines.length >= safeMaxResults) break;
@@ -694,9 +724,13 @@ export const searchFilesTool: ToolDefinition = {
       }, context, { commandIdPrefix: 'search-files' });
 
       if (output.stdout.trim()) {
-        const cleaned = output.stdout.replace(/\r\n/g, '\n').trim();
-        const lines = cleaned.split('\n');
-        return `Found ${lines.length}${lines.length >= safeMaxResults ? '+' : ''} matches:\n${cleaned}`;
+        // The shell walks every file under the folder; what the hard blocks
+        // close to reads is dropped from what comes back.
+        const lines = await dropClosedPaths(output.stdout.replace(/\r\n/g, '\n').trim().split('\n'), grepLinePath);
+        if (lines.length > 0) {
+          return `Found ${lines.length}${lines.length >= safeMaxResults ? '+' : ''} matches:\n${lines.join('\n')}`;
+        }
+        return 'No matches found.';
       }
       if (output.code === 1) {
         return 'No matches found.';
@@ -737,6 +771,7 @@ export const findFilesTool: ToolDefinition = {
         const paths: string[] = [];
         for await (const entry of entries) {
           if (!matcher.match(entry.name)) continue;
+          if (await isReadClosed(entry.path)) continue;
           paths.push(entry.path);
           if (paths.length >= safeMaxResults) break;
         }
@@ -774,9 +809,15 @@ export const findFilesTool: ToolDefinition = {
       }, context, { commandIdPrefix: 'find-files' });
 
       if (output.stdout.trim()) {
-        const cleaned = output.stdout.replace(/\r\n/g, '\n').trim();
-        const lines = cleaned.split('\n');
-        return `Found ${lines.length}${lines.length >= safeMaxResults ? '+' : ''} files:\n${cleaned}`;
+        const lines = await dropClosedPaths(output.stdout.replace(/\r\n/g, '\n').trim().split('\n'), (line) => {
+          // Windows lists names relative to the folder searched.
+          const name = line.trim();
+          if (!name) return null;
+          return /^([a-zA-Z]:)?[\\/]/.test(name) ? name : `${searchPath.replace(/[\\/]+$/, '')}/${name}`;
+        });
+        if (lines.length > 0) {
+          return `Found ${lines.length}${lines.length >= safeMaxResults ? '+' : ''} files:\n${lines.join('\n')}`;
+        }
       }
       return 'No files found matching the pattern.';
     } catch (err) {

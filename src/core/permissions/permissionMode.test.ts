@@ -44,8 +44,8 @@ describe('permissionMode', () => {
       expect(s.decideCommand(cmd('safe'), false, 'unknown')).toBe('allow');
     });
 
-    it('access to new (unauthorized) paths requires confirmation', () => {
-      expect(s.decideFileAccess('read', true)).toBe('confirm');
+    it('writing to a new (unauthorized) path requires confirmation, reading never asks', () => {
+      expect(s.decideFileAccess('read', true)).toBe('allow');
       expect(s.decideFileAccess('write', true)).toBe('confirm');
     });
 
@@ -77,8 +77,8 @@ describe('permissionMode', () => {
       expect(s.decideCommand(cmd('safe'), false, 'inside')).toBe('allow');
     });
 
-    it('new-path access routes to review', () => {
-      expect(s.decideFileAccess('read', true)).toBe('review');
+    it('a write to a new path routes to review, a read never asks', () => {
+      expect(s.decideFileAccess('read', true)).toBe('allow');
       expect(s.decideFileAccess('write', true)).toBe('review');
     });
 

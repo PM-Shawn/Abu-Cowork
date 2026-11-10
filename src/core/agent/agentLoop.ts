@@ -92,6 +92,7 @@ import {
   type SemanticToolLoopReason,
   type ToolLoopObservation,
 } from './loopGuards';
+import { stepBudgetNote } from './stepBudget';
 import { createMaxTurnsNoticeMessage, deriveMaxTurnsStreak } from './maxTurnsNotice';
 import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
 import {
@@ -518,6 +519,7 @@ export function buildVolatileContextTail(parts: {
   todoState?: string;
   relevantMemoriesSection?: string;
   compressionApplied?: boolean;
+  stepBudgetNote?: string;
 }): string | undefined {
   const body: string[] = [];
   if (parts.compressionApplied) {
@@ -526,6 +528,7 @@ export function buildVolatileContextTail(parts: {
   if (parts.goalState) body.push(parts.goalState);
   if (parts.todoState) body.push(parts.todoState);
   if (parts.relevantMemoriesSection) body.push(parts.relevantMemoriesSection);
+  if (parts.stepBudgetNote) body.push(parts.stepBudgetNote);
   if (body.length === 0) return undefined;
   return [
     '<runtime-context>',
@@ -2082,6 +2085,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         todoState,
         relevantMemoriesSection,
         compressionApplied: view !== historyMessages,
+        stepBudgetNote: stepBudgetNote(turnCount, maxTurns),
       });
       // The local estimate of a request over `sentMessages`, by the categories
       // the context ring shows. One pass over prompt, tools and history; a

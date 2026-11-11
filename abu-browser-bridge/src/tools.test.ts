@@ -68,7 +68,9 @@ describe('tool surface', () => {
     expect(registered.map((t) => t.name).sort()).toEqual([
       'batch',
       'click',
+      'close_tab',
       'connection_status',
+      'create_tab',
       'download',
       'execute_js',
       'extract_table',
@@ -97,7 +99,7 @@ describe('tool surface', () => {
   it('adds a non-provisioning list only to the built-in backend', async () => {
     const chromeNames = collectTools().registered.map((tool) => tool.name);
     const { registered, transport } = collectTools('built-in');
-    expect(registered.map((tool) => tool.name).sort()).toEqual([...chromeNames, 'list_tabs', 'create_tab', 'close_tab', 'retain_tab'].sort());
+    expect(registered.map((tool) => tool.name).sort()).toEqual([...chromeNames, 'list_tabs', 'retain_tab'].sort());
     const list = registered.find((tool) => tool.name === 'list_tabs')!;
     const signal = new AbortController().signal;
     await list.handler({ signal, _meta: {
@@ -120,6 +122,23 @@ describe('tool surface', () => {
     } });
     expect(transport.send).toHaveBeenCalledWith('create_tab', {
       url: 'https://example.com/', ownerId: 'conversation', runId: 'run', expectedOrigin: 'https://example.com',
+    }, undefined, { signal: undefined });
+  });
+
+  it('opens and closes task tabs in the user\'s Chrome with the same trusted metadata', async () => {
+    const { registered, transport } = collectTools();
+    const meta = { _meta: {
+      [ABU_CONVERSATION_META_KEY]: 'conversation',
+      [ABU_RUN_META_KEY]: 'run',
+      [ABU_EXPECTED_ORIGIN_META_KEY]: 'https://canvas.example.edu',
+    } };
+    await registered.find((tool) => tool.name === 'create_tab')!.handler({ url: 'https://canvas.example.edu/courses' }, meta);
+    expect(transport.send).toHaveBeenCalledWith('create_tab', {
+      url: 'https://canvas.example.edu/courses', ownerId: 'conversation', runId: 'run', expectedOrigin: 'https://canvas.example.edu',
+    }, undefined, { signal: undefined });
+    await registered.find((tool) => tool.name === 'close_tab')!.handler({ tabId: 7 }, meta);
+    expect(transport.send).toHaveBeenCalledWith('close_tab', {
+      tabId: 7, ownerId: 'conversation', runId: 'run', expectedOrigin: 'https://canvas.example.edu',
     }, undefined, { signal: undefined });
   });
 

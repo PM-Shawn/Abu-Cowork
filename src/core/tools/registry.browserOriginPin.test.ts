@@ -135,6 +135,25 @@ describe('U5 execution-time controls through executeAnyTool', () => {
     expect(mockCallTool).not.toHaveBeenCalled();
   });
 
+  it('pins the destination of the Chrome bridge create_tab as the approved origin', async () => {
+    const allowed = await checkToolApproval('abu-browser-bridge__create_tab', {
+      url: `${ALLOWED_SITE}/courses`,
+    }, unattendedOwner);
+    expect(allowed.decision).toBe('allow');
+    expect(allowed.browserExecution?.expectedOrigin).toBe(ALLOWED_SITE);
+  });
+
+  it('denies a Chrome bridge create_tab to a blocked destination', async () => {
+    const config = createBrowserPermissionConfig();
+    config.sites[BLOCKED_SITE] = { ...emptyBrowserSiteRule(), blocked: true };
+    setMigratedBrowserSettings({ browserPermissionConfigV2: config });
+    const decision = await checkToolApproval('abu-browser-bridge__create_tab', {
+      url: BLOCKED_SITE,
+    }, attendedOwner);
+    expect(decision.decision).toBe('deny');
+    expect(mockCallTool).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     (mcpManager as unknown as { servers: Map<string, unknown> }).servers.delete('abu-browser');
     __resetBrowserGrantsForTests();

@@ -128,6 +128,7 @@ function fakeChrome(): Record<string, unknown> {
     },
     tabs: {
       onActivated: noopListener,
+      onCreated: noopListener,
       onRemoved: noopListener,
       onUpdated: noopListener,
       query: async (q: { active?: boolean; windowId?: number }) => tabs.filter(

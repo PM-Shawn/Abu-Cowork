@@ -641,7 +641,7 @@ async function resolveBrowserActionTarget(
   if (parsed === null) return { origin: null, url: null, authState: null };
   const { serverName, toolName } = parsed;
 
-  if (toolName === 'navigate' || (serverName === 'abu-browser' && toolName === 'create_tab')) {
+  if (toolName === 'navigate' || toolName === 'create_tab') {
     // Only `goto` actually navigates to `input.url`. For back/forward/reload
     // the executor ignores `url` entirely, so trusting it here would let a
     // decoy url ride an allowed-site verdict while the browser goes somewhere

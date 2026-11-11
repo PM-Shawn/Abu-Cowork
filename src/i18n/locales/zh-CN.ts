@@ -4291,6 +4291,10 @@ const zhCN: TranslationDict = {
       pdfDamaged: 'Error: 这份 PDF 打不开（{detail}），可能已损坏，或者并不是 PDF。',
       tooLarge: 'Error: {name} 太大了（{size}，文档读取器最多处理 {limit}），读不了。小一些的版本可以读，比如少几页，或者扫描分辨率低一些。',
       pictureUnopenable: 'Error: 这张图片打不开（{detail}）。',
+      officeDamaged: 'Error: 这份文件无法作为 Office 文档打开（{detail}），可能已损坏、设有密码，或者是改了扩展名的旧版 .doc/.xls/.ppt 文件。',
+      officePasswordProtected: 'Error: 这份文件设有密码，读不了。要读它，需要一份没有密码的版本。',
+      officeTooLarge: 'Error: 这份文件太大，无法在这里读取：{detail}。可以用脚本读取其中一部分（Python：openpyxl 只读模式、python-docx、python-pptx）。',
+      officeOldFormat: 'Error: 这份文件的扩展名是 {ext}，里面却是旧版的 {format} 文件，read_file 读不了。在 Office 或 WPS 里另存为 {ext} 后就能读。',
     },
     file: {
       imageSkipNoVision: '[图片文件 {path}（{mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]',

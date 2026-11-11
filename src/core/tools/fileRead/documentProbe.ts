@@ -24,6 +24,8 @@ import type { CommandOutput } from '../helpers/toolHelpers';
  *   The page is turned first: a region is given on the turned page, the way
  *   the model sees it, and the rulers mark that page's fractions.
  * - `image-view`: the same for a raster image file (EXIF orientation applied).
+ * - `office-image`: pictures embedded in a .docx/.xlsx/.pptx, named by their
+ *   zip part, rendered like `image-view`.
  *
  * The program never writes a file. It is passed with `python -c`, without its
  * comment lines, so it stays well under the 32,768-character argument limit of
@@ -450,8 +452,28 @@ def image_view():
     emit(v)
 
 
+def office_image():
+    import zipfile
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = 250000000
+    z = zipfile.ZipFile(SRC)
+    parts, out = O.get('parts') or [], []
+    left = O.get('image_chars', 1300000)
+    for k, part in enumerate(parts):
+        if time.time() - T0 > O.get('render_seconds', 22):
+            out.append({'error': 'not rendered in the time available'})
+            continue
+        try:
+            v = view(Image.open(io.BytesIO(z.read(part)), formats=RASTER), left // (len(parts) - k))
+            left -= len(v['img']['data']) if v['img'] else 0
+        except Exception as e:
+            v = {'error': '%s: %s' % (type(e).__name__, str(e)[:200])}
+        out.append(v)
+    emit({'ok': True, 'views': out})
+
+
 try:
-    {'pdf-read': pdf_read, 'pdf-view': pdf_view, 'image-view': image_view}[OP]()
+    {'pdf-read': pdf_read, 'pdf-view': pdf_view, 'image-view': image_view, 'office-image': office_image}[OP]()
 except Exception as e:
     emit({'ok': False, 'error': type(e).__name__, 'message': str(e)[:500]})
 `;
@@ -541,7 +563,13 @@ export interface RasterViewProbe extends ImageViewProbe {
   format: string | null;
 }
 
-export type ProbeOperation = 'pdf-read' | 'pdf-view' | 'image-view';
+export interface OfficeImageProbe {
+  ok: true;
+  /** One entry per requested part, in order. */
+  views: Array<ImageViewProbe | { error: string }>;
+}
+
+export type ProbeOperation = 'pdf-read' | 'pdf-view' | 'image-view' | 'office-image';
 
 export type ProbeOutcome<T> =
   | { status: 'ok'; value: T }
@@ -574,11 +602,50 @@ const COMMAND_PREFIX: Record<ProbeOperation, string> = {
   'pdf-read': 'read-pdf',
   'pdf-view': 'view-pdf',
   'image-view': 'view-image',
+  'office-image': 'view-office-image',
 };
+
+/**
+ * The probe operations a read_file running in the sidecar asks the shell to
+ * run: an Office read's picture renders (fileRead/index.ts,
+ * `readFileNeedsHostProcess`). PDF reads and region or rotate views of a
+ * picture file run in the shell.
+ */
+export const SIDECAR_PROBE_OPERATIONS: readonly ProbeOperation[] = ['office-image'];
 
 /** The interpreter used for the probe on this platform (the host resolves it to the bundled one). */
 function probePython(): string {
   return isWindows() ? 'python' : 'python3';
+}
+
+/**
+ * Whether `run_argv_command` arguments are exactly a document probe of one
+ * of `operations`: the probe program, unchanged, on the platform's Python,
+ * with nothing that changes how the host runs it (working folder, sandbox,
+ * extra writable paths, network). The shell lets the sidecar run this one
+ * command (agentLoopRunner.ts, `native.invoke`): the program only reads the
+ * file it is given and prints JSON.
+ */
+export function isDocumentProbeCommand(args: unknown, operations: readonly ProbeOperation[]): boolean {
+  if (typeof args !== 'object' || args === null || Array.isArray(args)) return false;
+  const record = args as Record<string, unknown>;
+  const allowed = new Set(['program', 'args', 'timeout', 'commandId']);
+  if (Object.keys(record).some((key) => !allowed.has(key))) return false;
+  if (record.program !== probePython()) return false;
+  if (record.timeout !== PROBE_TIMEOUT_SECONDS) return false;
+  if (record.commandId !== undefined && typeof record.commandId !== 'string') return false;
+  const argv = record.args;
+  if (!Array.isArray(argv) || argv.length !== 5 || !argv.every((value) => typeof value === 'string')) return false;
+  const [flag, program, operation, options, path] = argv as string[];
+  if (flag !== '-c' || program !== DOCUMENT_PROBE_SCRIPT) return false;
+  if (!(operations as readonly string[]).includes(operation)) return false;
+  try {
+    const parsed: unknown = JSON.parse(options);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return false;
+  } catch {
+    return false;
+  }
+  return path.length > 0 && !path.startsWith('-');
 }
 
 /** The interpreter could not start, or one of its libraries is missing. */

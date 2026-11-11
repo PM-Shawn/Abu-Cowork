@@ -2,7 +2,8 @@ import type { Region } from './documentProbe';
 
 /**
  * The optional read_file parameters that look into documents and pictures:
- * `pages` (PDF), and `region` and `rotate` (a PDF page or a picture).
+ * `pages` (PDF), `region` and `rotate` (a PDF page or a picture), and
+ * `image_index` (a picture embedded in a Word, Excel or PowerPoint file).
  *
  * Models pass numbers as strings and objects as JSON text often enough that
  * every parser accepts both.
@@ -17,6 +18,7 @@ export interface DocumentReadParams {
   pages: PageRanges | null;
   region: Region | null;
   rotate: Rotation;
+  imageIndex: number | null;
 }
 
 type Parsed<T> = T | { error: string };
@@ -89,6 +91,13 @@ export function parseRotation(raw: unknown): Parsed<Rotation> {
   return { error: 'rotate must be 0, 90, 180 or 270 (degrees clockwise)' };
 }
 
+export function parseImageIndex(raw: unknown): Parsed<number | null> {
+  if (raw === undefined || raw === null || raw === '') return null;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 1) return { error: 'image_index must be a picture number of 1 or more, as listed by read_file ([Image N])' };
+  return value;
+}
+
 /** Every document parameter of one read_file call, or the first one that cannot be used. */
 export function parseDocumentReadParams(input: Record<string, unknown>): Parsed<DocumentReadParams> {
   const pages = parsePages(input.pages);
@@ -97,7 +106,9 @@ export function parseDocumentReadParams(input: Record<string, unknown>): Parsed<
   if (isError(region)) return region;
   const rotate = parseRotation(input.rotate);
   if (isError(rotate)) return rotate;
-  return { pages, region, rotate };
+  const imageIndex = parseImageIndex(input.image_index);
+  if (isError(imageIndex)) return imageIndex;
+  return { pages, region, rotate, imageIndex };
 }
 
 /** Whether a call asks for a closer view (a region or a turn) rather than a plain read. */
@@ -169,4 +180,40 @@ export function enlargedNote(zoom: number | null | undefined, what: 'scan' | 'pi
 /** The ruler note of a zoomed or turned view. */
 export function viewRulerNote(what: 'page' | 'picture'): string {
   return `The rulers give fractions of the whole ${what} as shown here (x along the top, y down the side); read a closer region off them, keeping the same rotate.`;
+}
+
+/** UTF-8 bytes `unit` (a UTF-16 code unit) takes inside a JSON string; a surrogate is counted per pair by the caller. */
+function jsonBytesOf(code: number): number {
+  if (code === 0x22 || code === 0x5c || code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d) return 2;
+  if (code < 0x20) return 6;
+  if (code < 0x80) return 1;
+  if (code < 0x800) return 2;
+  return 3;
+}
+
+/**
+ * `text` cut to at most `maxBytes` UTF-8 bytes of its JSON string form (what
+ * `JSON.stringify` writes, quotes around it left out), between characters.
+ */
+export function cutToJsonBytes(text: string, maxBytes: number): { text: string; cut: boolean } {
+  if (text.length * 6 <= maxBytes) return { text, cut: false };
+  let bytes = 0;
+  for (let at = 0; at < text.length;) {
+    const code = text.charCodeAt(at);
+    const next = text.charCodeAt(at + 1);
+    let width = 1;
+    let cost: number;
+    if (code >= 0xd800 && code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) {
+      width = 2;
+      cost = 4;
+    } else if (code >= 0xd800 && code <= 0xdfff) {
+      cost = 6; // a lone surrogate is written as \uXXXX
+    } else {
+      cost = jsonBytesOf(code);
+    }
+    if (bytes + cost > maxBytes) return { text: text.slice(0, at), cut: true };
+    bytes += cost;
+    at += width;
+  }
+  return { text, cut: false };
 }

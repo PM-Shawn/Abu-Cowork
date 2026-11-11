@@ -4289,6 +4289,10 @@ const enUS: TranslationDict = {
       pdfDamaged: 'Error: The PDF could not be opened ({detail}). It may be damaged or not a PDF.',
       tooLarge: 'Error: {name} is too large for the document reader ({size}; the limit is {limit}). A smaller copy can be read: fewer pages, or scanned at a lower resolution.',
       pictureUnopenable: 'Error: The picture could not be opened ({detail}).',
+      officeDamaged: 'Error: The file could not be opened as an Office document ({detail}). It may be damaged, password-protected, or an older .doc/.xls/.ppt file renamed.',
+      officePasswordProtected: 'Error: This file is password-protected, so it cannot be read. Reading it needs a copy without the password.',
+      officeTooLarge: 'Error: This file is too large to read here: {detail}. Part of it can be read with a script (Python: openpyxl in read-only mode, python-docx, python-pptx).',
+      officeOldFormat: 'Error: This file is named {ext} but holds an older {format} file, which read_file cannot read. Saved again as {ext} (Save As in Office or WPS), it can be read.',
     },
     file: {
       imageSkipNoVision: '[Image file {path} ({mediaType}): the current model has no vision capability; image content was not read. To analyse images, switch to a vision-capable model (e.g. Claude / GPT-4o).]',

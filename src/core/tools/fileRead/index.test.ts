@@ -25,9 +25,10 @@ const view = {
 
 describe('read_file schema', () => {
   it('offers the document parameters beside upstream\'s and describes them', () => {
-    expect(Object.keys(readFileTool.inputSchema.properties)).toEqual(['path', 'offset', 'limit', 'pages', 'region', 'rotate']);
+    expect(Object.keys(readFileTool.inputSchema.properties)).toEqual(['path', 'offset', 'limit', 'pages', 'region', 'rotate', 'image_index']);
     expect(readFileTool.inputSchema.required).toEqual(['path']);
     expect(readFileTool.description).toContain('pass pages (e.g. "18" or "3-5")');
+    expect(readFileTool.description).toContain('pass image_index to see one picture');
     expect(readFileTool.isConcurrencySafe).toBe(true);
   });
 });
@@ -52,8 +53,8 @@ describe('withDocumentReading dispatch', () => {
     const access = files();
     expect(await tool.execute({ path: '/d/notes.txt', pages: '2' }, { files: access }))
       .toMatch(/^Error: pages does not apply to this file\. pages is for PDFs/);
-    expect(await tool.execute({ path: '/d/photo.png', pages: '1' }, { files: access }))
-      .toMatch(/^Error: pages does not apply to a picture file/);
+    expect(await tool.execute({ path: '/d/photo.png', image_index: 2 }, { files: access }))
+      .toMatch(/^Error: pages and image_index do not apply to a picture file/);
     expect(await tool.execute({ path: '/d/a.pdf', region: { x0: 0, y0: 0, x1: 900, y1: 900 } }, { files: access }))
       .toMatch(/^Error: region values are fractions between 0 and 1/);
     expect(upstream).not.toHaveBeenCalled();
@@ -101,9 +102,12 @@ describe('withDocumentReading dispatch', () => {
 });
 
 describe('readFileNeedsHostProcess', () => {
-  it('sends PDF reads and picture views to the host, and keeps the rest in the sidecar', () => {
+  it('sends PDF reads and picture views to the host, and keeps Office reads and the rest in the sidecar', () => {
     expect(readFileNeedsHostProcess('/d/a.PDF', {})).toBe(true);
+    // An Office read unzips and parses in the sidecar; only its picture renders reach the host.
     expect(readFileNeedsHostProcess('/d/a.docx', {})).toBe(false);
+    expect(readFileNeedsHostProcess('/d/a.xlsx', {})).toBe(false);
+    expect(readFileNeedsHostProcess('/d/a.pptx', { image_index: 2 })).toBe(false);
     expect(readFileNeedsHostProcess('/d/a.png', { region: { x0: 0, y0: 0, x1: 1, y1: 0.5 } })).toBe(true);
     expect(readFileNeedsHostProcess('/d/a.jpg', { rotate: 180 })).toBe(true);
     expect(readFileNeedsHostProcess('/d/a.jpg', { rotate: 0 })).toBe(false);
@@ -115,6 +119,7 @@ describe('readFileNeedsHostProcess', () => {
 describe('readFileImagesAreViews', () => {
   it('marks document reads and zooms, not a plain picture read', () => {
     expect(readFileImagesAreViews({ path: '/d/a.pdf' })).toBe(true);
+    expect(readFileImagesAreViews({ path: '/d/a.pptx' })).toBe(true);
     expect(readFileImagesAreViews({ path: '/d/qr.png', region: [0, 0, 1, 0.5] })).toBe(true);
     expect(readFileImagesAreViews({ path: '/d/qr.png' })).toBe(false);
     // rotate 0 turns nothing: the picture is the plain read, shown in the reply.

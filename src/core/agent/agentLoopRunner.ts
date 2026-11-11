@@ -39,6 +39,7 @@ import { checkToolApproval, type ToolApprovalDecision } from '../tools/registry'
 import { finalizeToolApproval } from '../tools/approvalFinalization';
 import { captureToolOperationOwner } from '../tools/operationAuthorization';
 import { requiresHostFileExecution } from '../tools/fileToolTargets';
+import { isDocumentProbeCommand, SIDECAR_PROBE_OPERATIONS } from '../tools/fileRead/documentProbe';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { withResponseFinalizer } from '../sidecar/responseFinalization';
 import type { ToolExecutionContext, Conversation, ConversationStatus, Message, MessageContent, ToolExecutionMetadata, UpstreamErrorDetails } from '../../types';
@@ -1492,12 +1493,26 @@ const NATIVE_INVOKE_ALLOWLIST: ReadonlySet<string> = new Set([
   'move_to_trash',
 ]);
 
+/**
+ * `run_argv_command` runs any program, so it is not on the allowlist; the one
+ * form the sidecar may send is read_file's document probe rendering an
+ * Office file's pictures (the fixed probe program on the platform's Python,
+ * reading the file it is given and printing JSON), so that the rest of the
+ * read, unzipping and spreadsheet parsing, runs in the sidecar and not on this
+ * thread. See `documentProbe.ts`: `isDocumentProbeCommand`, `SIDECAR_PROBE_OPERATIONS`.
+ */
+function isSidecarDocumentProbe(cmd: string, args: unknown): boolean {
+  return cmd === 'run_argv_command'
+    && !requiresHostFileExecution(TOOL_NAMES.READ_FILE)
+    && isDocumentProbeCommand(args, SIDECAR_PROBE_OPERATIONS);
+}
+
 async function handleNativeInvoke(rawParams: unknown): Promise<unknown> {
   const params = rawParams as { runId?: unknown; cmd?: unknown; args?: unknown } | null;
   if (!params || typeof params.runId !== 'string' || typeof params.cmd !== 'string') {
     throw new SidecarRequestError(-32602, 'Invalid native.invoke params: runId and cmd must be strings');
   }
-  if (!NATIVE_INVOKE_ALLOWLIST.has(params.cmd)) {
+  if (!NATIVE_INVOKE_ALLOWLIST.has(params.cmd) && !isSidecarDocumentProbe(params.cmd, params.args)) {
     throw new SidecarRequestError(-32601, `native.invoke: "${params.cmd}" is not allowlisted`);
   }
   const owner = getRunResourceSettlement(params.runId);

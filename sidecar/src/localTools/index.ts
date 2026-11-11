@@ -407,7 +407,8 @@ class LocalToolUnsupportedError extends Error {}
 function readFileUnsupportedLocally(filePath: string): boolean {
   const ext = getFileExtension(filePath);
   if (ext === '.pdf') return true; // fileTools.ts:111,125 — always run_argv_command, no platform branch
-  if (ext === '.pptx') return true; // toolHelpers.ts's extractPptxViaPython — always run_argv_command
+  // .docx/.xlsx/.pptx are read by fileRead/ in JavaScript (never extractPptxViaPython); only their
+  // picture renders reach the shell, as the document probe native.invoke allows (agentLoopRunner.ts).
   const isArchive = ARCHIVE_EXTENSIONS.has(ext) || filePath.endsWith('.tar.gz');
   if (!isArchive) return false;
   const archiveExt = filePath.endsWith('.tar.gz') ? '.tar.gz' : ext;

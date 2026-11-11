@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  cutToJsonBytes,
   describeView,
   formatPageList,
   pagesArgument,
@@ -58,7 +59,9 @@ describe('parseRotation', () => {
 describe('parseDocumentReadParams', () => {
   it('collects every parameter, or the first one that cannot be used', () => {
     expect(parseDocumentReadParams({ path: '/a.pdf', pages: '18', region: [0, 0, 0.5, 0.5], rotate: 90 }))
-      .toEqual({ pages: [[18, 18]], region: [0, 0, 0.5, 0.5], rotate: 90 });
+      .toEqual({ pages: [[18, 18]], region: [0, 0, 0.5, 0.5], rotate: 90, imageIndex: null });
+    expect(parseDocumentReadParams({ path: '/a.docx', image_index: '3' })).toMatchObject({ imageIndex: 3 });
+    expect(parseDocumentReadParams({ path: '/a.docx', image_index: 0 })).toEqual({ error: expect.stringMatching(/image_index/) });
     expect(parseDocumentReadParams({ path: '/a.pdf', pages: 'x', rotate: 45 })).toEqual({ error: expect.stringMatching(/^pages/) });
   });
 });
@@ -98,5 +101,30 @@ describe('read_file errors about the user\'s file', () => {
     // The same placeholders in both, so they say the same thing.
     const placeholders = (text: string) => [...text.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
     en.forEach((text, i) => expect(placeholders(zh[i])).toEqual(placeholders(text)));
+  });
+});
+
+describe('cutToJsonBytes', () => {
+  const jsonBytes = (text: string) => new TextEncoder().encode(JSON.stringify(text)).length - 2;
+
+  it('counts a string the way JSON writes it', () => {
+    expect(cutToJsonBytes('abc', 3)).toEqual({ text: 'abc', cut: false });
+    expect(cutToJsonBytes('a"b', 3)).toEqual({ text: 'a"', cut: true });
+    expect(cutToJsonBytes('a"b', 2)).toEqual({ text: 'a', cut: true });
+    expect(cutToJsonBytes('a\nb\\c', 100)).toEqual({ text: 'a\nb\\c', cut: false });
+  });
+
+  it.each([
+    ['quotes and line breaks', '{"a":"b"}\n'.repeat(500)],
+    ['Chinese', '合同'.repeat(500)],
+    ['astral characters', '📄a'.repeat(500)],
+    ['control characters and tabs', '\u0001\t\\'.repeat(500)],
+    ['a lone surrogate', 'x\ud800y'.repeat(500)],
+  ])('never exceeds the budget and cuts between characters: %s', (_label, text) => {
+    for (const max of [0, 1, 5, 7, 100, 999]) {
+      const cut = cutToJsonBytes(text, max);
+      expect(jsonBytes(cut.text)).toBeLessThanOrEqual(max);
+      expect(cut.cut).toBe(cut.text.length < text.length);
+    }
   });
 });

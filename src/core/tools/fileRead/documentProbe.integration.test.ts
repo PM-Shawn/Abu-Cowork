@@ -4,8 +4,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { crc32, deflateSync } from 'node:zlib';
+import { zipSync } from 'fflate';
 import {
   DOCUMENT_PROBE_SCRIPT,
+  type ImageViewProbe,
+  type OfficeImageProbe,
   type PdfReadProbe,
   type PdfViewProbe,
   type RasterViewProbe,
@@ -104,6 +107,7 @@ describe.skipIf(!hasLibraries)('the probe program on generated files', () => {
     dir = mkdtempSync(join(tmpdir(), 'probe-'));
     writeFileSync(join(dir, 'input.pdf'), samplePdf());
     writeFileSync(join(dir, 'input.png'), samplePng());
+    writeFileSync(join(dir, 'input.docx'), zipSync({ 'word/media/image1.png': new Uint8Array(samplePng()) }));
     writeFileSync(join(dir, 'ocr.pdf'), clausesPdf(true));
     writeFileSync(join(dir, 'ocr-in-order.pdf'), clausesPdf(true, true));
     writeFileSync(join(dir, 'drawn.pdf'), clausesPdf(false));
@@ -182,10 +186,15 @@ describe.skipIf(!hasLibraries)('the probe program on generated files', () => {
     expect(turned.text).toBe('Clause 5 text\nClause 6 ends the term');
   });
 
-  it('image-view: crop, enlarge and turn a picture', () => {
+  it('image-view and office-image: crop, enlarge and turn a picture', () => {
     const view = run<RasterViewProbe>('image-view', { region: [0.5, 0, 1, 1], side: 80 }, join(dir, 'input.png'));
     expect(view).toMatchObject({ ok: true, format: 'PNG', size: [40, 20], region: [0.5, 0, 1, 1] });
     expect(view.img?.w).toBe(80 + 44);
+    const office = run<OfficeImageProbe>('office-image', { parts: ['word/media/image1.png', 'word/media/missing.png'], rotate: 90, side: 40 }, join(dir, 'input.docx'));
+    const [first, second] = office.views;
+    expect((first as ImageViewProbe).size).toEqual([40, 20]);
+    expect((first as ImageViewProbe).img?.h).toBe(40 + 26);
+    expect(second).toEqual({ error: expect.stringMatching(/^KeyError/) });
   });
 
   it('image-view: the size of a JPEG is the file\'s own, upright, also when it is decoded at a fraction of it', () => {

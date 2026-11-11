@@ -5,27 +5,30 @@ import { sha256Hex } from '@/core/session/turnUndoRecord';
 import { exists, readFile as readBinFile } from '../fsBridge';
 import { getFileExtension } from '../helpers/toolHelpers';
 import { readImageView } from './imageView';
+import { readOffice } from './officeRead';
 import { readPdf, type DocumentReadOutcome } from './pdfRead';
 import { asksForView, parseDocumentReadParams } from './readParams';
 
 /**
- * read_file's reading of PDFs and of parts of pictures.
+ * read_file's reading of documents and of parts of pictures.
  *
- * `withDocumentReading` wraps the existing read_file definition: PDFs, and
- * region or rotated views of raster pictures, are read here; every other read
- * (a plain picture read included), and the text-only PDF fallback when the
+ * `withDocumentReading` wraps the existing read_file definition: PDFs, Word,
+ * Excel and PowerPoint files, and region or rotated views of raster pictures,
+ * are read here; every other read (a plain picture read included), and the text-only PDF fallback when the
  * bundled Python cannot run, stays read_file's own code. Keeping the logic
  * here leaves `fileTools.ts` as it was but for the wrapping call.
  */
 
 const RASTER_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
-const DOCUMENT_PARAMETERS = ['pages', 'region', 'rotate'] as const;
+const OFFICE_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx']);
+const DOCUMENT_PARAMETERS = ['pages', 'region', 'rotate', 'image_index'] as const;
 
-type FileKind = 'pdf' | 'image';
+type FileKind = 'pdf' | 'office' | 'image';
 
 function fileKind(path: string): FileKind | null {
   const ext = getFileExtension(path);
   if (ext === '.pdf') return 'pdf';
+  if (OFFICE_EXTENSIONS.has(ext)) return 'office';
   if (RASTER_EXTENSIONS.has(ext)) return 'image';
   return null;
 }
@@ -35,7 +38,8 @@ const given = (value: unknown) => value !== undefined && value !== null && value
 export const READ_FILE_DESCRIPTION = 'Read a file. Text files: the content (offset and limit page through large files). '
   + 'PDF: a short manifest first (which pages have an exact, OCR or garbled text layer, which hold pictures or drawings, which page images are attached), then the text of each page; '
   + 'pass pages (e.g. "18" or "3-5") for those pages\' text with page images, and add region (with one page) or rotate to zoom into or turn part of a page. '
-  + 'Images (png/jpg/gif/webp/bmp): the picture; region or rotate show part of it enlarged or turned. Office documents (.docx/.xlsx/.pptx): their text. Archives: the list of entries. '
+  + 'Word, Excel, PowerPoint: a manifest of the pictures (numbered [Image N]), charts and embedded objects, then the text; pass image_index to see one picture, with region or rotate to zoom into or turn it. '
+  + 'Images (png/jpg/gif/webp/bmp): the picture; region or rotate show part of it enlarged or turned. Archives: the list of entries. '
   + 'Read the manifest before answering: it says what you have not been shown. Answer from the text where it reads clearly; look at the image where the text is missing or garbled, or where the answer lies in handwriting, signatures, stamps, marks, drawings or pictures, and zoom in rather than guess.';
 
 export const DOCUMENT_READ_PROPERTIES: Record<string, ToolParameter> = {
@@ -45,7 +49,7 @@ export const DOCUMENT_READ_PROPERTIES: Record<string, ToolParameter> = {
   },
   region: {
     type: 'object',
-    description: 'Zoom: the part of a PDF page (with pages) or of a picture file to show enlarged, in fractions 0–1 from its top-left corner as shown, read off the rulers of the image you saw (with rotate, of the turned image); e.g. {"x0":0.5,"y0":0.6,"x1":1,"y1":1} is the lower right. For a PDF page the text layer inside the region comes too.',
+    description: 'Zoom: the part of a PDF page (with pages) or of a picture (an image file, or with image_index) to show enlarged, in fractions 0–1 from its top-left corner as shown, read off the rulers of the image you saw (with rotate, of the turned image); e.g. {"x0":0.5,"y0":0.6,"x1":1,"y1":1} is the lower right. For a PDF page the text layer inside the region comes too.',
     properties: {
       x0: { type: 'number', description: 'Left edge (0–1)' },
       y0: { type: 'number', description: 'Top edge (0–1)' },
@@ -57,6 +61,10 @@ export const DOCUMENT_READ_PROPERTIES: Record<string, ToolParameter> = {
     type: 'number',
     description: 'Degrees to turn the PDF page or picture clockwise before showing it, to set sideways or upside-down content upright: 270 when the content lies turned a quarter clockwise (the tops of its letters face right), 90 when turned a quarter counter-clockwise (tops face left), 180 when upside down. region, if given, is on the turned image.',
   },
+  image_index: {
+    type: 'number',
+    description: 'Word/Excel/PowerPoint only: the picture to show, by the number read_file lists as [Image N].',
+  },
 };
 
 /** What the wrapper does with one call. */
@@ -65,7 +73,7 @@ type Handling =
   | { kind: 'done'; result: ToolResult }
   | { kind: 'fallback'; note: string };
 
-const VIEW_APPLIES_TO = 'region and rotate work on PDF pages and on raster pictures (png, jpg, gif, webp, bmp)';
+const VIEW_APPLIES_TO = 'region and rotate work on PDF pages, raster pictures (png, jpg, gif, webp, bmp) and pictures inside Word, Excel or PowerPoint files';
 
 /** Text put before the result of read_file's own code when the document reader could not run. */
 function fallbackNote(kind: FileKind, detail: string): string {
@@ -84,13 +92,13 @@ async function handle(input: Record<string, unknown>, context?: ToolExecutionCon
   if (!kind) {
     const asked = DOCUMENT_PARAMETERS.filter((name) => given(input[name]));
     if (!asked.length) return { kind: 'upstream' };
-    return { kind: 'done', result: `Error: ${asked.join(', ')} ${asked.length === 1 ? 'does' : 'do'} not apply to this file. pages is for PDFs; ${VIEW_APPLIES_TO}.` };
+    return { kind: 'done', result: `Error: ${asked.join(', ')} ${asked.length === 1 ? 'does' : 'do'} not apply to this file. pages is for PDFs, image_index for Word, Excel and PowerPoint files; ${VIEW_APPLIES_TO}.` };
   }
   const params = parseDocumentReadParams(input);
   if ('error' in params) return { kind: 'done', result: `Error: ${params.error}` };
   if (kind === 'image') {
-    if (params.pages) {
-      return { kind: 'done', result: 'Error: pages does not apply to a picture file; use region and rotate to look at part of it.' };
+    if (params.pages || params.imageIndex !== null) {
+      return { kind: 'done', result: 'Error: pages and image_index do not apply to a picture file; use region and rotate to look at part of it.' };
     }
     // A model that cannot see gets read_file's own note; a plain read is read_file's own code.
     if (context?.supportsVision === false || !asksForView(params)) return { kind: 'upstream' };
@@ -101,14 +109,16 @@ async function handle(input: Record<string, unknown>, context?: ToolExecutionCon
   const versionBefore = await versionOf(filePath, context);
   const outcome: DocumentReadOutcome = kind === 'pdf'
     ? await readPdf(filePath, params, context)
-    : await readImageView(filePath, params, context);
+    : kind === 'office'
+      ? await readOffice(filePath, params, context)
+      : await readImageView(filePath, params, context);
   if (outcome.kind === 'aborted') {
     return { kind: 'done', result: kind === 'pdf' ? 'Error reading file: PDF extraction was aborted.' : 'Error reading file: the read was aborted.' };
   }
   if (outcome.kind === 'fallback') return { kind: 'fallback', note: fallbackNote(kind, outcome.detail) };
   const result = outcome.result;
   if (typeof result === 'string' && isToolResultError(result)) return { kind: 'done', result };
-  if (kind === 'pdf') context?.reportMetadata?.({ fileReadOutcome: { kind: 'document' } });
+  if (kind !== 'image') context?.reportMetadata?.({ fileReadOutcome: { kind: 'document' } });
   // A read that showed the model any of the file records the file's version,
   // unless the file changed while it was read (fileReadRecords.ts).
   const versionAfter = await versionOf(filePath, context);
@@ -122,7 +132,7 @@ function withNote(note: string, result: ToolResult): ToolResult {
   return [{ type: 'text', text: note }, ...result];
 }
 
-/** read_file with PDFs and picture views read by this module. */
+/** read_file with documents and picture views read by this module. */
 export function withDocumentReading(base: ToolDefinition): ToolDefinition {
   return {
     ...base,
@@ -154,7 +164,10 @@ function asksForPictureView(input: Record<string, unknown>): boolean {
  * Whether a read_file call must run in the shell rather than in the sidecar:
  * a PDF read (its text-only fallback runs pdftotext or pdfplumber, which the
  * sidecar cannot start) and a view of part of a picture (the viewer is a
- * Python program, which the sidecar cannot start either).
+ * Python program, which the sidecar cannot start either). An Office read runs
+ * in the sidecar, so its unzipping and its spreadsheet parsing stay off the
+ * interface thread; only its picture renders go to the host, as the one
+ * command the shell runs for the sidecar (`isDocumentProbeCommand`).
  */
 export function readFileNeedsHostProcess(path: string, input: Record<string, unknown>): boolean {
   const kind = fileKind(path);
@@ -164,11 +177,12 @@ export function readFileNeedsHostProcess(path: string, input: Record<string, unk
 
 /**
  * Whether the images of a read_file result are how the model looked at a
- * document (page renders, zoomed parts) rather than a picture to show in the
+ * document (page renders, embedded pictures, zoomed parts) rather than a picture to show in the
  * reply.
  */
 export function readFileImagesAreViews(input: Record<string, unknown> | undefined): boolean {
   if (!input) return false;
   const path = typeof input.path === 'string' ? input.path : '';
-  return fileKind(path) === 'pdf' || asksForPictureView(input);
+  const kind = fileKind(path);
+  return kind === 'pdf' || kind === 'office' || asksForPictureView(input);
 }

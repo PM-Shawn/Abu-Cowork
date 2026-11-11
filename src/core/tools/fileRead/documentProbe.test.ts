@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolExecutionContext } from '@/types';
 import type { ToolFileAccess } from '@/core/tools/fileOperation';
-import { cleanProbeDetail, DOCUMENT_PROBE_SCRIPT, PROCESSOR_MAX_INPUT_BYTES, runDocumentProbe, tooLargeError } from './documentProbe';
+import { cleanProbeDetail, DOCUMENT_PROBE_SCRIPT, isDocumentProbeCommand, PROCESSOR_MAX_INPUT_BYTES, runDocumentProbe, tooLargeError } from './documentProbe';
 
 /** Electron's file processor validates every argument at this many characters. */
 const PROCESSOR_ARGUMENT_LIMIT = 32_768;
@@ -20,7 +20,7 @@ describe('DOCUMENT_PROBE_SCRIPT', () => {
 
   it('reads the file from its last argument and answers every operation', () => {
     expect(DOCUMENT_PROBE_SCRIPT).toContain('OP, O, SRC = A[1], json.loads(A[2] or \'{}\'), A[3]');
-    for (const operation of ['pdf-read', 'pdf-view', 'image-view']) {
+    for (const operation of ['pdf-read', 'pdf-view', 'image-view', 'office-image']) {
       expect(DOCUMENT_PROBE_SCRIPT).toContain(`'${operation}'`);
     }
   });
@@ -130,5 +130,34 @@ describe('cleanProbeDetail', () => {
     const redacted = cleanProbeDetail('FileNotFoundError: [Errno 2] No such file or directory: /home/zhangsan/a.pdf');
     expect(redacted).not.toContain('zhangsan');
     expect(redacted).toContain('FileNotFoundError');
+  });
+});
+
+describe('isDocumentProbeCommand', () => {
+  const probe = (fields: Record<string, unknown> = {}, argv: unknown[] = ['-c', DOCUMENT_PROBE_SCRIPT, 'office-image', '{"parts":["word/media/image1.png"]}', '/Users/me/a.docx']) => ({
+    program: 'python3', args: argv, timeout: 30, commandId: 'view-office-image-1', ...fields,
+  });
+
+  it('accepts the probe program, unchanged, for the operations named', () => {
+    expect(isDocumentProbeCommand(probe(), ['office-image'])).toBe(true);
+    const { commandId: _commandId, ...withoutId } = probe();
+    expect(isDocumentProbeCommand(withoutId, ['office-image'])).toBe(true);
+  });
+
+  it.each([
+    ['another operation', probe({}, ['-c', DOCUMENT_PROBE_SCRIPT, 'pdf-read', '{}', '/a.pdf'])],
+    ['a changed program', probe({}, ['-c', `${DOCUMENT_PROBE_SCRIPT}\nimport os; os.remove(SRC)`, 'office-image', '{}', '/a.docx'])],
+    ['another program', probe({ program: 'bash' })],
+    ['a program path', probe({ program: '/usr/bin/python3' })],
+    ['the sandbox turned off', probe({ sandboxEnabled: false })],
+    ['a working folder', probe({ cwd: '/tmp' })],
+    ['extra writable paths', probe({ extraWritablePaths: ['/'] })],
+    ['a longer timeout', probe({ timeout: 300 })],
+    ['options that are no JSON object', probe({}, ['-c', DOCUMENT_PROBE_SCRIPT, 'office-image', '[]', '/a.docx'])],
+    ['a flag for a path', probe({}, ['-c', DOCUMENT_PROBE_SCRIPT, 'office-image', '{}', '-i'])],
+    ['an extra argument', probe({}, ['-c', DOCUMENT_PROBE_SCRIPT, 'office-image', '{}', '/a.docx', '/b'])],
+    ['no record', 'python3'],
+  ])('refuses %s', (_label, args) => {
+    expect(isDocumentProbeCommand(args, ['office-image'])).toBe(false);
   });
 });

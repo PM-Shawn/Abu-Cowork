@@ -630,16 +630,18 @@ Requests that need no files (casual chat, knowledge Q&A, search, writing, transl
   const { hasEmbeddedPython } = await import('../../utils/pythonRuntime');
   if (await hasEmbeddedPython()) {
     sections.push({ name: 'python-runtime', text: `\n## Built-in Python Environment
-A Python runtime is built in. The following libraries can be imported directly — no pip install needed:
-- python-pptx (PowerPoint generation)
-- python-docx (Word document generation)
-- openpyxl (Excel generation)
+A Python runtime is built in. The following libraries can be imported directly:
+- python-pptx (PowerPoint), python-docx (Word), openpyxl and xlsxwriter (Excel): reading and writing
+- pandas (tables, grouping, reading and writing CSV/Excel including old .xls through xlrd), numpy
+- matplotlib (charts saved as PNG; Chinese labels need a Chinese font: the xlsx skill shows how)
+- pypdfium2 (PDF rendering and text), pdfplumber (PDF text and tables), pypdf (PDF pages: split, merge, rotate, forms)
+- reportlab, fpdf2 (PDF generation)
 - Pillow (image processing)
-- fpdf2 (PDF generation)
 - lxml (XML processing)
-- pandas, matplotlib, pypdfium2, xlrd, python-dateutil (data analysis, charts, PDF page rendering, legacy .xls)
 
-Just write a Python script and run it with run_command. Do not run pip install; do not install Node.js packages.
+For Word, Excel, PowerPoint and PDF deliverables, use the matching skill first (docx, xlsx, pptx, pdf): it has the recipes and the check script to run. Before you tell the user a file is done, check it: run that script, and look at what can be looked at (a picture or a rendered PDF page, with read_file). Say what you could not check.
+
+pip is not available: only these libraries and the standard library can be imported, so do not run pip install, and do not install Node.js packages. Just write a Python script and run it with run_command.
 Use the python3 command — the system will automatically use the built-in Python.`, cacheable: true });
   }
 

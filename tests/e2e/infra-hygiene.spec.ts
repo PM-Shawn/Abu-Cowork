@@ -20,6 +20,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { answerTitleRequest } from './openAiMock';
 import { persistedStoreVersion } from './storeVersions';
 
 const READY_TIMEOUT = 45_000;
@@ -136,6 +137,9 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
       res.end(JSON.stringify({ error: 'unexpected local E2E mock route' }));
       return;
     }
+
+    // The title call that follows a first reply is not a scripted turn (src/core/session/titleGen.ts).
+    if (answerTitleRequest(body, res)) return;
 
     const mockRequest: MockRequest = {
       authorization: req.headers.authorization,

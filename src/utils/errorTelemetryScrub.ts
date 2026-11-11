@@ -1,3 +1,5 @@
+import { redactTraceSecrets } from './secretPatterns';
+
 /**
  * What an automatic error report is allowed to carry off the machine.
  *
@@ -37,14 +39,6 @@
  * product call about how readable the remote signal has to be, not a
  * technical blocker.
  */
-
-/** Credential shapes — kept from the original `safeErrorMessage`. */
-const SECRET_PATTERNS: RegExp[] = [
-  /\bsk-[a-zA-Z0-9_-]{12,}/g,
-  /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}/g,
-  /\bBearer\s+[a-zA-Z0-9._\-+/=]{8,}/gi,
-  /\b(?:token|api[_-]?key|password|secret|authorization)\s*[=:]\s*\S+/gi,
-];
 
 /**
  * Content-bearing spans, in the order they must run.
@@ -96,8 +90,7 @@ function stripControlChars(value: string): string {
  */
 export function normalizeErrorMessage(value: string | undefined): string | null {
   if (!value) return null;
-  let result = value;
-  for (const pattern of SECRET_PATTERNS) result = result.replace(pattern, '[REDACTED]');
+  let result = redactTraceSecrets(value);
   for (const [pattern, replacement] of CONTENT_PATTERNS) {
     result = result.replace(pattern, replacement);
   }

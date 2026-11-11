@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { redactTraceSecrets } = require('./generated/secretPatterns.cjs');
 const { sanitizeTrajectoryAttributes, normalizeTrajectoryEvent, replayComputerUseTrajectory } = require('./computerUseTrajectory.cjs');
 
 const RUNTIME_EVENT_CHANNEL = 'abu:runtime-event';
@@ -125,17 +126,8 @@ const BENIGN_RENDER_PROCESS_REASONS = new Set(['clean-exit']);
 /** Window within which the same error object is treated as one main crash. */
 const MAIN_CRASH_DEDUPE_WINDOW_MS = 50;
 
-const SECRET_PATTERNS = [
-  /\bsk-[a-zA-Z0-9_-]{12,}/g,
-  /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}/g,
-  /\bBearer\s+[a-zA-Z0-9._\-+/=]{8,}/gi,
-  /\b(?:token|api[_-]?key|password|secret|authorization)\s*[=:]\s*\S+/gi,
-];
-
 function redactString(value) {
-  let result = String(value);
-  for (const pattern of SECRET_PATTERNS) result = result.replace(pattern, '[REDACTED]');
-  return result.slice(0, MAX_STRING_CHARS);
+  return redactTraceSecrets(String(value)).slice(0, MAX_STRING_CHARS);
 }
 
 function normalizeErrorType(value) {

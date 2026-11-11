@@ -26,6 +26,7 @@
 
 import type { Message, MessageContent, ToolCall } from '@/types';
 import { sanitizeMemoryText } from '@/core/memdir/sanitize';
+import { BEARER_PATTERN, JWT_PATTERN, SK_KEY_PATTERN } from '@/utils/secretPatterns';
 import type { CheckResult } from './types';
 
 // ════════════════════════════════════════════════════════════════════════
@@ -79,12 +80,10 @@ const SECRET_FIELD_ALLOWLIST = new Set([
  * bundle's debug value.
  */
 const SECRET_VALUE_PATTERNS: RegExp[] = [
-  // OpenAI / Anthropic style: sk-... or sk-ant-...
-  /\bsk-[a-zA-Z0-9_-]{20,}/g,
-  // JWT (3 base64-url segments separated by dots, total 30+ chars)
-  /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}/g,
-  // Bearer header
-  /\bBearer\s+[a-zA-Z0-9._\-+/=]{16,}/gi,
+  // sk- keys, JWTs and Bearer tokens: the shapes every redactor shares
+  SK_KEY_PATTERN,
+  JWT_PATTERN,
+  BEARER_PATTERN,
   // GitHub PAT
   /\bghp_[a-zA-Z0-9]{30,}/g,
   // Google API key

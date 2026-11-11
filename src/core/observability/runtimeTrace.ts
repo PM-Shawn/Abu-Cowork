@@ -1,4 +1,5 @@
 import { recordElectronRuntimeEvent } from '@/utils/electronHost';
+import { redactTraceSecrets } from '@/utils/secretPatterns';
 
 const MAX_EVENTS = 500;
 const MAX_STRING_CHARS = 160;
@@ -164,17 +165,8 @@ const SAFE_ATTRIBUTE_KEYS = new Set<keyof RuntimeTraceAttributes>([
   'recoveryUsed',
 ]);
 
-const SECRET_PATTERNS: RegExp[] = [
-  /\bsk-[a-zA-Z0-9_-]{12,}/g,
-  /\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}/g,
-  /\bBearer\s+[a-zA-Z0-9._\-+/=]{8,}/gi,
-  /\b(?:token|api[_-]?key|password|secret|authorization)\s*[=:]\s*\S+/gi,
-];
-
 function sanitizeString(value: string): string {
-  let result = value;
-  for (const pattern of SECRET_PATTERNS) result = result.replace(pattern, '[REDACTED]');
-  return result.slice(0, MAX_STRING_CHARS);
+  return redactTraceSecrets(value).slice(0, MAX_STRING_CHARS);
 }
 
 function sanitizeEventName(value: string): string | null {

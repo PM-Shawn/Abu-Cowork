@@ -1,21 +1,26 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { COMMAND_OUTPUT_RULE, HTTP_FETCH_RULE, charsOmittedMarker, linesOmittedMarker, truncateText } from '@/core/context/truncation';
+import { charsOmittedMarker, linesOmittedMarker } from '@/core/context/truncation';
 import { boundToolResult } from '@/core/context/toolResultSpill';
 import { DURABLE_RESULT_OMITTED_NOTE } from '@/core/session/durableToolResultContent';
 import { COMMAND_OUTPUT_CUT_NOTE, foldResultRows, foldRowList, foldToolResult, toResultRows } from './toolResultFold';
 
 const lines = (n: number) => Array.from({ length: n }, (_, i) => `line ${i + 1}`).join('\n');
+/** A result saved before the spill: 150 first lines, the omission line, 30 last lines. */
+const oldLineCut = (n: number) => {
+  const all = lines(n).split('\n');
+  return [...all.slice(0, 150), `\n${linesOmittedMarker(n - 180)}\n`, ...all.slice(-30)].join('\n');
+};
 
 describe('toResultRows', () => {
   it('turns the line-omission marker and its blank padding into one note row', () => {
-    const rows = toResultRows(truncateText(lines(5000), COMMAND_OUTPUT_RULE));
+    const rows = toResultRows(oldLineCut(5000));
     expect(rows.filter((row) => row.kind === 'note')).toEqual([{ kind: 'note', note: 'linesNotRead', count: 4820 }]);
     expect(rows.filter((row) => row.kind === 'text')).toHaveLength(180);
   });
 
   it('reads the character-omission marker with its count', () => {
-    const note = toResultRows(truncateText('x'.repeat(10_000), HTTP_FETCH_RULE)).find((row) => row.kind === 'note');
+    const note = toResultRows(`${'x'.repeat(3000)}\n\n${charsOmittedMarker(7000)}\n\n${'x'.repeat(500)}`).find((row) => row.kind === 'note');
     expect(note).toEqual({ kind: 'note', note: 'charsNotRead', count: expect.any(Number) });
     expect(note?.kind === 'note' ? note.count : 0).toBeGreaterThan(6000);
   });
@@ -75,7 +80,7 @@ describe('foldToolResult', () => {
   });
 
   it('counts only the lines Abu read, without the note', () => {
-    expect(foldToolResult(truncateText(lines(5000), COMMAND_OUTPUT_RULE)).hidden).toEqual({ unit: 'lines', count: 180 });
+    expect(foldToolResult(oldLineCut(5000)).hidden).toEqual({ unit: 'lines', count: 180 });
   });
 
   it('keeps a note that ends the result in the folded tail', () => {
@@ -118,7 +123,7 @@ describe('foldRowList', () => {
   });
 
   it('gives foldToolResult the same answer as before', () => {
-    const text = truncateText(lines(5000), COMMAND_OUTPUT_RULE);
+    const text = oldLineCut(5000);
     expect(foldToolResult(text)).toEqual(foldRowList(toResultRows(text), (row) => row.kind === 'text'));
   });
 });
@@ -147,7 +152,7 @@ describe('foldResultRows', () => {
     const texts = [
       lines(9),
       lines(10),
-      truncateText(lines(5000), COMMAND_OUTPUT_RULE),
+      oldLineCut(5000),
       'a'.repeat(1000),
       `${'a'.repeat(700)}b${'c'.repeat(300)}`,
       `stdout:\n${'x'.repeat(3000)}\n\nexit code: 0`,

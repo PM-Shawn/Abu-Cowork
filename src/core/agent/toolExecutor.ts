@@ -20,6 +20,7 @@ import type { FilePermissionCallback, ToolInvoker } from './ports/toolInvoker';
 import type { SettingsReader } from './ports/settingsReader';
 import { writeToolResultFile } from '../session/sessionMemory';
 import { boundToolResult } from '../context/toolResultSpill';
+import { outcomesAfterSpill } from '../tools/helpers/toolOutcomes';
 import { evaluatePlanGate, getPlanMode } from './planMode';
 import { emitHook } from './lifecycleHooks';
 import type { PreToolCallEvent } from './lifecycleHooks';
@@ -619,7 +620,7 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
   for (let i = 0; i < results.length; i++) {
     const result = results[i];
     if (result.status === 'fulfilled') {
-      const { id, result: toolResult, resultContent, error, metadata } = result.value;
+      const { id, result: toolResult, resultContent, error, metadata: fullMetadata } = result.value;
       // Determine hideScreenshot for computer tool
       let hideScreenshot: boolean | undefined;
       const matchedTc = collectedToolCalls[i];
@@ -644,6 +645,8 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
             writeFile: (toolCallId, text) => writeToolResultFile(conversationId, toolCallId, text),
           })
         : toolResult;
+      // Positions the tool recorded point into the whole text.
+      const metadata = storedResult === toolResult ? fullMetadata : outcomesAfterSpill(fullMetadata, storedResult);
 
       // Snapshot any output files this tool produced so they survive original-file deletion.
       // Fire-and-forget: snapshot failures must never block the agent loop.

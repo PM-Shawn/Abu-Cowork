@@ -3,7 +3,6 @@ import { getTauriFetch } from '../../llm/tauriFetch';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
-import { HTTP_FETCH_RULE, truncateText } from '../../context/truncation';
 
 /**
  * Extract article content from raw HTML using Mozilla Readability.
@@ -200,6 +199,7 @@ export const httpFetchTool: ToolDefinition = {
 
     const FETCH_TIMEOUT_MS = 60_000;
     const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024; // 10MB
+    const JSON_PRETTY_PRINT_MAX_CHARS = 100_000;
 
     try {
       const fetchFn = await getTauriFetch();
@@ -216,7 +216,7 @@ export const httpFetchTool: ToolDefinition = {
       const response = await fetchFn(url, options);
 
       // Pre-flight body size check via Content-Length. Servers that omit this
-      // header fall through to the post-download char-limit truncation below.
+      // header are read whole; the general result bound spills a long one to a file.
       const contentLength = response.headers.get('content-length');
       if (contentLength) {
         const size = Number(contentLength);
@@ -225,24 +225,23 @@ export const httpFetchTool: ToolDefinition = {
         }
       }
 
-      const MAX_RESPONSE_LENGTH = 50000;
       let responseBody = await response.text();
       const contentType = response.headers.get('content-type') || '';
 
-      // Cut the body here, so the recorded body range points into the result.
+      // The body is not cut here: the result is bounded once, by
+      // `boundToolResult`, which saves the whole text to a file.
       const statusLine = `HTTP ${response.status} ${response.statusText}`;
       const withStatus = (pageBody: string): string => {
-        const bodyText = truncateText(pageBody, { ...HTTP_FETCH_RULE, maxChars: HTTP_FETCH_RULE.maxChars - statusLine.length - 2 });
         const bodyStart = statusLine.length + 2;
         context?.reportMetadata?.({
           httpFetchOutcome: {
             status: response.status,
             statusText: response.statusText,
-            body: [bodyStart, bodyStart + bodyText.length],
-            truncated: bodyText !== pageBody,
+            body: [bodyStart, bodyStart + pageBody.length],
+            truncated: false,
           },
         });
-        return `${statusLine}\n\n${bodyText}`;
+        return `${statusLine}\n\n${pageBody}`;
       };
 
       // Article extraction for HTML responses
@@ -255,7 +254,8 @@ export const httpFetchTool: ToolDefinition = {
       }
 
       // Pretty-print JSON only if response is small enough to avoid memory spikes
-      if (contentType.includes('application/json') && responseBody.length <= MAX_RESPONSE_LENGTH * 2) {
+      // (this cap protects memory, not the model's context; it does not cut the body).
+      if (contentType.includes('application/json') && responseBody.length <= JSON_PRETTY_PRINT_MAX_CHARS) {
         try {
           responseBody = JSON.stringify(JSON.parse(responseBody), null, 2);
         } catch {

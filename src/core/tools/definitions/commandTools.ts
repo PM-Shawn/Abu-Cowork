@@ -17,34 +17,10 @@ import { isReadOnlyCommand } from '../readOnlyDetector';
 import { TOOL_NAMES } from '../toolNames';
 import { format, getI18n } from '../../../i18n';
 import { hasElectronCommandHost } from '../../../utils/electronHost';
-import { COMMAND_OUTPUT_RULE, truncateText, type TruncationRule } from '../../context/truncation';
 
 const PART_SEPARATOR = '\n\n';
 const STDOUT_HEADING = 'stdout:\n';
 const STDERR_HEADING = 'stderr:\n';
-
-/**
- * Cut each output stream on its own, so the joined result fits `rule` and the
- * recorded positions point into the text the model receives. When both
- * streams have text, stderr gets at most half of the budget and stdout the rest.
- */
-function boundCommandOutput(stdout: string, stderr: string, rule: TruncationRule): { stdout: string; stderr: string } {
-  if (stdout && stderr) {
-    const boundedStderr = truncateText(stderr, {
-      headLines: Math.floor(rule.headLines / 2),
-      tailLines: Math.floor(rule.tailLines / 2),
-      maxChars: Math.floor(rule.maxChars / 2),
-    });
-    return {
-      stdout: truncateText(stdout, { ...rule, maxChars: rule.maxChars - boundedStderr.length }),
-      stderr: boundedStderr,
-    };
-  }
-  return {
-    stdout: stdout ? truncateText(stdout, rule) : '',
-    stderr: stderr ? truncateText(stderr, rule) : '',
-  };
-}
 
 /**
  * Global-workspace fallback for direct invocations that carry no context.
@@ -209,11 +185,11 @@ Use it for: moving/copying/renaming files (mv/cp), package management (npm/pip/b
         showSandboxBlockedToast(resolvedCommand);
       }
 
-      const { stdout, stderr } = boundCommandOutput(
-        output.stdout.trim(),
-        output.stderr.trim(),
-        COMMAND_OUTPUT_RULE,
-      );
+      // No cut here: the result is bounded once, by `boundToolResult`, which
+      // saves the whole text to a file. (The command host already caps each
+      // stream at ~2 MB, which is what protects memory.)
+      const stdout = output.stdout.trim();
+      const stderr = output.stderr.trim();
       const commandOutcome: CommandOutcome = { exitCode: output.code };
       const parts: string[] = [];
       // Where the next part starts in the joined result.

@@ -21,6 +21,7 @@ import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/confi
 import { showSandboxBlockedToast } from '../../sandbox/recovery';
 import { isWindows } from '../../../utils/platform';
 import { LINES_OMITTED_LINE } from '../../context/truncation';
+import { boundToolResult } from '../../context/toolResultSpill';
 import type { CommandOutcome } from '../../../types';
 
 vi.mock('../../../utils/platform', () => ({
@@ -682,34 +683,22 @@ describe('runCommandTool', () => {
       expect(reportMetadata.mock.calls[0][0]).not.toHaveProperty('commandOutcome');
     });
 
-    it('bounds each section before joining and records the bounded positions', async () => {
-      vi.mocked(invoke).mockResolvedValue({ code: 1, stdout: numberedLines('out', 400), stderr: numberedLines('err', 400) });
+    it('returns a long output whole, so the one spill keeps its tail reachable', async () => {
+      vi.mocked(invoke).mockResolvedValue({ code: 1, stdout: numberedLines('out', 1200), stderr: numberedLines('err', 400) });
       const reportMetadata = vi.fn();
 
       const result = await runCommandTool.execute({ command: 'ls' }, { reportMetadata }) as string;
 
       const outcome = outcomeOf(reportMetadata);
-      const stdout = result.slice(...outcome.stdout!);
-      const stderr = result.slice(...outcome.stderr!);
-      expect(result.split('\n').filter((line) => LINES_OMITTED_LINE.test(line))).toHaveLength(2);
-      expect(stdout.split('\n').filter((line) => LINES_OMITTED_LINE.test(line))).toHaveLength(1);
-      expect(stderr.split('\n').filter((line) => LINES_OMITTED_LINE.test(line))).toHaveLength(1);
-      expect(stdout.startsWith('out 1 ')).toBe(true);
-      expect(stdout.endsWith(' out 400')).toBe(true);
-      expect(stderr.startsWith('err 1 ')).toBe(true);
-      expect(stderr.endsWith(' err 400')).toBe(true);
-      expect(stdout.length + stderr.length).toBeLessThanOrEqual(15000);
-    });
+      expect(result.split('\n').some((line) => LINES_OMITTED_LINE.test(line))).toBe(false);
+      expect(result.slice(...outcome.stdout!).endsWith(' out 1200')).toBe(true);
+      expect(result.slice(...outcome.stderr!).endsWith(' err 400')).toBe(true);
 
-    it('gives stderr at most half of the budget', async () => {
-      vi.mocked(invoke).mockResolvedValue({ code: 1, stdout: numberedLines('out', 2000), stderr: 'e1\ne2' });
-      const reportMetadata = vi.fn();
-
-      const result = await runCommandTool.execute({ command: 'ls' }, { reportMetadata }) as string;
-
-      const outcome = outcomeOf(reportMetadata);
-      expect(result.slice(...outcome.stderr!)).toBe('e1\ne2');
-      expect(result.slice(...outcome.stdout!).length).toBeLessThanOrEqual(15000 - 5);
+      // What the model sees after the general spill: the middle is in the file.
+      const writeFile = vi.fn(async () => '/data/results/tc.txt');
+      const bounded = await boundToolResult({ toolCallId: 'tc', toolName: 'run_command', input: {}, result, writeFile });
+      expect(writeFile).toHaveBeenCalledWith('tc', result);
+      expect(bounded).toContain('/data/results/tc.txt');
     });
 
     it('keeps a short output whole', async () => {

@@ -58,3 +58,23 @@ export function parseHttpFetchOutcome(value: unknown): HttpFetchOutcome | undefi
   if (!isRange(body) || typeof truncated !== 'boolean') return undefined;
   return { status, statusText, body: [body[0], body[1]], truncated };
 }
+
+/**
+ * The outcomes of a result that `boundToolResult` has cut. Their positions
+ * were recorded in the whole text, so they no longer point into what is
+ * stored: run_command's sections are dropped (the step view then shows the
+ * stored text), http_fetch's body is everything after its status line.
+ */
+export function outcomesAfterSpill<T extends { commandOutcome?: CommandOutcome; httpFetchOutcome?: HttpFetchOutcome }>(
+  metadata: T | undefined,
+  stored: string,
+): T | undefined {
+  if (!metadata) return metadata;
+  const { commandOutcome: _command, httpFetchOutcome, ...rest } = metadata;
+  return {
+    ...rest,
+    ...(httpFetchOutcome
+      ? { httpFetchOutcome: { ...httpFetchOutcome, body: [httpFetchOutcome.body[0], stored.length] as [number, number], truncated: true } }
+      : {}),
+  } as T;
+}

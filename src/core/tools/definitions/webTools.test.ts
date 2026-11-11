@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { httpFetchTool } from './webTools';
 import { getTauriFetch } from '../../llm/tauriFetch';
-import { CHARS_OMITTED_LINE } from '../../context/truncation';
+import { boundToolResult } from '../../context/toolResultSpill';
 import type { HttpFetchOutcome } from '../../../types';
 
 // The blocking tests cover the pre-flight guards in httpFetchTool.execute that
@@ -132,17 +132,22 @@ describe('http fetch outcome record', () => {
     expect(result.slice(13, 24)).toBe('hello\nworld');
   });
 
-  it('bounds the body before recording it', async () => {
-    respondWith('x'.repeat(60000));
+  it('returns a long body whole, so the one spill keeps its tail reachable', async () => {
+    const body = `FIRST\n${'x'.repeat(60000)}\nLAST`;
+    respondWith(body);
     const reportMetadata = vi.fn();
 
     const result = await httpFetchTool.execute({ url }, { reportMetadata }) as string;
 
     const outcome = outcomeOf(reportMetadata);
-    expect(outcome.truncated).toBe(true);
-    expect(result.length).toBeLessThanOrEqual(3500);
-    expect(outcome.body[1]).toBe(result.length);
-    expect(result.slice(...outcome.body).split('\n').some((line) => CHARS_OMITTED_LINE.test(line))).toBe(true);
+    expect(outcome.truncated).toBe(false);
+    expect(result.slice(...outcome.body)).toBe(body);
+
+    const writeFile = vi.fn(async () => '/data/results/tc.txt');
+    const bounded = await boundToolResult({ toolCallId: 'tc', toolName: 'http_fetch', input: {}, result, writeFile });
+    expect(writeFile).toHaveBeenCalledWith('tc', result);
+    expect(bounded).toContain('/data/results/tc.txt');
+    expect(bounded).toContain('LAST');
   });
 
   it('keeps a short body whole', async () => {

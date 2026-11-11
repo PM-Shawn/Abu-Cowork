@@ -2,7 +2,9 @@ import type { ToolDefinition, ToolExecutionContext } from '../../../types';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { exists, stat } from '../fsBridge';
+import { useChatStore } from '../../../stores/chatStore';
 import {
+  checkConversationResultRead,
   checkReadPath,
   createAuthorizationScope,
   disposeAuthorizationScope,
@@ -23,14 +25,20 @@ function isAbsolutePath(file: string): boolean {
 }
 
 /**
- * Which paths the run of `context` may read, decided by checkReadPath alone.
+ * Which paths the run of `context` may read: what `read_file` lets it read,
+ * without the side effects.
  *
- * A run with an authorization scope of its own is held to that scope. A run
- * without one is checked against the shared grants, and a path those do not
- * cover is checked against a scope that holds the run's workspace and nothing
- * else: the shared table follows the conversation in view, so it stops
- * listing this run's workspace once the user looks at another conversation.
- * No path is ever granted here and nobody is asked; `release` drops the scope.
+ * The check is the registry's own: the conversation's tool results, then
+ * `checkReadPath` under the run's scope. A path that check only holds for a
+ * grant (a folder of the user's) is readable too, because a read never asks;
+ * `read_file` would grant that folder at this point, and this check grants
+ * nothing and asks nobody. A run that may not prompt (the files a compaction
+ * re-reads) and a run with a scope of its own are held to what is already
+ * granted. A run without a scope that the shared grants do not cover is also
+ * checked against a scope that holds its workspace and nothing else: the
+ * shared table follows the conversation in view, so it stops listing this
+ * run's workspace once the user looks at another conversation. A blocked path
+ * stays refused by every one of these checks; `release` drops the scope.
  */
 function readAuthorizationOfRun(context: ToolExecutionContext | undefined): {
   allows: (path: string) => Promise<boolean>;
@@ -38,11 +46,27 @@ function readAuthorizationOfRun(context: ToolExecutionContext | undefined): {
 } {
   const runScopeId = context?.authorizationScopeId;
   const workspacePath = context?.workspacePath;
+  const conversationId = context?.conversationId;
+  const ownerId = conversationId && useChatStore.getState().conversations[conversationId] ? conversationId : undefined;
   let workspaceScopeId: AuthorizationScopeId | undefined;
+
+  const readableUnderScope = async (path: string, scopeId: AuthorizationScopeId | undefined): Promise<boolean> => {
+    const check = await checkReadPath(path, scopeId);
+    if (check.allowed === true) return true;
+    return scopeId === undefined
+      && context?.allowPermissionPrompts !== false
+      && check.needsPermission === true
+      // Only a folder read_file would grant without a per-file question: a path
+      // that only gets a per-file ask (app data without a host resolver, a
+      // spelling of home, outside the user's folders) is not presented.
+      && check.permissionIsFolder === true
+      && Boolean(check.permissionPath);
+  };
 
   return {
     allows: async (path) => {
-      if ((await checkReadPath(path, runScopeId)).allowed === true) return true;
+      if ((await checkConversationResultRead(path, ownerId))?.allowed === true) return true;
+      if (await readableUnderScope(path, runScopeId)) return true;
       if (runScopeId !== undefined || !workspacePath) return false;
       if (workspaceScopeId === undefined) {
         workspaceScopeId = createAuthorizationScope();

@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { resolveModelDeclared, resolveModelVision } from './resolveModelDeclared';
+import { resolveAgentModelCapabilities, resolveCapabilities } from './modelCapabilities';
+import { resolveDelegatedModelCapabilities } from '../agent/delegatedModelCapabilities';
+import { getActiveProvider } from '../../utils/settingsSelectors';
+import type { SettingsState } from '@/stores/settingsStore';
 import { resolveModelProfile } from './modelProfile';
 import type { ProviderInstance } from '@/types/provider';
 
@@ -119,5 +123,41 @@ describe('resolveModelVision', () => {
   it('falls back to the model name', () => {
     expect(resolveModelVision(makeProvider({ models: [{ id: 'qwen3-vl-8b', label: 'q' }] }), 'qwen3-vl-8b')).toBe(true);
     expect(resolveModelVision(undefined, 'deepseek-chat')).toBe(false);
+  });
+});
+
+describe('one reading of declared capabilities for every loop', () => {
+  // The sub-agent loop used to derive vision from the model name for a custom provider whose
+  // image box was never ticked, while the main loop did not. Both loops now read this one
+  // function, and the answer is the main loop's: nothing is declared, so the capability
+  // lookup decides (see resolveAgentModelCapabilities).
+  const unticked = makeProvider({ models: [{ id: 'acme-chat-7b', label: 'x' }], declaredCapabilities: { supportsTools: true } });
+
+  it('declares no vision for a custom provider whose image box was never ticked, whatever the name says', () => {
+    expect(resolveModelDeclared(unticked, 'acme-chat-7b')?.supportsImages).toBeUndefined();
+    expect(resolveModelDeclared(unticked, 'acme-vl-7b')?.supportsImages).toBeUndefined();
+  });
+
+  it('gives the main loop and the sub-agent the same vision answer for such a model', () => {
+    const settings = {
+      providers: [unticked],
+      activeModel: { providerId: unticked.id, modelId: 'acme-chat-7b' },
+    } as unknown as SettingsState;
+    const delegated = resolveDelegatedModelCapabilities(undefined, settings);
+    const mainLoop = resolveAgentModelCapabilities({
+      modelId: 'acme-chat-7b',
+      providerSource: unticked.source,
+      declared: resolveModelDeclared(getActiveProvider(settings), 'acme-chat-7b'),
+    });
+    expect(delegated.vision).toBe(mainLoop.vision);
+    // An unknown model name is read as able to see, as the main loop always did.
+    expect(delegated.vision).toBe(resolveCapabilities('acme-chat-7b').vision);
+  });
+
+  it('keeps what the user ticked, either way', () => {
+    const on = makeProvider({ models: [{ id: 'acme-chat-7b', label: 'x', declaredCapabilities: { supportsImages: true } } as never] });
+    const off = makeProvider({ models: [{ id: 'acme-vl-7b', label: 'x', declaredCapabilities: { supportsImages: false } } as never] });
+    expect(resolveModelDeclared(on, 'acme-chat-7b')?.supportsImages).toBe(true);
+    expect(resolveModelDeclared(off, 'acme-vl-7b')?.supportsImages).toBe(false);
   });
 });

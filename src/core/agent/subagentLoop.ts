@@ -29,16 +29,15 @@ import type { SettingsState } from '../../stores/settingsStore';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
 import {
   resolveCapabilities,
-  computeReasoningParams,
   isReasoningStarvation,
-  type ModelCapabilities,
 } from '../llm/modelCapabilities';
-import { resolveDelegatedDeclaredCapabilities, resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
+import { resolveDelegatedModelCapabilities } from './delegatedModelCapabilities';
 import { adaptComputerToolForTier } from '../tools/definitions/computerToolText';
 import { isWindows } from '../../utils/platform';
-import { positiveInteger, resolveContextWindow } from '../llm/contextWindow';
+import { resolveRequestBudget } from '../llm/requestBudget';
+import { resolveModelDeclared } from '../llm/resolveModelDeclared';
+import { recordCapabilityRejection, rejectedCapabilities } from '../llm/rejectionMemory';
 import { probeContextWindow } from '../llm/contextWindowProbe';
-import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
@@ -710,7 +709,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
   })();
   const startupProvider = getActiveProvider(settings);
   const adapterKind = adapterKindFor(startupProvider, startupCreds?.forceOpenAiCompatible === true);
-  const startupDeclared = resolveDelegatedDeclaredCapabilities(startupProvider, effectiveModelId);
+  const startupDeclared = resolveModelDeclared(startupProvider, effectiveModelId);
   const startupCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), startupDeclared);
   const startupProfile = resolveModelProfile({
     modelId: effectiveModelId,
@@ -990,42 +989,19 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
       // runtime-discovered limits/reasoning status, then reserve a content floor so
       // reasoning can't starve the answer (the cause of "代理未返回任何结果").
       const provider = getActiveProvider(settings);
-      const declared = resolveDelegatedDeclaredCapabilities(provider, effectiveModelId);
+      const declared = resolveModelDeclared(provider, effectiveModelId);
       const discovered = provider ? capsPort.get(provider.id, effectiveModelId) : undefined;
       const baseCaps = applyDeclaredCapabilities(resolveCapabilities(effectiveModelId), declared);
-      const subagentCaps: ModelCapabilities = {
-        ...baseCaps,
-        ...(discovered?.maxOutputTokens ? { maxOutputTokens: discovered.maxOutputTokens } : {}),
-        ...(discovered?.contextWindow ? { contextWindow: discovered.contextWindow } : {}),
-        ...(discovered?.isReasoningModel && baseCaps.thinking === false
-          ? { thinking: 'uncontrollable' as const }
-          : {}),
-      };
-      // Apply context management to prevent subagent context overflow
-      const resolvedContextWindow = resolveContextWindow({
-        modelId: effectiveModelId,
-        userSetting: declared?.maxInputTokens,
-        probed: probedContextWindow ?? provider?.models.find((model) => model.id === effectiveModelId)?.contextWindow,
-        discovered: discovered?.contextWindow,
-        discoveredProbe: discovered?.contextWindowProbe,
-        isLocal: localServerKind(provider) !== null,
-        ceiling: settings.contextWindowSize,
-      });
-      const contextWindowSize = resolvedContextWindow.size;
-      // 回答预留按模型自己的窗口算，全局上限只约束输入
-      const reserveWindowSize = resolvedContextWindow.uncappedSize;
-      // 与主循环相同：本地服务首次回答前等 10 分钟且超时不重试；只有用户填写的长度才让 Ollama 按它运行
-      const isLocalServer = localServerKind(provider) !== null;
-      const requestedContextLength = positiveInteger(declared?.maxInputTokens);
-      const reasoningParams = computeReasoningParams(
-        subagentCaps,
-        settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
-        reserveWindowSize,
-        declared?.thinkingEffort,
-      );
-      // True output ceiling (distinct from the conservative per-turn budget below):
-      // max_tokens-recovery escalation may climb toward this, never above a known limit.
-      const effectiveModelCeiling = discovered?.maxOutputTokens ?? baseCaps.outputCeiling ?? subagentCaps.maxOutputTokens;
+      // The same budget the main loop computes (llm/requestBudget.ts). The local-server
+      // rule follows it: first answer waits 10 minutes with no retry, and only a length
+      // the user typed makes Ollama run at it.
+      const {
+        effectiveCaps: subagentCaps, contextWindowSize, reserveWindowSize, reasoningParams,
+        requestedContextLength, localServer: isLocalServer,
+        // True output ceiling (distinct from the conservative per-turn budget below):
+        // max_tokens-recovery escalation may climb toward this, never above a known limit.
+        outputCeiling: effectiveModelCeiling,
+      } = resolveRequestBudget(effectiveModelId, baseCaps, provider, settings, discovered, probedContextWindow);
       let maxOutputTokens = reasoningParams.maxTokens;
 
       // Escalate the budget on a max_tokens recovery (mirrors agentLoop), clamped to
@@ -1062,6 +1038,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         // by normalizeMessages, with its standard "no vision" hint appended.
         supportsVision: subagentCaps.vision,
         declaredCapabilities: declared,
+        // Capabilities this model rejected earlier in the session (see the retry in chatFn).
+        capabilityOverrides: [...rejectedCapabilities(provider?.id, effectiveModelId)],
         // 子代理的用量归到派它的那条会话名下，来源是 subagent——页面上这两类
         // 分开显示，用户才看得出请求数里哪些是自己发的、哪些是队员发的。
         accounting: {
@@ -1210,11 +1188,19 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         ).messages;
         let completed = false;
         try {
-          await adapter.chat(
-            sentMessages,
-            chatOptions,
-            eventHandler,
-          );
+          try {
+            await adapter.chat(sentMessages, chatOptions, eventHandler);
+          } catch (err) {
+            // Same rule as the main loop: a capability the service rejects is switched
+            // off for the session and the request goes out once more without it.
+            const rejected = err instanceof LLMError ? err.capabilityRejection : undefined;
+            if (!rejected || !recordCapabilityRejection(provider?.id, effectiveModelId, rejected)) throw err;
+            await adapter.chat(
+              sentMessages,
+              { ...chatOptions, capabilityOverrides: [...rejectedCapabilities(provider?.id, effectiveModelId)] },
+              eventHandler,
+            );
+          }
           completed = true;
         } finally {
           // 事件回调里的赋值编译器看不见，这里按声明的类型读回来。

@@ -67,4 +67,13 @@ describe('resolveRequestBudget', () => {
     }, 64_000);
     expect(result.contextWindowSize).toBe(64_000);
   });
+
+  it('gives a declared max output the same weight for every caller', () => {
+    const declared: ProviderInstance = {
+      ...provider,
+      models: [{ id: 'gpt-4o', label: 'Model', contextWindow: 128_000, declaredCapabilities: { maxOutputTokens: 3000 } }],
+    };
+    const result = resolveRequestBudget('gpt-4o', caps, declared, { contextWindowSize: 200_000, maxOutputTokens: 12_000 });
+    expect(result.requestedMaxOutputTokens).toBe(3000);
+  });
 });

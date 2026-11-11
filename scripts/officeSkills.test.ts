@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The scripts that ship inside the office skills (xlsx, docx, pptx, pdf).
+ * The scripts that ship inside the office skills (xlsx, docx, pptx, pdf, gongwen).
  * - The copy of office_env.py in each skill folder must stay identical: a skill is a self-contained folder
  *   (the loader lists its scripts by path, and a user who edits a built-in skill gets a copy of that folder only),
  *   so the helper is repeated rather than shared.
@@ -22,7 +22,7 @@ const skills = path.join(repoRoot, 'builtin-skills');
 const pythonTests = path.join(repoRoot, 'scripts', 'office-skills');
 const read = (skill: string, file: string) => readFileSync(path.join(skills, skill, 'scripts', file));
 
-const OFFICE_SKILLS = ['docx', 'xlsx', 'pptx', 'pdf'];
+const OFFICE_SKILLS = ['docx', 'xlsx', 'pptx', 'pdf', 'gongwen'];
 const present = OFFICE_SKILLS.filter((skill) => existsSync(path.join(skills, skill, 'scripts', 'office_env.py')));
 
 /** The Python test files that exist for the runtime and for the skills that are present. */

@@ -4235,6 +4235,11 @@ const zhCN: TranslationDict = {
       imageProcessed: '图片处理完成：{path}',
       hintVolcChatEndpoint: '提示：当前生图后端的 baseUrl 指向的是火山方舟的聊天端点（/api/coding/），不是图片生成端点。请在 设置 → 图片生成 中把 baseUrl 改为 {url}，并将模型设置为生图模型（doubao-seedream 系列）。',
       hintCheckImageBackend: '提示：请在 设置 → 图片生成 中检查 baseUrl 是否为图片生成端点、模型是否为生图模型（火山引擎需使用 doubao-seedream 系列而非聊天模型），并确认 API Key 有效。',
+      hintVolcLimit: '提示：火山方舟账号开着「安心体验模式」或设置了模型用量上限，生图已被暂停。请到 火山方舟控制台 → 开通管理 关闭「安心体验模式」（或调高这个模型的用量上限）后再试。',
+      hintVolcModelNotOpen: '提示：这个火山方舟账号还没有开通 {model}。请到 火山方舟控制台 → 开通管理 → 视觉模型 找到它，点「开通服务」后再试。',
+      hintVolcOverdue: '提示：火山引擎账号余额不足或已欠费。请到 火山引擎 费用中心 充值后再试。',
+      hintVolcSensitive: '提示：描述或参考图没有通过火山方舟的内容审核。换一种描述或换一张参考图再试。',
+      hintVolcBadKey: '提示：火山方舟的 API Key 无效。请到 火山方舟控制台 → API Key 管理 新建一个，粘贴到 设置 → 图片生成 里再试。',
     },
     todo: {
       errTitleEmpty: '标题不能为空，未创建提议。',

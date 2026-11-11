@@ -4233,6 +4233,11 @@ const enUS: TranslationDict = {
       imageProcessed: 'Image processed successfully: {path}',
       hintVolcChatEndpoint: 'Hint: this backend\'s baseUrl points at Volcengine Ark\'s chat endpoint (/api/coding/), not the image-generation endpoint. In Settings → Image Generation, change the baseUrl to {url} and set the model to an image-generation model (doubao-seedream series).',
       hintCheckImageBackend: 'Hint: in Settings → Image Generation, check that the baseUrl is an image-generation endpoint and the model is an image-generation model (for Volcengine use the doubao-seedream series, not a chat model), and confirm the API key is valid.',
+      hintVolcLimit: 'Hint: this Volcengine Ark account has Safe Experience Mode on, or a usage cap set for the model, so image generation is paused. In the Ark console, open Model Activation and turn off Safe Experience Mode (or raise the model\'s usage cap), then try again.',
+      hintVolcModelNotOpen: 'Hint: this Volcengine Ark account has not activated {model}. In the Ark console, open Model Activation → Vision models, find it, click Activate, then try again.',
+      hintVolcOverdue: 'Hint: the Volcengine account balance is too low or overdue. Top up in the Volcengine billing center, then try again.',
+      hintVolcSensitive: 'Hint: the prompt or a reference image did not pass Volcengine Ark\'s content review. Rephrase it or use another reference image.',
+      hintVolcBadKey: 'Hint: the Volcengine Ark API key is invalid. Create a new one under API Key Management in the Ark console and paste it in Settings → Image Generation.',
     },
     todo: {
       errTitleEmpty: 'Title cannot be empty; proposal not created.',

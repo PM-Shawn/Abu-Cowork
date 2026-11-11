@@ -7,7 +7,7 @@ import {
 } from '@/core/agent/agentLoopRunner';
 import { AgentLoopDispatchError } from '@/core/agent/agentLoopDispatchError';
 import { failureIsOwnedByTranscript, shouldRestoreComposerAfterDispatch } from './composerSendResult';
-import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, resolveWorkspaceRequestById, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion, findQuestionOwningMessage } from '@/core/agent/permissionBridge';
+import { getPendingCommandConfirmation, resolveCommandConfirmation, subscribeToCommandConfirmation, getPendingFilePermission, resolveFilePermission, subscribeToFilePermission, getPendingWorkspaceRequest, resolveWorkspaceRequest, resolveWorkspaceRequestById, subscribeToWorkspaceRequest, getPendingUserQuestions, subscribeUserQuestion } from '@/core/agent/permissionBridge';
 import { getDefaultImageBackend, useSettingsStore } from '@/stores/settingsStore';
 import type { ImageEditDraft, MediaJobRecord } from '@/types/media';
 import { invokeElectronMedia } from '@/utils/electronHost';
@@ -47,6 +47,7 @@ import { focusComposer, focusComposerAfterPageChange, focusComposerFromWindow } 
 import { ConversationBranchOrigin } from './ConversationBranchOrigin';
 import { getComposerDraftKey, getComposerDraftScopeForEnterpriseMode, readComposerDraft } from '@/stores/composerDraftStore';
 import UserQuestionDock, { type ArrivedQuestion } from './UserQuestionDock';
+import { findDockedQuestion } from './dockedQuestion';
 import AgentStatusStrip from './AgentStatusStrip';
 import TeamMemberBar from './TeamMemberBar';
 import TeamConfirmationsStrip from './TeamConfirmationsStrip';
@@ -1860,7 +1861,8 @@ export default function ChatView({
         <div className="max-w-4xl mx-auto flex flex-col gap-2">
           {/* Docked ask_user_question card — sits flush above the composer,
               same width. Render the first pending question that belongs to the
-              active conversation and whose owning message can be located. */}
+              active conversation and whose owning message can be located
+              (dockedQuestion.ts: a message typed now answers this same card). */}
           {/* A question that leaves the focus with a user who is writing is read out from here.
               The element is on the page before the question arrives, or nothing is read. */}
           <div aria-live="polite" aria-atomic="true" className="sr-only">
@@ -1873,10 +1875,9 @@ export default function ChatView({
             )}
           </div>
           {(() => {
-            const pending = pendingUserQuestions.find((pq) => pq.conversationId === activeConvId);
-            if (!pending) return null;
-            const owningMsg = findQuestionOwningMessage(messages, pending.id);
-            if (!owningMsg) return null;
+            const docked = findDockedQuestion(pendingUserQuestions, activeConv.id, messages);
+            if (!docked) return null;
+            const { question: pending, owner: owningMsg } = docked;
             return (
               <UserQuestionDock
                 key={pending.id}

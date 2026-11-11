@@ -14,6 +14,7 @@ vi.mock('@/i18n', () => ({
         cardTitle: '请选择',
         cancelledLabel: '已取消',
         yourChoiceLabel: '你的选择',
+        repliedInChatLabel: '你在对话里回复了',
       },
     },
     format: (tpl: string, v: Record<string, string | number>) =>
@@ -54,6 +55,18 @@ describe('UserQuestionCard (settled, read-only)', () => {
     expect(screen.getByText('详细')).toBeInTheDocument();
     // No interactive submit control
     expect(screen.queryByText('提交')).not.toBeInTheDocument();
+  });
+
+  it('shows a reply written in the chat once, instead of the questions', () => {
+    render(<UserQuestionCard toolCall={{
+      ...SETTLED_TC,
+      userQuestionAnswers: { answers: [], chatReply: '先别做报表了，改成汇总表' },
+    }} />);
+
+    expect(screen.getByText('你在对话里回复了')).toBeInTheDocument();
+    expect(screen.getAllByText('先别做报表了，改成汇总表')).toHaveLength(1);
+    expect(screen.queryByText('你的选择')).not.toBeInTheDocument();
+    expect(screen.queryByText('你希望输出什么格式？')).not.toBeInTheDocument();
   });
 
   it('draws the settled answers as a flat card', () => {

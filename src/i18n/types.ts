@@ -4255,6 +4255,24 @@ export interface TranslationDict {
     paused: string;
     /** Resumes the paused FIFO queue. */
     resume: string;
+    /** Pill label: the running task reads this message after its current step. */
+    steerLabel: string;
+    /** Tooltip of that pill. */
+    steerHint: string;
+    /** Pill label: the message becomes its own turn after the task. */
+    afterRunLabel: string;
+    /** Button on a steering pill: wait for the end of the task instead. */
+    sendAfterRun: string;
+    /** Pill label in a team conversation: the lead reads it, not a member. */
+    steerLabelTeam: string;
+    /** Tooltip of that pill. */
+    steerHintTeam: string;
+    /** Pill label while the queue is paused after a Stop. */
+    pausedLabel: string;
+    /** Tooltip of a paused pill. */
+    pausedHint: string;
+    /** Paused-queue line while another task runs. */
+    pausedWhileRunning: string;
   };
 
   reference: {
@@ -4277,6 +4295,8 @@ export interface TranslationDict {
   // ask_user_question — interactive choice card
   userQuestion: {
     cardTitle: string;
+    /** Header of a card the user answered by writing in the chat instead */
+    repliedInChatLabel: string;
     singleSelectHint: string;
     multiSelectHint: string;
     otherOptionLabel: string;
@@ -5392,6 +5412,8 @@ export interface TranslationDict {
       cancelled: string;
       /** Header line for the answers result. */
       answersHeader: string;
+      /** The user wrote in the chat instead of choosing; `{text}` is the message. */
+      repliedInChat: string;
     };
     // update_soul
     updateSoul: {

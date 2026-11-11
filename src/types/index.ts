@@ -298,6 +298,12 @@ export interface UserQuestionAnswerItem {
 
 export interface UserQuestionResult {
   answers: UserQuestionAnswerItem[];
+  /**
+   * The user wrote this in the chat while the card was open instead of
+   * choosing on it (`answers` is then empty). The card is answered once, with
+   * the text as written: it may answer the questions or be a new instruction.
+   */
+  chatReply?: string;
 }
 
 export interface ToolCall {

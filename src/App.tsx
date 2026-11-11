@@ -32,6 +32,7 @@ import { resolvePetBootAction } from '@/core/pet/petBoot';
 import { setPetVisible, hidePet } from '@/core/pet/petVisibility';
 import { PET_POSITION_EVENT, parsePetPosition } from '@/core/pet/petPositionSync';
 import { petMessageConversation } from '@/core/pet/petQuickMessage';
+import { replyToDockedQuestion } from '@/components/chat/sendWhileRunning';
 import { useEnterpriseAppPolicy } from '@/core/enterprise/appPolicy';
 import RightPanel from '@/components/panel/RightPanel';
 import { isTabVisibleFor, isWideTab, useHasTabs, usePreviewStore } from '@/stores/previewStore';
@@ -456,6 +457,10 @@ function App() {
     listen('pet-send-message', (event) => {
       const { text, conversationId } = event.payload as { text: string; conversationId?: string | null };
       const convId = petMessageConversation(conversationId, { leaveApp: allowExitRef.current });
+      // While the task waits on a question card, the message answers it once,
+      // as one typed into the composer would; otherwise the dispatcher stages
+      // it into the running task, or starts one.
+      if (replyToDockedQuestion(convId, text)) return;
       runAgentLoopDispatched(convId, text, { initiatedBy: 'user' }).catch((err) => {
         console.warn('[pet-send-message] runAgentLoopDispatched error:', err);
       });

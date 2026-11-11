@@ -349,11 +349,22 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
 
     // 前面几轮每轮带一段较长的内容，让对话逐步接近 32K
     const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
-    const longPayload = 'x'.repeat(6_000);
+    // The window is fixed, but the system prompt and the tool list that every request carries grow
+    // from release to release. The first turn is short and measures that fixed part; the later
+    // turns are sized so that all six messages together bring the request near the window: far
+    // enough that the earlier turns must be tidied, not so far that nothing is left for the reads.
+    const firstPayload = 3_000;
+    const nearWindowChars = 80_000;
+    let payload = firstPayload;
     for (const [index, answer] of turnAnswers.entries()) {
-      await send(page, `abu-e2e-lmstudio-step-${index}-${runId}\n${longPayload}`);
+      await send(page, `abu-e2e-lmstudio-step-${index}-${runId}\n${'x'.repeat(payload)}`);
       await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
       await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
+      if (index === 0) {
+        const first = taskRequests(mock!)[0].body as { messages: unknown; tools?: unknown };
+        const fixedChars = JSON.stringify(first.messages).length + JSON.stringify(first.tools ?? []).length - firstPayload;
+        payload = Math.max(500, Math.round((nearWindowChars - fixedChars - firstPayload) / (turnAnswers.length - 1)));
+      }
     }
     await send(page, `请依次读取 ${fixtures[0].path} 和 ${fixtures[1].path}`);
     for (const fixture of fixtures) await allowFileRead(page, fixture.path);

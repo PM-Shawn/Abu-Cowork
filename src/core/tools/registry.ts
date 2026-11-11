@@ -57,7 +57,7 @@ import {
 } from '../permissions/browserUploadFiles';
 import { classifyHighRiskUrl } from '../permissions/highRiskSites';
 import { isPaymentPagePath, isPaymentPageTitle } from '../permissions/governmentPaymentPage';
-import { classifyConnectorAction, type ConnectorActionKind, type ConnectorToolHints } from '../permissions/connectorActionPolicy';
+import { classifyConnectorAction, connectorServerWrites, type ConnectorActionKind, type ConnectorToolHints } from '../permissions/connectorActionPolicy';
 import { describeConnectorTarget, shownRecipients } from '../permissions/connectorActionTarget';
 import { grantTask, hasTaskGrant } from '../permissions/taskGrants';
 import {
@@ -301,9 +301,15 @@ function mcpToolHints(name: string): ConnectorToolHints | undefined {
   const parsed = parseNamespacedToolName(name);
   if (!parsed) return undefined;
   try {
-    const tool = mcpManager.getServerTools(parsed.serverName).find((candidate) => candidate.name === name);
+    const serverTools = mcpManager.getServerTools(parsed.serverName);
+    const tool = serverTools.find((candidate) => candidate.name === name);
     if (!tool) return undefined;
     return {
+      ...(connectorServerWrites(serverTools.map((candidate) => ({
+        name: candidate.name,
+        ...(typeof candidate.description === 'string' && candidate.description !== '' ? { description: candidate.description } : {}),
+        ...(candidate.mcpDestructiveHint === true ? { destructiveHint: true } : {}),
+      }))) ? { serverWrites: true } : {}),
       ...(tool.mcpDestructiveHint === true ? { destructiveHint: true } : {}),
       ...(tool.mcpOpenWorldHint === true ? { openWorldHint: true } : {}),
       ...(typeof tool.description === 'string' && tool.description !== '' ? { description: tool.description } : {}),
@@ -2405,7 +2411,7 @@ export async function checkToolApproval(
   // does not cover the same tool sending to anyone else.
   const connectorTarget = connectorAction !== null ? describeConnectorTarget(input) : null;
   const connectorGrantSubject = connectorTarget ? JSON.stringify([name, connectorTarget.recipientKey]) : '';
-  const connectorGranted = connectorAction === 'send' && !isTeam
+  const connectorGranted = (connectorAction === 'send' || connectorAction === 'change') && !isTeam
     && hasTaskGrant('connector-tool', toolContext?.conversationId, connectorGrantSubject);
   const connectorAsks = connectorAction !== null && !connectorGranted;
 
@@ -2467,18 +2473,23 @@ export async function checkToolApproval(
       + (more > 0 ? format(rules.connectorRecipientsMore, { count: String(more) }) : '');
     const action = connectorAction === 'send'
       ? (recipients ? format(rules.connectorSendToAction, { connector, recipients }) : format(rules.connectorSendAction, { connector }))
-      : format(connectorAction === 'money' ? rules.connectorMoneyAction : rules.connectorDestructiveAction, { connector });
+      : format(
+        connectorAction === 'money' ? rules.connectorMoneyAction
+          : connectorAction === 'change' ? rules.connectorChangeAction : rules.connectorDestructiveAction,
+        { connector },
+      );
     const preview = connectorTarget.preview ? format(rules.connectorContentPreview, { preview: connectorTarget.preview }) : '';
     const reason = connectorAction === 'send'
       ? rules.connectorSendReason
-      : connectorAction === 'money' ? rules.connectorMoneyReason : rules.connectorDestructiveReason;
+      : connectorAction === 'money' ? rules.connectorMoneyReason
+        : connectorAction === 'change' ? rules.connectorChangeReason : rules.connectorDestructiveReason;
     const confirmed = await onRequireConfirmation({
       command: `${action}${preview}`,
       // A sentence about what is about to happen, shown as plain text (the
       // dialog's sentence form), never as a command line.
       kind: 'self-extension',
       alwaysAsks: true,
-      level: connectorAction === 'send' ? 'warn' : 'danger',
+      level: connectorAction === 'send' || connectorAction === 'change' ? 'warn' : 'danger',
       // One answer here also lets the plugin that serves this tool run for the
       // rest of the conversation (`pluginGrantPending`); the ask says so.
       reason: pluginGrantPending !== null ? `${reason}${rules.connectorPluginGrantNote}` : reason,
@@ -2488,7 +2499,7 @@ export async function checkToolApproval(
       return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
     }
     if (!isTeam) {
-      if (connectorAction === 'send') grantTask('connector-tool', toolContext?.conversationId, connectorGrantSubject);
+      if (connectorAction === 'send' || connectorAction === 'change') grantTask('connector-tool', toolContext?.conversationId, connectorGrantSubject);
       if (pluginGrantPending !== null) grantPluginServer(toolContext?.conversationId, pluginGrantPending);
     }
   }

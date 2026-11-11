@@ -3194,11 +3194,13 @@ export interface TranslationDict {
       /** Appended to the reason when the same answer also lets the tool's plugin run for the conversation. */
       connectorPluginGrantNote: string;
       connectorDestructiveAction: string;
+      connectorChangeAction: string;
       connectorMoneyAction: string;
       connectorNamed: string;
       connectorUnnamed: string;
       connectorSendReason: string;
       connectorDestructiveReason: string;
+      connectorChangeReason: string;
       connectorMoneyReason: string;
       /** Refusal when no one can be asked (an unattended run with no approval channel). */
       connectorDenied: string;

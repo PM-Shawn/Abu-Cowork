@@ -247,4 +247,26 @@ describe('connector tools', () => {
       spy.mockRestore();
     }
   });
+
+  it('asks about an unknown verb on a connector that writes, once per task, and not on one that only reads', async () => {
+    const tools = [
+      { name: 'crm__frobnicate', description: 'Runs the thing' },
+      { name: 'crm__delete_contact', description: 'Deletes a contact' },
+      { name: 'weather__frobnicate', description: 'Runs the thing' },
+      { name: 'weather__get_forecast', description: 'Gets the forecast' },
+    ];
+    const spy = vi.spyOn(mcpManager, 'getServerTools').mockImplementation((server: string) => tools.filter((tool) => tool.name.startsWith(`${server}__`)) as never);
+    try {
+      const { cb, asks } = recordingConfirm();
+      await checkToolApproval('crm__frobnicate', { id: '1' }, attended(), cb as never);
+      await checkToolApproval('crm__frobnicate', { id: '1' }, attended(), cb as never);
+      expect(asks).toHaveLength(1);
+      expect(asks[0].level).toBe('warn');
+      const decision = await checkToolApproval('weather__frobnicate', {}, attended(), cb as never);
+      expect(decision.decision).toBe('allow');
+      expect(asks).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });

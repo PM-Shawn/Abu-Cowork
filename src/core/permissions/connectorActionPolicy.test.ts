@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { classifyConnectorAction, toolNameWords } from './connectorActionPolicy';
+import { classifyConnectorAction, connectorServerWrites, toolNameWords } from './connectorActionPolicy';
 
 describe('connectorActionPolicy', () => {
   describe('toolNameWords', () => {
@@ -82,8 +82,60 @@ describe('connectorActionPolicy', () => {
 
     it('does not ask for a tool whose name is about nothing it sends', () => {
       expect(classifyConnectorAction('weather__forecast')).toBeNull();
-      expect(classifyConnectorAction('notes__create_note')).toBeNull();
-      expect(classifyConnectorAction('sheet__update_cell')).toBeNull();
+    });
+  });
+
+  describe('failing closed: an action verb anywhere in the name asks', () => {
+    it.each([
+      ['mail__check_and_send_email', 'send'],
+      ['db__read_then_delete', 'destructive'],
+      ['db__get_and_publish', 'send'],
+      ['files__overwrite_file', 'destructive'],
+      ['db__execute_sql', 'destructive'],
+      ['shop__cancel_order', 'destructive'],
+      ['mail__archive_thread', 'destructive'],
+      ['git__merge_pull_request', 'destructive'],
+      ['cache__clear_cache', 'destructive'],
+      ['cloud__terminate_instance', 'destructive'],
+      ['files__replace_in_file', 'destructive'],
+      ['crm__update_record', 'change'],
+      ['notes__create_note', 'change'],
+      ['sheet__update_cell', 'change'],
+      ['sheet__update_sort_order', 'change'],
+      ['crm__get_and_update_contact', 'change'],
+      ['bank__check_balance_then_transfer', 'money'],
+      ['oa__查询并删除', 'destructive'],
+      ['oa__获取后覆盖', 'destructive'],
+      ['oa__合并文档', 'destructive'],
+      ['oa__更新记录', 'change'],
+    ] as const)('%s → %s', (name, expected) => {
+      expect(classifyConnectorAction(name)).toBe(expected);
+    });
+
+    it('keeps a name that only reads, or only names a noun of an action, free', () => {
+      for (const name of [
+        'git__get_merge_request', 'shop__get_charge', 'mail__list_archive', 'chat__list_posts',
+        'chat__get_reply', 'mail__search_sent', 'db__find_deleted_records', 'shop__list_orders',
+        'git__list_pull_requests',
+      ]) {
+        expect(classifyConnectorAction(name), name).toBeNull();
+      }
+    });
+
+    it('asks about an unknown verb when the connector has tools that write, and not when it only reads', () => {
+      expect(classifyConnectorAction('crm__sync_contacts_now2')).toBe('change');
+      expect(classifyConnectorAction('crm__frobnicate', { serverWrites: true })).toBe('change');
+      expect(classifyConnectorAction('crm__frobnicate', { serverWrites: false })).toBeNull();
+      expect(classifyConnectorAction('crm__frobnicate')).toBeNull();
+      // A read verb alone never asks, even on a connector that writes.
+      expect(classifyConnectorAction('crm__list_contacts', { serverWrites: true })).toBeNull();
+      // The server's own word that a tool is read-only is no reason to relax: it is not an input here.
+    });
+
+    it('tells a connector that writes from one that only reads', () => {
+      expect(connectorServerWrites([{ name: 'crm__list_contacts' }, { name: 'crm__get_contact' }])).toBe(false);
+      expect(connectorServerWrites([{ name: 'crm__list_contacts' }, { name: 'crm__delete_contact' }])).toBe(true);
+      expect(connectorServerWrites([{ name: 'crm__weather', description: 'Updates the forecast cache' }])).toBe(true);
     });
   });
 
@@ -110,7 +162,6 @@ describe('connectorActionPolicy', () => {
 
     it('keeps a word about orders or payments that makes nothing a payment', () => {
       expect(classifyConnectorAction('shop__list_orders')).toBeNull();
-      expect(classifyConnectorAction('sheet__update_sort_order')).toBeNull();
       expect(classifyConnectorAction('shop__get_payment_status')).toBeNull();
     });
   });
@@ -165,19 +216,21 @@ describe('connectorActionPolicy', () => {
 
     it('does not read a later clause of the description', () => {
       expect(classifyConnectorAction('im__history', { description: 'Returns the chat history. Each item says who sent it.' })).toBeNull();
-      expect(classifyConnectorAction('cal__event', { description: 'Creates an event. Attendees get an invitation sent to them.' })).toBeNull();
+      // Creating an event is a change; what the later clause says about invitations does not make it a send.
+      expect(classifyConnectorAction('cal__event', { description: 'Creates an event. Attendees get an invitation sent to them.' })).toBe('change');
     });
   });
 
   describe('openWorldHint', () => {
     it('never makes a tool ask by itself', () => {
-      expect(classifyConnectorAction('tracker__create_ticket', { openWorldHint: true })).toBeNull();
-      expect(classifyConnectorAction('docs__update_page', { openWorldHint: true, description: 'Updates a page.' })).toBeNull();
+      expect(classifyConnectorAction('tracker__create_ticket', { openWorldHint: true })).toBe('change');
+      expect(classifyConnectorAction('docs__update_page', { openWorldHint: true, description: 'Updates a page.' })).toBe('change');
+      expect(classifyConnectorAction('misc__frobnicate', { openWorldHint: true })).toBeNull();
     });
 
     it('confirms a description that speaks of sending past its opening', () => {
       const description = 'Creates a calendar event. Each attendee gets an invitation that the server sends by email.';
-      expect(classifyConnectorAction('cal__create_event', { description })).toBeNull();
+      expect(classifyConnectorAction('cal__create_event', { description })).toBe('change');
       expect(classifyConnectorAction('cal__create_event', { description, openWorldHint: true })).toBe('send');
     });
 
@@ -198,8 +251,8 @@ describe('connectorActionPolicy', () => {
     });
 
     it('keeps the name verdict when the hint is absent', () => {
-      expect(classifyConnectorAction('notes__archive_all', {})).toBeNull();
-      expect(classifyConnectorAction('notes__archive_all', undefined)).toBeNull();
+      expect(classifyConnectorAction('notes__archive_all', {})).toBe('destructive');
+      expect(classifyConnectorAction('notes__archive_all', undefined)).toBe('destructive');
     });
   });
 
@@ -263,10 +316,10 @@ describe('connectorActionPolicy — misleading names', () => {
       });
     }
 
-    // Still open: "sync" says nothing about who receives what; a backup sync
-    // reaching the user's own cloud is the common case.
-    it('records: sync_to_cloud is not classified', () => {
-      expect(classifyConnectorAction('backup__sync_to_cloud')).toBeNull();
+    // "sync" says nothing about who receives what, so it is a change that asks
+    // once per task (a backup sync to the user's own cloud is the common case).
+    it('asks for sync_to_cloud as a change', () => {
+      expect(classifyConnectorAction('backup__sync_to_cloud')).toBe('change');
     });
 
     // "wire" is money on the browser side too, so `wire_funds` must ask.
@@ -334,11 +387,9 @@ describe('classifyConnectorAction · more cases', () => {
     expect(classifyConnectorAction('srv__', { description: 'Sends a message to a channel' })).toBeNull();
   });
 
-  // a name that opens with a read verb is read, whatever follows.
-  // `get_and_delete_file`, `list_then_send`, 「查询并发送」 read data and then act on it;
-  // they are classified as reads and never asked about. The read verb should clear the
-  // tool only when no action verb follows it.
-  it.fails.each([['get_and_delete_file', 'destructive'], ['list_then_send', 'send'], ['查询并发送', 'send']] as const)(
+  // A read verb clears a tool only when no action verb follows it:
+  // `get_and_delete_file`, `list_then_send`, 「查询并发送」 read data and then act on it.
+  it.each([['get_and_delete_file', 'destructive'], ['list_then_send', 'send'], ['查询并发送', 'send']] as const)(
     'asks for %s although it opens with a read verb',
     (tool, expected) => {
       expect(kindOf(tool)).toBe(expected);

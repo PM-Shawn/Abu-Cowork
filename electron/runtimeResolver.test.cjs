@@ -11,6 +11,7 @@ const {
   runtimeLayout,
   resolveBundledProgram,
   withBundledRuntimeEnv,
+  matplotlibRc,
 } = require('./runtimeResolver.cjs');
 
 const tmpDirs = [];
@@ -309,4 +310,52 @@ test('withBundledRuntimeEnv reports missing executable instead of adding broken 
     ),
     /Bundled Python executable is missing:/,
   );
+});
+
+test('withBundledRuntimeEnv gives the bundled Python a writable matplotlib config folder with Chinese fonts', () => {
+  const tree = makeTree('darwin', false);
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'xs-mpl-'));
+  const env = withBundledRuntimeEnv(
+    { isPackaged: false },
+    { PATH: '/usr/bin', MPLCONFIGDIR: '/somewhere/else' },
+    { repoRoot: tree.repoRoot, platform: 'darwin', matplotlibConfigDir: configDir },
+  );
+  assert.equal(env.MPLCONFIGDIR, configDir);
+  const rc = fs.readFileSync(path.join(configDir, 'matplotlibrc'), 'utf8');
+  assert.match(rc, /font\.sans-serif: PingFang SC, Heiti SC/);
+  assert.match(rc, /axes\.unicode_minus: False/);
+  const windowsRc = matplotlibRc('win32');
+  assert.match(windowsRc, /font\.sans-serif: Microsoft YaHei, SimHei/);
+  // a second call leaves the file alone and an unusable folder falls back to matplotlib's default
+  const before = fs.statSync(path.join(configDir, 'matplotlibrc')).mtimeMs;
+  withBundledRuntimeEnv({ isPackaged: false }, { PATH: '/usr/bin' }, { repoRoot: tree.repoRoot, platform: 'darwin', matplotlibConfigDir: configDir });
+  assert.equal(fs.statSync(path.join(configDir, 'matplotlibrc')).mtimeMs, before);
+  const blocked = path.join(configDir, 'matplotlibrc', 'inside-a-file');
+  const fallback = withBundledRuntimeEnv({ isPackaged: false }, { PATH: '/usr/bin', MPLCONFIGDIR: '/x' }, { repoRoot: tree.repoRoot, platform: 'darwin', matplotlibConfigDir: blocked });
+  assert.equal(Object.hasOwn(fallback, 'MPLCONFIGDIR'), false);
+  fs.rmSync(configDir, { recursive: true, force: true });
+});
+
+// Needs a Python with matplotlib (the bundled runtime): set OFFICE_SKILLS_PYTHON, as scripts/officeSkills.test.ts does.
+const realPython = process.env.OFFICE_SKILLS_PYTHON;
+test('the matplotlib folder reaches the bundled Python even when the home folder cannot be written', { skip: !realPython && 'OFFICE_SKILLS_PYTHON not set' }, () => {
+  const { spawnSync } = require('node:child_process');
+  const tree = makeTree('darwin', false);
+  const configDir = path.join(tmpDir(), 'mpl config');
+  const env = withBundledRuntimeEnv(
+    { isPackaged: false },
+    { PATH: process.env.PATH, HOME: '/proc/self/no-such-home', USERPROFILE: '/proc/self/no-such-home' },
+    { repoRoot: tree.repoRoot, platform: 'darwin', matplotlibConfigDir: configDir },
+  );
+  const probe = 'import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt; ' +
+    'print(matplotlib.get_configdir()); print(matplotlib.rcParams["font.sans-serif"][0]); print(matplotlib.rcParams["axes.unicode_minus"]); ' +
+    'plt.figure(); plt.title("销售额"); plt.savefig(__import__("os").path.join(matplotlib.get_configdir(), "t.png"))';
+  for (let run = 0; run < 2; run++) {
+    const result = spawnSync(realPython, ['-c', probe], { env, encoding: 'utf8', timeout: 120_000 });
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(result.stdout.trim().split(/\r?\n/), [configDir, 'PingFang SC', 'False']);
+    assert.doesNotMatch(result.stderr, /temporary cache directory/);
+  }
+  // the font cache is kept in that folder, so the second run does not rebuild it
+  assert.ok(fs.readdirSync(configDir).some((name) => /^fontlist-v[\d.]+\.json$/.test(name)));
 });

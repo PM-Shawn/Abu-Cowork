@@ -113,9 +113,9 @@ function isLocalPosixPath(path: string): boolean {
 
 /**
  * Where a path that starts at `start` ends. A path ends at `PATH_STOP`, except
- * that a user's folder name may hold spaces (`C:\Users\Zhang San\…`): while the
- * segment after `Users` or `home` is being read, a space followed by more of
- * the path (a separator before the next space) continues it. Trailing
+ * that names under a user's folder may hold spaces (`C:\Users\Zhang San\AppData\…`,
+ * `…/Library/Application Support/…`): a space followed by more of the path (a
+ * separator before the next space, or a file name) continues it. Trailing
  * sentence punctuation, Markdown emphasis and an unmatched closing bracket
  * are left to the text around the path.
  */
@@ -130,9 +130,15 @@ function pathEnd(text: string, start: number): number {
     if (character !== ' ') break;
     const segments = segmentsOf(text.slice(start, end));
     // Windows writes the folder in any case (`c:\\users\\…`).
-    const inUserFolder = segments.length >= 2 && /^(users|home)$/i.test(segments[segments.length - 2]) && segments[segments.length - 1] !== '';
+    const userAt = segments.findIndex((segment) => /^(users|home)$/i.test(segment));
+    const underUser = userAt >= 0 && (segments[userAt + 1] ?? '') !== '';
     const next = /^ [^\s"'`<>]*/.exec(text.slice(end))?.[0] ?? '';
-    if (!inUserFolder || !/[\\/]/.test(next)) break;
+    // Under a user's folder any folder or file may hold a space (`Application Support`,
+    // `My Folder`, `a b.docx`): the path goes on when the next word carries a separator,
+    // or is a file name and the segment before it has no extension yet.
+    const lastSegment = segments[segments.length - 1];
+    const fileNameNext = !lastSegment.includes('.') && /^ [^\s\\/]+\.[A-Za-z0-9]{1,5}$/.test(next);
+    if (!underUser || !(/[\\/]/.test(next) || fileNameNext)) break;
     end++;
   }
   let path = text.slice(start, end);

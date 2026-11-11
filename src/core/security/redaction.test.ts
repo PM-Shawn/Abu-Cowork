@@ -168,4 +168,20 @@ describe('redactSensitiveMediaText', () => {
       expect(redactSensitiveMediaText(text)).toBe(text);
     });
   });
+
+  describe('tool error text', () => {
+    it.each([
+      ['Error: spawn C:\\Users\\Some Name\\AppData\\Local\\Programs\\soffice\\soffice.exe ENOENT', 'Error: spawn [REDACTED:path] ENOENT'],
+      ["ENOENT: no such file or directory, open 'C:\\Users\\Some Name\\AppData\\Roaming\\Abu\\cache\\a b.docx'", "ENOENT: no such file or directory, open '[REDACTED:path]'"],
+      ['failed reading C:\\Users\\Some Name\\Documents\\My Folder\\a.pdf: boom', 'failed reading [REDACTED:path]: boom'],
+      ['Error: spawn /Users/some name/Library/Application Support/Abu/bin/pdftotext ENOENT', 'Error: spawn [REDACTED:path] ENOENT'],
+      ['spawn /Users/zhang/Library/Application Support/Abu/bin/x EACCES', 'spawn [REDACTED:path] EACCES'],
+    ])('leaves no part of the path of: %s', (text, expected) => {
+      expect(redactSensitiveMediaText(text)).toBe(expected);
+    });
+
+    it('does not run on past a path into the next word', () => {
+      expect(redactSensitiveMediaText('open C:\\Users\\bob\\a.txt and then stop')).toBe('open [REDACTED:path] and then stop');
+    });
+  });
 });

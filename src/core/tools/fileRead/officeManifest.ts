@@ -64,8 +64,10 @@ export interface OfficeManifest {
   text?: string;
   /** pptx: per slide, its text lines and the pictures and charts on it. */
   slides?: Array<{ lines: string[]; pictures: number[]; charts: number[] }>;
-  /** xlsx: the sheets in workbook order. */
-  sheets?: Array<{ name: string; hidden: boolean; chartsheet: boolean }>;
+  /** xlsx: the sheets in workbook order, with the zip part that holds each. */
+  sheets?: Array<{ name: string; hidden: boolean; chartsheet: boolean; part?: string }>;
+  /** xlsx: the zip part of the workbook's shared strings. */
+  sharedStrings?: string;
 }
 
 export type ZipEntries = Record<string, Uint8Array>;
@@ -448,6 +450,7 @@ function readXlsx(entries: ZipEntries): OfficeManifest {
     const sheetPart = workbookRels.get(attrs['r:id'] ?? '');
     sheets.push({
       name, hidden: attrs.state === 'hidden' || attrs.state === 'veryHidden', chartsheet: sheetPart?.type === 'chartsheet',
+      ...(sheetPart ? { part: sheetPart.part } : {}),
     });
     if (!sheetPart) continue;
     for (const drawing of relationships(entries, sheetPart.part).values()) {
@@ -473,8 +476,10 @@ function readXlsx(entries: ZipEntries): OfficeManifest {
     }
   }
   addRemainingMedia(entries, collector, alternates);
+  const sharedStrings = [...workbookRels.values()].find((target) => target.type === 'sharedStrings')?.part;
   return {
     kind: 'xlsx', pictures: collector.pictures, charts: collector.charts, embeddedObjects: embeddedObjects(entries), sheets,
+    ...(sharedStrings ? { sharedStrings } : {}),
   };
 }
 

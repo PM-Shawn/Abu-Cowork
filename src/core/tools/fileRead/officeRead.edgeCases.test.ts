@@ -7,6 +7,7 @@ import type { ToolExecutionContext, ToolResultContent } from '@/types';
 import type { ToolFileAccess } from '@/core/tools/fileOperation';
 import { readOfficeManifest } from './officeManifest';
 import { readOffice } from './officeRead';
+import { readSheetRows } from './sheetRows';
 import type { DocumentReadParams } from './readParams';
 
 // Edge cases of read_file's Office reading: files that hold something else, pictures outside the body, the text budget.
@@ -198,6 +199,158 @@ describe('pictures: the body, headers, masters and videos', () => {
     expect(textOf(outcome.result)).toMatch(/Videos and sounds, listed only: .*MP4 video/);
     const shown = await readOffice('/d/a.pptx', params({ imageIndex: video!.index }), contextFor(bytes));
     expect(shown).toEqual({ kind: 'done', result: expect.stringMatching(/^Error: Image \d+ is a video \(MP4\), which cannot be shown/) });
+  });
+});
+
+describe('the XML sheet reader against SheetJS on odd workbooks', () => {
+  function sheetjsRows(bytes: Uint8Array) {
+    const wb = XLSX.read(bytes, { type: 'array' });
+    return wb.SheetNames.map((name) => {
+      const raw = XLSX.utils.sheet_to_json<unknown[]>(wb.Sheets[name], { header: 1, defval: '' }) as unknown[][];
+      const rows = raw.map((row) => {
+        const cells = row.map((cell) => String(cell ?? ''));
+        let end = cells.length;
+        while (end > 0 && cells[end - 1] === '') end--;
+        return cells.slice(0, end);
+      });
+      while (rows.length && rows[rows.length - 1].length === 0) rows.pop();
+      return { name, rows };
+    });
+  }
+  function mineRows(bytes: Uint8Array, max = 500) {
+    const entries = unzipSync(bytes);
+    const manifest = readOfficeManifest(entries)!;
+    return readSheetRows(entries, manifest.sheets ?? [], manifest.sharedStrings, max);
+  }
+  /** SheetJS prints booleans in lower case; the reader prints Excel's TRUE/FALSE. */
+  const normal = (rows: string[][]) => rows.map((row) => row.map((cell) => (cell === 'true' ? 'TRUE' : cell === 'false' ? 'FALSE' : cell)));
+
+  it('agrees on dates, booleans, merged cells, hidden and empty sheets, CJK and awkward strings', () => {
+    const book = XLSX.utils.book_new();
+    const sheet = XLSX.utils.aoa_to_sheet([
+      ['名称', '日期', '金额', '确认'],
+      ['  leading and trailing  ', new Date(Date.UTC(2024, 2, 5)), 0.1 + 0.2, true],
+      ['a<b & "c" \'d\'', new Date(Date.UTC(1999, 11, 31, 13, 30)), 1e21, false],
+      ['line1\nline2', 45000, 1.5e-7, true],
+      ['emoji 😀 汉字', '', 12345678901234, false],
+    ]);
+    sheet['!merges'] = [{ s: { r: 6, c: 0 }, e: { r: 6, c: 2 } }];
+    XLSX.utils.sheet_add_aoa(sheet, [['merged header']], { origin: 'A7' });
+    XLSX.utils.book_append_sheet(book, sheet, '数据');
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([['hidden secret']]), 'hid');
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([]), 'empty');
+    book.Workbook = { Sheets: [{ Hidden: 0 }, { Hidden: 1 }, { Hidden: 0 }] };
+    const bytes = new Uint8Array(XLSX.write(book, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer);
+    const expected = sheetjsRows(bytes);
+    const actual = mineRows(bytes);
+    expect(actual.map((s) => s.name)).toEqual(expected.map((s) => s.name));
+    for (let i = 0; i < expected.length; i++) expect(actual[i].rows).toEqual(normal(expected[i].rows));
+    expect(actual[2]).toMatchObject({ rows: [], totalRows: 0 });
+  });
+
+  it('reads rich shared strings, inline strings, escaped characters and preserved spaces from XML as written by other producers', () => {
+    const main = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
+    const entries = {
+      'xl/workbook.xml': strToU8(`<workbook ${main} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      'xl/_rels/workbook.xml.rels': strToU8(rels([['rId1', 'worksheet', 'worksheets/sheet1.xml'], ['rId2', 'sharedStrings', 'sharedStrings.xml']])),
+      'xl/sharedStrings.xml': strToU8(`<sst ${main}><si><t>plain</t></si><si><r><rPr><b/></rPr><t>rich </t></r><r><t xml:space="preserve"> text</t></r></si><si><t>a&amp;b&lt;c&gt;</t></si><si><t>x</t><rPh sb="0" eb="1"><t>PHONETIC</t></rPh></si><si><t/></si></sst>`),
+      'xl/worksheets/sheet1.xml': strToU8(`<worksheet ${main}><sheetData>`
+        + '<row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c></row>'
+        + '<row r="2"><c r="A2" t="inlineStr"><is><t xml:space="preserve"> inline </t></is></c><c r="B2" t="inlineStr"><is><r><t>ri</t></r><r><t>ch</t></r></is></c><c r="C2" t="str"><v>cached_x000D_</v></c><c r="D2" t="e"><v>#N/A</v></c></row>'
+        + '<row r="4"><c r="A4" t="b"><v>1</v></c><c r="E4"><v>2.50</v></c></row>'
+        + '</sheetData></worksheet>'),
+    };
+    const manifest = readOfficeManifest(entries)!;
+    const [sheet] = readSheetRows(entries, manifest.sheets ?? [], manifest.sharedStrings, 500);
+    expect(sheet.rows).toEqual([
+      ['plain', 'rich  text', 'a&b<c>', 'x'],
+      [' inline ', 'rich', 'cached\r', '#N/A'],
+      [],
+      ['TRUE', '', '', '', '2.5'],
+    ]);
+    expect(sheet.totalRows).toBe(4);
+  });
+
+  it('knows a row at the bottom of the sheet without building the rows between', () => {
+    const main = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
+    const entries = {
+      'xl/workbook.xml': strToU8(`<workbook ${main} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      'xl/_rels/workbook.xml.rels': strToU8(rels([['rId1', 'worksheet', 'worksheets/sheet1.xml']])),
+      'xl/worksheets/sheet1.xml': strToU8(`<worksheet ${main}><sheetData><row r="1"><c r="A1"><v>1</v></c></row><row r="1048576"><c r="XFD1048576"><v>9</v></c></row></sheetData></worksheet>`),
+    };
+    const [sheet] = readSheetRows(entries, readOfficeManifest(entries)!.sheets ?? [], undefined, 500);
+    expect(sheet.totalRows).toBe(1048576);
+    expect(sheet.rows).toEqual([['1']]);
+  });
+
+  // Found by the re-tester: a cell reference far outside the sheet's real bounds used to be expanded
+  // into that many empty cells (ZZZZZ1: 12.3 million; twenty such rows killed the sidecar). The reader
+  // now refuses a column beyond Excel's last (XFD) and bounds the cells it builds.
+  it('does not expand a cell far beyond Excel\'s last column into millions of empty cells', () => {
+    const main = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
+    const entries = {
+      'xl/workbook.xml': strToU8(`<workbook ${main} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      'xl/_rels/workbook.xml.rels': strToU8(rels([['rId1', 'worksheet', 'worksheets/sheet1.xml']])),
+      'xl/worksheets/sheet1.xml': strToU8(`<worksheet ${main}><sheetData><row r="1"><c r="A1"><v>1</v></c><c r="ZZZZ1"><v>1</v></c></row></sheetData></worksheet>`),
+    };
+    expect(() => readSheetRows(entries, readOfficeManifest(entries)!.sheets ?? [], undefined, 500)).toThrow(/could not be read/);
+  });
+
+  const sheetEntries = (sheetData: string) => {
+    const main = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"';
+    return {
+      'xl/workbook.xml': strToU8(`<workbook ${main} xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="S" sheetId="1" r:id="rId1"/></sheets></workbook>`),
+      'xl/_rels/workbook.xml.rels': strToU8(rels([['rId1', 'worksheet', 'worksheets/sheet1.xml']])),
+      'xl/worksheets/sheet1.xml': strToU8(`<worksheet ${main}><sheetData>${sheetData}</sheetData></worksheet>`),
+    };
+  };
+  const rowsOf = (entries: Record<string, Uint8Array>) => readSheetRows(entries, readOfficeManifest(entries)!.sheets ?? [], undefined, 500);
+
+  it('reads a cell at Excel\'s last column, XFD, and refuses the one after it', () => {
+    const [sheet] = rowsOf(sheetEntries('<row r="1"><c r="XFD1"><v>7</v></c></row>'));
+    expect(sheet.rows[0]).toHaveLength(16384);
+    expect(sheet.rows[0][16383]).toBe('7');
+    expect(() => rowsOf(sheetEntries('<row r="1"><c r="XFE1"><v>7</v></c></row>'))).toThrow(/could not be read/);
+  });
+
+  it('refuses a workbook whose rows add up to more cells than a read builds, not only one far cell', () => {
+    const row = (n: number) => `<row r="${n}"><c r="A${n}"><v>1</v></c><c r="XFD${n}"><v>1</v></c></row>`;
+    const many = Array.from({ length: 500 }, (_v, i) => row(i + 1)).join('');
+    expect(() => rowsOf(sheetEntries(many))).toThrow(/could not be read/);
+  });
+
+  it('answers a read of such a workbook with an error that says the sheet could not be read', async () => {
+    const bytes = zipSync(sheetEntries('<row r="1"><c r="ZZZZZ1"><v>1</v></c></row>'));
+    const { text } = await readAt('/d/hostile.xlsx', bytes);
+    expect(text).toContain('could not be read');
+    expect(bytes.length).toBeLessThan(2000);
+  });
+
+  it('scans a large malformed row once: unclosed cells give a bounded result without a quadratic search', () => {
+    const unclosed = '<c r="A1">'.repeat(40_000);
+    const [sheet] = rowsOf(sheetEntries(`<row r="1">${unclosed}</row>`));
+    expect(sheet.rows).toEqual([]);
+    const unterminated = '<c r="A1"'.repeat(40_000);
+    expect(rowsOf(sheetEntries(`<row r="1">${unterminated}</row>`))[0].rows).toEqual([]);
+    const half = '<c r="A1"><v>3</v><c r="B1"><v>4</v>'.repeat(20_000);
+    expect(rowsOf(sheetEntries(`<row r="1">${half}</row>`))[0].rows[0].slice(0, 2)).toEqual(['3', '4']);
+  });
+
+  it('keeps reading the cells of a well-formed row the same way after the rewrite', () => {
+    const [sheet] = rowsOf(sheetEntries('<row r="2"><c r="B2" t="b"><v>1</v></c><c r="D2"/><c t="inlineStr" r="E2"><is><t>hi</t></is></c></row>'));
+    expect(sheet.rows).toEqual([['', 'TRUE', '', '', 'hi']]);
+  });
+});
+
+describe('a sheet whose data starts far down', () => {
+  it('is read, not reported as empty or as rows left out (rows 600 to 602 of a sheet)', async () => {
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([[600], [601], [602]], { origin: 'A600' }), 'S');
+    const bytes = new Uint8Array(XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer);
+    const { text } = await readAt('/d/late.xlsx', bytes);
+    expect(text).toContain("'S' 3 rows");
+    expect(text).not.toContain('left out');
+    expect(text).toContain('600\n601\n602');
   });
 });
 

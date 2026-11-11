@@ -165,8 +165,8 @@ describe('readOfficeManifest', () => {
   it('reads the anchors of a workbook\'s pictures and charts', () => {
     const manifest = readOfficeManifest(unzipSync(xlsx(3)))!;
     expect(manifest.sheets).toEqual([
-      { name: 'Data', hidden: false, chartsheet: false },
-      { name: 'Old', hidden: true, chartsheet: false },
+      { name: 'Data', hidden: false, chartsheet: false, part: 'xl/worksheets/sheet1.xml' },
+      { name: 'Old', hidden: true, chartsheet: false, part: 'xl/worksheets/sheet2.xml' },
     ]);
     expect(manifest.pictures.map((p) => [p.index, p.where])).toEqual([[1, ["sheet 'Data' at B4"]]]);
     expect(manifest.charts[0]).toMatchObject({

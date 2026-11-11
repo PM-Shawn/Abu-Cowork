@@ -27,6 +27,7 @@ import {
 } from './readParams';
 import { OfficeTooLargeError, officeTooLargeNote, unpackOffice } from './officeUnpack';
 import { labeledImage, withImages } from './resultImages';
+import { readSheetRows, SheetUnreadableError } from './sheetRows';
 
 /**
  * What read_file shows of a Word, Excel or PowerPoint file: a manifest of the
@@ -187,6 +188,22 @@ async function readSheets(data: Uint8Array | string): Promise<SheetText[]> {
     while (rows.length && rows[rows.length - 1].length === 0) rows.pop();
     return sheetText(name, rows, rows.length);
   });
+}
+
+/**
+ * The sheets of an .xlsx from its XML, first rows only (sheetRows.ts), so a
+ * large workbook takes about a second, not the tens of seconds a full parse
+ * would hold the process for. SheetJS reads a workbook this reader cannot.
+ */
+async function readWorkbookSheets(entries: ZipEntries, manifest: OfficeManifest, bytes: Uint8Array): Promise<SheetText[]> {
+  try {
+    return readSheetRows(entries, manifest.sheets ?? [], manifest.sharedStrings, MAX_SHEET_ROWS)
+      .map((sheet) => sheetText(sheet.name, sheet.rows, sheet.totalRows));
+  } catch (err) {
+    // SheetJS would build the same oversized rows, so it is not asked.
+    if (err instanceof SheetUnreadableError) throw err;
+    return readSheets(bytes);
+  }
 }
 
 /** The text of a read, cut to the read's byte budget, the cut marked with how to read on (`kind`: the Office file it was read from). */
@@ -483,7 +500,7 @@ export async function readOffice(
   if (manifest.kind === 'xlsx') {
     let sheets: SheetText[];
     try {
-      sheets = await readSheets(bytes);
+      sheets = await readWorkbookSheets(entries, manifest, bytes);
     } catch (err) {
       return { kind: 'done', result: `Error reading Excel file: ${err instanceof Error ? err.message : String(err)}` };
     }

@@ -86,8 +86,10 @@ describe('image-gen SKILL.md size table against the image tool', () => {
     }
   });
 
-  it('does not change the watermark behaviour of the request', () => {
-    expect(buildVolcengineRequest({ model: FIVE[0]!, prompt: 'x', size: rows[0]!.size }).watermark).toBe(false);
+  it('leaves the watermark as the setting gives it: on by default, off when the setting says so', () => {
+    const req = { model: FIVE[0]!, prompt: 'x', size: rows[0]!.size };
+    expect(buildVolcengineRequest(req).watermark).toBe(true);
+    expect(buildVolcengineRequest({ ...req, watermark: false }).watermark).toBe(false);
   });
 });
 

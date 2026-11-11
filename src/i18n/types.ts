@@ -5106,11 +5106,32 @@ export interface TranslationDict {
       sectionMemories: string;
       /** {count} */
       sectionTasks: string;
-      /** {title}, {count}, {time} */
+      /** {title}, {id}, {count}, {time} */
       convLine: string;
       untitled: string;
       /** {count} */
       sectionConversations: string;
+      /** {count} */
+      sectionConversationHits: string;
+      /** {title}, {id}, {time}, {snippet} (the match, plain text) */
+      convHitLine: string;
+      /** One page of a conversation: {title}, {id}, {from}, {to}, {total} (segments) */
+      convReadHeader: string;
+      convReadUser: string;
+      /** {role}: a later segment of a long message */
+      convReadContinued: string;
+      convReadAssistant: string;
+      /** {count}: characters of the message still to come */
+      convReadTruncated: string;
+      /** {id}, {offset}: how to ask for the next page */
+      convReadNext: string;
+      convReadEnd: string;
+      /** {id} */
+      convReadNotFound: string;
+      /** {title} */
+      convReadEmpty: string;
+      /** {offset}, {total} */
+      convReadOffsetBeyond: string;
       /** {query} */
       noResultsQuery: string;
       noResultsEmpty: string;

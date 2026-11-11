@@ -1,7 +1,14 @@
 import type { ToolDefinition } from '../../../types';
 import { useChatStore } from '../../../stores/chatStore';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
-import { catalogGetCount } from '../../session/conversationStorage';
+import { catalogGetCount, catalogSearch, loadMessages, type SearchHit } from '../../session/conversationStorage';
+import {
+  searchConversationHits,
+  keepIndexedHits,
+  cleanSnippet,
+  findConversation,
+  renderConversationPage,
+} from './recallConversations';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 
@@ -102,12 +109,15 @@ function matchesQuery(text: string, queryTokens: string[]): boolean {
 
 export const recallTool: ToolDefinition = {
   name: TOOL_NAMES.RECALL,
-  description: `Recall past memories, task records, and conversation history. Use when the user asks questions that require looking back at history, such as "previously", "last time", "what have we done recently", "do you remember", or "what have we talked about".
+  description: `Recall past memories, task records, and past conversations. Use when the user refers to something from before, such as "previously", "last time", "the quote we agreed on", "do you remember", "what did we decide", or "what have we talked about", and the answer is not already in the current conversation.
 
 ## Priority (in order)
 1. **Check <relevant-memories> first** (at the end of the system prompt): relevant non-private memories are auto-injected in full each turn — answer from there directly without calling any tool if possible.
-2. **recall (keyword search)**: use when <relevant-memories> does not cover the topic, or when you are unsure whether a relevant memory exists.
-3. **read_memory (precise pull by filename)**: when you see a specific filename in <memory-index> and its description looks relevant (including 🔒 private memories the user explicitly asks about), call read_memory(filename) directly — more accurate than recall and uses fewer tokens.
+2. **recall with query (keyword search)**: searches memories, task records, and the full text of past conversations (not only their titles). Use it when <relevant-memories> does not cover the topic, or when you are unsure whether a relevant memory exists. Use short, distinctive keywords (a name, a product, an amount), not a whole sentence; search again with another word if nothing matches.
+3. **recall with conversation_id (read a found conversation)**: every conversation in the results shows an [id: ...]. Pass it as conversation_id to read what the user and you said in that conversation, page by page. Start at offset 0; when the result says more follows, call again with the offset it gives. Read only as far as needed. Tool output and attachments are not included.
+4. **read_memory (precise pull by filename)**: when you see a specific filename in <memory-index> and its description looks relevant (including 🔒 private memories the user explicitly asks about), call read_memory(filename) directly — more accurate than recall and uses fewer tokens.
+
+When you rely on a past conversation, tell the user which conversation it came from (its title).
 
 ## Sanity-check when using memories
 Memories are snapshots from a point in the past and may be outdated. Before giving advice based on memory:
@@ -121,7 +131,15 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
     properties: {
       query: {
         type: 'string',
-        description: 'Search keywords (matched against memory content, task summaries, and conversation titles)',
+        description: 'Search keywords (matched against memories, task summaries, and the titles and full text of past conversations)',
+      },
+      conversation_id: {
+        type: 'string',
+        description: 'Id of a past conversation from the search results ([id: ...]). When set, the conversation is read instead of searching (query is ignored).',
+      },
+      offset: {
+        type: 'number',
+        description: 'Only with conversation_id: number of segments to skip, default 0 (a long message is split into several segments). Use the offset the previous page gave to continue.',
       },
       limit: {
         type: 'number',
@@ -138,6 +156,21 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
     const workspacePath = context?.workspacePath ?? useWorkspaceStore.getState().currentPath;
     const sections: string[] = [];
     const t = getI18n().toolResult.recall;
+
+    // --- Read mode: one past conversation, a page at a time ---
+    const requestedId = typeof input.conversation_id === 'string' ? input.conversation_id.trim() : '';
+    if (requestedId) {
+      const meta = findConversation(useChatStore.getState().conversationIndex, requestedId);
+      if (!meta) return format(t.convReadNotFound, { id: requestedId });
+      // A conversation open in memory is the freshest copy; otherwise read it from disk.
+      const loaded = useChatStore.getState().conversations[requestedId];
+      const messages = loaded ? loaded.messages : await loadMessages(requestedId);
+      const offset = typeof input.offset === 'number' ? input.offset : Number(input.offset ?? 0);
+      return renderConversationPage(
+        { id: requestedId, title: meta.title || t.untitled, messages, offset },
+        t,
+      ).text;
+    }
 
     // --- 1. Memdir memories (global + workspace) ---
     try {
@@ -211,16 +244,28 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
       // Non-critical
     }
 
-    // --- 3. Conversation index (from chatStore) ---
+    // --- 3. Past conversations: titles (from chatStore) and full text (catalog) ---
     try {
       const conversationIndex = useChatStore.getState().conversationIndex;
+
+      // Full text: the catalog covers every conversation on disk.
+      let contentHits: Array<{ meta: (typeof conversationIndex)[string]; hit: SearchHit }> = [];
+      if (queryTokens.length > 0) {
+        const phrases = [query, ...(queryTokens.length > 1 ? queryTokens.slice(0, 4) : [])];
+        const results = await Promise.all(
+          phrases.map((p) => searchConversationHits(p, conversationIndex, limit, context?.conversationId, catalogSearch)),
+        );
+        contentHits = keepIndexedHits(results.flat().map((r) => r.hit), conversationIndex, limit);
+      }
+      const hitIds = new Set(contentHits.map((h) => h.meta.id));
+
       // The `>= 2` gate and sort stay on the optimistic index count — it is the
       // fast, pre-load value already in memory for every conversation, and the
       // gate is coarse. Only the DISPLAYED count (below) is upgraded to the
       // catalog's authoritative value (message-storage P1 step 3): read priority
       // changes, write timing does not.
       const convList = Object.values(conversationIndex)
-        .filter(c => c.messageCount >= 2)
+        .filter(c => c.messageCount >= 2 && !hitIds.has(c.id))
         .sort((a, b) => b.updatedAt - a.updatedAt);
 
       let matched = convList;
@@ -229,6 +274,16 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
       }
       matched = matched.slice(0, limit);
 
+      if (contentHits.length > 0) {
+        const lines = contentHits.map(({ meta, hit }) => format(t.convHitLine, {
+          title: meta.title || t.untitled,
+          id: meta.id,
+          time: formatTime(meta.updatedAt),
+          snippet: cleanSnippet(hit.snippet),
+        }));
+        sections.push(`${format(t.sectionConversationHits, { count: contentHits.length })}\n${lines.join('\n')}`);
+      }
+
       if (matched.length > 0) {
         // Displayed count resolution: see `resolveDisplayCount` — loaded
         // conversations use the accurate in-memory count, unloaded ones fall
@@ -236,7 +291,7 @@ Memories are snapshots from a point in the past and may be outdated. Before givi
         // matched rows and TTL-cached, so this is at most `limit` IPCs.
         const lines = await Promise.all(matched.map(async c => {
           const count = await resolveDisplayCount(c.id, c.messageCount);
-          return format(t.convLine, { title: c.title || t.untitled, count, time: formatTime(c.updatedAt) });
+          return format(t.convLine, { title: c.title || t.untitled, id: c.id, count, time: formatTime(c.updatedAt) });
         }));
         sections.push(`${format(t.sectionConversations, { count: matched.length })}\n${lines.join('\n')}`);
       }

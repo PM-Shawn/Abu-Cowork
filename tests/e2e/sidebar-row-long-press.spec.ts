@@ -19,6 +19,7 @@ import {
   removeElectronDataRoot,
   type LaunchedApp,
 } from './electronHelpers';
+import { answerTitleRequest } from './openAiMock';
 
 const READY_TIMEOUT = 45_000;
 const FIRST_PROMPT = 'E2E长按第一个任务';
@@ -32,7 +33,14 @@ function chunk(delta: Record<string, unknown>, finish: string | null): string {
 async function startMock() {
   const server = createServer(async (req, res) => {
     // The request body is read to its end before the reply is written.
-    for await (const part of req) void part;
+    let raw = '';
+    for await (const part of req) raw += String(part);
+    try {
+      // The title call that follows a first reply is not the scripted reply (src/core/session/titleGen.ts).
+      if (answerTitleRequest(JSON.parse(raw), res)) return;
+    } catch {
+      // Not JSON: answered with the reply, like before.
+    }
     res.writeHead(200, { 'content-type': 'text/event-stream' });
     res.write(chunk({ role: 'assistant', content: REPLY }, null));
     res.write(chunk({}, 'stop'));

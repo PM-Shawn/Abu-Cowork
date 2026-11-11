@@ -8,6 +8,18 @@ import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vite
 import { useChatStore } from '../stores/chatStore';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useTaskExecutionStore } from '../stores/taskExecutionStore';
+// The real title side call would spend one of the mocked chat replies these cases count (it is covered in
+// titleGen*.test.ts); here it is a spy that records how many replies had been requested when it was asked.
+const titleProbe = vi.hoisted(() => ({
+  chatCalls: () => 0,
+  asked: [] as Array<{ convId: string; chatCallsSoFar: number }>,
+}));
+vi.mock('../core/session/titleGen', () => ({
+  requestConversationTitle: async (convId: string) => {
+    titleProbe.asked.push({ convId, chatCallsSoFar: titleProbe.chatCalls() });
+  },
+  abortConversationTitle: () => {},
+}));
 // Mock workspaceStore
 vi.mock('../stores/workspaceStore', () => ({
   useWorkspaceStore: {
@@ -23,6 +35,7 @@ vi.mock('../stores/workspaceStore', () => ({
 // Mock the LLM adapters to return controlled responses
 // Use class-based mocks so they work with `new`
 const mockClaudeChat = vi.fn();
+titleProbe.chatCalls = () => mockClaudeChat.mock.calls.length;
 vi.mock('../core/llm/claude', () => ({
   ClaudeAdapter: class {
     chat = mockClaudeChat;
@@ -548,6 +561,21 @@ describe('Agent Pipeline Integration', () => {
     expect(assistantText).toMatch(/content[- ]safety|内容安全/i);
     expect(assistantText).not.toContain('raw delegated provider body');
     expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for the conversation title only after the first reply ended, and the reply calls stay as they were', async () => {
+    titleProbe.asked.length = 0;
+    mockClaudeChat.mockImplementation(async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+      onEvent({ type: 'text', text: 'Sure, here is the summary.' });
+      onEvent({ type: 'done', stopReason: 'end_turn' });
+    });
+    const conversationId = useChatStore.getState().createConversation();
+
+    await runAgentLoop(conversationId, 'please summarise the quarterly numbers');
+
+    expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(titleProbe.asked).toHaveLength(1));
+    expect(titleProbe.asked[0]).toEqual({ convId: conversationId, chatCallsSoFar: 1 });
   });
 
   it('re-materializes delegated media refs for each primary provider retry attempt', async () => {

@@ -17,6 +17,7 @@ import {
   REPO_ROOT,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { answerTitleRequest } from './openAiMock';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -36,13 +37,18 @@ async function startContentPolicyMock(): Promise<ContentPolicyMock> {
   let requests = 0;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
-    for await (const _chunk of req) {
-      // Drain the fixed synthetic request before responding.
-    }
+    let raw = '';
+    for await (const chunk of req) raw += String(chunk);
     if (req.method !== 'POST' || url.pathname !== '/v1/chat/completions') {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ error: 'unexpected E2E route' }));
       return;
+    }
+    try {
+      // The title call is not the failing request under test (src/core/session/titleGen.ts).
+      if (answerTitleRequest(JSON.parse(raw), res)) return;
+    } catch {
+      // Not JSON: answered with the error, like before.
     }
     requests += 1;
     res.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });

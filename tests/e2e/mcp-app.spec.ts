@@ -52,6 +52,7 @@ import {
   REPO_ROOT,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { answerTitleRequest } from './openAiMock';
 // Zero-import module of plain data — safe to pull into the node-side runner,
 // unlike `appHost.ts` (see `hostTextPrimary`).
 import { WIDGET_THEME_VARS } from '../../src/core/widget/designSystem';
@@ -126,7 +127,8 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
     res.once('close', () => activeResponses.delete(res));
 
     const requestUrl = new URL(req.url ?? '/', 'http://127.0.0.1');
-    for await (const chunk of req) void chunk;
+    let rawBody = '';
+    for await (const chunk of req) rawBody += String(chunk);
 
     if (req.method !== 'POST' || requestUrl.pathname !== '/v1/chat/completions') {
       res.writeHead(404, { 'content-type': 'application/json' });
@@ -134,6 +136,12 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
       return;
     }
 
+    try {
+      // The title call that follows a first reply is not a scripted turn (src/core/session/titleGen.ts).
+      if (answerTitleRequest(JSON.parse(rawBody), res)) return;
+    } catch {
+      // Not JSON: handled as a scripted turn, like before.
+    }
     const replyPlan = replyPlans[served];
     served += 1;
     if (!replyPlan) {

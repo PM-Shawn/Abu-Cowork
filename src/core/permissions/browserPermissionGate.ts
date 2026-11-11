@@ -1,9 +1,61 @@
-import type { BrowserGateEvaluation, BrowserGateFacts } from './browserGateEvaluation';
+import type { BrowserDenialReasonCode, BrowserOperationClass } from './browserToolPolicy';
 import type { resolveBrowserPermissionConfig } from './browserPermissionConfig';
-import { getPermissionStrategy } from './permissionMode';
-import { decideStateChangingToolUnderRunPermissionCeiling } from './runPermissionCeiling';
+import { getPermissionStrategy, type PermissionMode } from './permissionMode';
+import {
+  decideStateChangingToolUnderRunPermissionCeiling,
+  type CeilingDecision,
+  type RunPermissionCeiling,
+} from './runPermissionCeiling';
 
-export type BrowserPermissionGateFacts = Omit<BrowserGateFacts, 'policy' | 'siteVerdict' | 'masterSwitchUnattended' | 'conversationGrant'> & {
+export interface BrowserGateAsk {
+  /** `'dialog'`: in-app confirmation (someone is watching). `'im'`: the unattended approval round-trip. */
+  channel: 'dialog' | 'im';
+  /** Whether the confirmation may also offer 「以后都允许该网站」. */
+  offersPersistentGrant: boolean;
+  /** The code to report if the human refuses, or nobody answers in time. */
+  refusedReason: BrowserDenialReasonCode;
+}
+
+/** Bookkeeping `registry.ts` reads next to the decision (grant minting, denial streak). */
+export interface BrowserGateIntermediates {
+  scriptAllowedByPolicy: boolean;
+  dialogAnswerAllowedByPolicy: boolean;
+  /** The configured row says 「每次询问」. */
+  asksEveryTime: boolean;
+  granted: boolean;
+}
+
+export interface BrowserGateEvaluation {
+  /** The outcome ASSUMING every confirmation in `ask` is approved. */
+  outcome: 'allow' | 'deny';
+  /** Set exactly when `outcome === 'deny'`. */
+  denialReason: BrowserDenialReasonCode | null;
+  /** Set when a human is asked before `outcome` is reached. */
+  ask: BrowserGateAsk | null;
+  /** Non-null exactly when the refusal came from the run's capability ceiling. */
+  ceilingDecision: CeilingDecision | null;
+  intermediates: BrowserGateIntermediates;
+}
+
+export interface BrowserPermissionGateFacts {
+  /** Read-only / interactive / scripting / upload: for a batch, its heaviest step. */
+  opClass: BrowserOperationClass;
+  runMode: 'attended' | 'unattended';
+  /** The user's global permission mode. */
+  permissionMode: PermissionMode;
+  /** The run's host-owned capability ceiling, or null for an ordinary chat turn. */
+  runPermissionCeiling: RunPermissionCeiling | null;
+  /** Whether the tool acts on a page at all (`get_tabs` and the like do not). */
+  toolTargetsPage: boolean;
+  originResolved: boolean;
+  /** Whether the tool ANSWERS a page's own dialog (`handle_dialog`). */
+  answersPageDialog: boolean;
+  /** The host observed a sign-in wall. Advisory: only ever used to REFUSE. */
+  loginRequired: boolean;
+  /** Without a way to deliver a confirmation, an ask fails closed. */
+  confirmationChannelAvailable: boolean;
+  /** Whether the origin is known, which is what a persistent grant is keyed by. */
+  originKnown: boolean;
   configured: ReturnType<typeof resolveBrowserPermissionConfig>;
   /**
    * The call touches money: an action (not a page visit) on a money-movement
@@ -22,7 +74,7 @@ export type BrowserPermissionGateFacts = Omit<BrowserGateFacts, 'policy' | 'site
   governmentTaskGranted?: boolean;
   /** 脚本要在嵌入的第三方区域里执行：站点长期许可会连带宿主页面整站放开脚本，所以不提供 */
   scriptInEmbeddedRegion: boolean;
-};
+}
 
 /** Shared configuration; context chooses the confirmation channel only. */
 export function evaluateBrowserPermissionGate(facts: BrowserPermissionGateFacts): BrowserGateEvaluation {

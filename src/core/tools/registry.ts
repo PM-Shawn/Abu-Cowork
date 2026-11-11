@@ -1695,11 +1695,6 @@ export async function checkToolApproval(
        * must not ride the page's grant. The strictest across all of them is
        * what the decision is made on, which is why this is a fold and not the
        * single-origin `getSiteVerdict` the rest of the app reads.
-       *
-       * The fold is the whole of the collapse: `evaluateBrowserGate`'s
-       * `consultsSite` decides what an attended read may READ out of this
-       * value, so the full verdict goes in and the narrowing happens in one
-       * place rather than two.
        */
       /**
        * The page this call happens on, when a region was named. `undefined`
@@ -1785,7 +1780,7 @@ export async function checkToolApproval(
        * because the browser host was slow would break the path that runs
        * constantly to protect a block the user may not even have on this site
        * — but the one thing that must not happen is for that to be silent.
-       * `evaluateBrowserGate` sees `'default'` and cannot tell the difference
+       * `evaluateBrowserPermissionGate` sees `'default'` and cannot tell the difference
        * between "not blocked" and "could not check", so the difference is
        * recorded here.
        */
@@ -1955,18 +1950,10 @@ export async function checkToolApproval(
         sharedBrowserDenialReasonText(t, reason);
 
       /**
-       * ONE evaluation, shared with Settings' 「生效权限预览」 (S12).
-       *
-       * Everything from here down used to be an inline chain of ifs that mixed
-       * the DECISION with the side effects carrying it out — the signal
-       * records, the approval round-trips, the grant minting. The decision half
-       * now lives in `browserGateEvaluation.ts` and this block does what that
-       * function says. Not for tidiness: a preview that re-derived these rules
-       * would be a second source of truth for the most consequential decision
-       * in this app, and one that silently disagreed would teach the user a
-       * wrong model of their own settings.
-       * `browserGateEvaluation.contract.test.ts` drives THIS function against
-       * that one across the whole matrix to keep them identical.
+       * The decision half lives in `evaluateBrowserPermissionGate`; this block
+       * carries out what it says (signal records, approval round-trips, grant
+       * minting). `browserPermissionGate.contract.test.ts` drives THIS function
+       * against it across the whole matrix to keep them identical.
        *
        * An absent policy is the KNOWN-absent case (a store that predates v46),
        * so it takes the reviewed product default rather than
@@ -2257,7 +2244,7 @@ export async function checkToolApproval(
             ),
           ));
         }
-        // Non-null by construction: `evaluateBrowserGate` refuses instead of
+        // Non-null by construction: `evaluateBrowserPermissionGate` refuses instead of
         // asking when `confirmationChannelAvailable` is false.
         const confirmed = await onRequireConfirmation?.({
           // An upload puts only the file list here: its question, its target

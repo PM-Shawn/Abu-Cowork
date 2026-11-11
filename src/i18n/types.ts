@@ -1674,7 +1674,7 @@ export interface TranslationDict {
     /* ── S12 生效权限预览 ─────────────────────────────────────────────
      * A row inside the operation-permission card that answers "what can Abu
      * do on this site right now?" with NO side effects. The verdict comes
-     * from `evaluateBrowserGate`, the same function the real gate uses, and
+     * from `evaluateBrowserPermissionGate`, the function the real gate uses, and
      * the refusal wording is reused verbatim from `browserRunReport.reason`
      * so the pane and the morning card never disagree.
      */

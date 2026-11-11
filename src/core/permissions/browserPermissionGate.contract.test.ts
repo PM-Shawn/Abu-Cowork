@@ -19,7 +19,6 @@ import {
   __resetUnattendedConfirmationForTests,
   setUnattendedConfirmationResolver,
 } from './unattendedConfirmation';
-import { browserGatePreviewVerdict } from './browserGateEvaluation';
 import { evaluateBrowserPermissionGate } from './browserPermissionGate';
 import { createBrowserPermissionConfig, emptyBrowserSiteRule, resolveBrowserPermissionConfig } from './browserPermissionConfig';
 import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
@@ -493,42 +492,5 @@ describe('browser gate — a call that names a region agrees too', () => {
       outcome: evaluation.outcome,
       askChannel: evaluation.ask?.channel ?? null,
     });
-  });
-});
-
-describe('browserGatePreviewVerdict', () => {
-  const base = {
-    outcome: 'allow' as const,
-    denialReason: null,
-    ceilingDecision: null,
-    intermediates: {
-      scriptAllowedByPolicy: false,
-      dialogAnswerAllowedByPolicy: false,
-      asksEveryTime: false,
-      granted: false,
-    },
-  };
-
-  it('reads a silent allow as allow', () => {
-    expect(browserGatePreviewVerdict({ ...base, ask: null })).toBe('allow');
-  });
-
-  it('reads an allow behind a confirmation as ask', () => {
-    expect(browserGatePreviewVerdict({
-      ...base,
-      ask: { channel: 'dialog', offersPersistentGrant: true, refusedReason: 'user-cancelled' },
-    })).toBe('ask');
-  });
-
-  // The unattended 「每次询问」 on a site with no standing grant: the gate asks a
-  // human and refuses anyway. Reporting 「会询问」 would promise a road that
-  // dead-ends, so the refusal wins.
-  it('reads an ask that is refused anyway as deny', () => {
-    expect(browserGatePreviewVerdict({
-      ...base,
-      outcome: 'deny',
-      denialReason: 'site-not-allowed',
-      ask: { channel: 'im', offersPersistentGrant: false, refusedReason: 'approval-refused' },
-    })).toBe('deny');
   });
 });

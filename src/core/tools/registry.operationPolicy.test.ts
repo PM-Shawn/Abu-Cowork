@@ -985,7 +985,7 @@ describe('browser gate — operation-class policy', () => {
      * The origin probe came back empty while a block was in force. The read
      * goes ahead — a human is watching it, and failing closed on a screenshot
      * because the browser host was slow would break the path that runs
-     * constantly — but `evaluateBrowserGate` sees `'default'` and cannot tell
+     * constantly — but `evaluateBrowserPermissionGate` sees `'default'` and cannot tell
      * "not blocked" from "could not check", so the gate leaves a signal.
      */
     it('refuses an attended read when the origin will not resolve, and records that it could not check', async () => {

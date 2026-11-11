@@ -1,6 +1,11 @@
 'use strict';
 
-const { isHighRiskUrl } = require('../abu-browser-shared/highRiskSites.mjs');
+const { isHighRiskUrl, hasMoneyMovementPath } = require('../abu-browser-shared/highRiskSites.mjs');
+
+// A popup an AI action opened may not go to a money-movement host or a
+// payment-like path. Refusing a popup costs the user nothing, so this check
+// keeps reading the path even though approvals no longer do.
+const refusedForPopup = (url) => isHighRiskUrl(url) || hasMoneyMovementPath(url);
 
 const POPUP_BLOCKED = 'Popup blocked. The destination needs a separate browsing approval. Preserve the source page; do not replay a form submission as a GET or retry it automatically. Manual popup retries on this AI-controlled page are also blocked.';
 
@@ -91,7 +96,7 @@ function createBrowserPopupPolicy({ originOf, onBlocked = () => {} }) {
     const entry = entries[0];
     if (entry.used || !valid(contents, entry)) return reject(contents);
     entry.used = true;
-    if (entry.origin !== origin || isHighRiskUrl(url)) return reject(contents);
+    if (entry.origin !== origin || refusedForPopup(url)) return reject(contents);
     return { source: contents, owner: entry.owner, origin, signal: entry.signal, valid: () => valid(contents, entry) };
   }
 
@@ -120,7 +125,7 @@ function createBrowserPopupPolicy({ originOf, onBlocked = () => {} }) {
     if (resourceType !== 'mainFrame') return true;
     if (!entry || !entry.guarded) return true;
     const allowed = !entry.signal?.aborted && originOf(url) === entry.origin
-      && (!isHighRiskUrl(url) || url === entry.explicitUrl);
+      && (!refusedForPopup(url) || url === entry.explicitUrl);
     if (!allowed) reject(entry.contents);
     return allowed;
   }

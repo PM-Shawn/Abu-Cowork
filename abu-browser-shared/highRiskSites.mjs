@@ -264,3 +264,48 @@ export function classifyHighRiskUrl(url) {
 export function isHighRiskUrl(url) {
   return classifyHighRiskUrl(url) !== null;
 }
+
+/**
+ * Money-movement path keywords, for one caller only: Electron's popup policy
+ * (`electron/browserPopupPolicy.cjs`), which refuses a popup or redirect that an
+ * AI action opens towards a payment-like path. Refusing a popup costs the user
+ * nothing, so that check keeps the path rule it always had; approvals no longer
+ * read the path (see "What counts"), because there every match asked the user.
+ *
+ * Anchored to path-segment-ish boundaries: a bare substring match would flag
+ * `/hardwired`, `/repayments` and `/checkouts-are-hard`.
+ */
+const MONEY_MOVEMENT_PATH_KEYWORDS = ['transfer', 'payment', 'checkout', 'wire', 'remit'];
+
+const MONEY_MOVEMENT_PATH_PATTERN = new RegExp(
+  `(?:^|[/_.\\-])(${MONEY_MOVEMENT_PATH_KEYWORDS.join('|')})(?:s)?(?:[/_.\\-]|$)`,
+  'i',
+);
+
+/**
+ * Percent-encoding must not be an escape hatch: `/%74ransfer` loads the same
+ * page as `/transfer`. A decoding failure (a lone `%`) falls back to the raw path.
+ */
+function decodedPath(pathname) {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+}
+
+/**
+ * True when an http(s) URL's PATH (never the query) carries a money-movement
+ * keyword. Not part of {@link classifyHighRiskUrl}: only the popup policy uses it.
+ */
+export function hasMoneyMovementPath(url) {
+  if (!url) return false;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  return MONEY_MOVEMENT_PATH_PATTERN.test(decodedPath(parsed.pathname));
+}

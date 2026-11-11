@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { classifyHighRiskUrl, isHighRiskUrl } from './highRiskSites';
+import { classifyHighRiskUrl, hasMoneyMovementPath, isHighRiskUrl } from './highRiskSites';
 
 describe('classifyHighRiskUrl', () => {
   // A money-movement keyword in the path does not make an ordinary site
@@ -220,5 +220,31 @@ describe('the classifier reads the URL and nothing else (anti-injection)', () =>
     // The host decides, and the URL parser has already decoded it: a
     // percent-encoded or upper-case spelling of a bank's host is that bank.
     expect(classifyHighRiskUrl('https://WWW.%70aypal.com/x')?.reason).toBe('money-domain');
+  });
+});
+
+// Electron's popup policy still refuses an AI-opened popup towards a
+// payment-like path (electron/browserPopupPolicy.test.cjs pins that side);
+// approvals do not read the path, so this is a separate function.
+describe('hasMoneyMovementPath', () => {
+  it.each([
+    'https://example.com/checkout',
+    'https://example.com/%74ransfer',
+    'https://shop.example/cart/payments/',
+    'https://oa.example.com/finance/payment/list',
+  ])('flags %s', (url) => {
+    expect(hasMoneyMovementPath(url)).toBe(true);
+    expect(isHighRiskUrl(url)).toBe(false);
+  });
+
+  it.each([
+    'https://blog.example/hardwired',
+    'https://bank.example/repayments-explained',
+    'https://search.example/?q=payment',
+    'javascript:alert(1)',
+    'not a url',
+    null,
+  ])('leaves %s alone', (url) => {
+    expect(hasMoneyMovementPath(url)).toBe(false);
   });
 });

@@ -24,6 +24,8 @@ import { offeredToolsHint } from './offeredToolsHint';
 import { useMCPStore } from '@/stores/mcpStore';
 import { mergeToolInventory, summarizeMcpConnectionError, type InventoryCandidate, type InventoryReason } from './toolInventory';
 import { getSettingsReader } from '../agent/ports/settingsReader';
+import { useScheduleStore } from '../../stores/scheduleStore';
+import { useTriggerStore } from '../../stores/triggerStore';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
 import {
@@ -298,6 +300,28 @@ function disabledMcpToolReason(name: string): string | undefined {
   const parsed = parseNamespacedToolName(name);
   if (!parsed || !isMcpServerDisabled(parsed.serverName)) return undefined;
   return `Error: ${format(getI18n().toolResult.capabilitySnapshot.reasonMcpDisabled, { server: parsed.serverName })}`;
+}
+
+/**
+ * The name the user sees in their own list for the scheduled task or trigger an
+ * id-only call (update, delete, pause, resume) points at, so the approval can
+ * say which one it is. Only the user's stored name is used, never text from the
+ * call; no match (or no store) just means the approval names no target.
+ */
+function storedAutomationName(name: string, input: Record<string, unknown>): string | undefined {
+  try {
+    if (name === TOOL_NAMES.MANAGE_SCHEDULED_TASK && typeof input.task_id === 'string') {
+      const tasks = useScheduleStore.getState().tasks;
+      return Object.hasOwn(tasks, input.task_id) ? tasks[input.task_id].name : undefined;
+    }
+    if (name === TOOL_NAMES.MANAGE_TRIGGER && typeof input.trigger_id === 'string') {
+      const triggers = useTriggerStore.getState().triggers;
+      return Object.hasOwn(triggers, input.trigger_id) ? triggers[input.trigger_id].name : undefined;
+    }
+  } catch {
+    // A store that cannot be read must not stop the approval from being asked.
+  }
+  return undefined;
 }
 
 function browserRunMode(toolContext?: ToolExecutionContext): 'attended' | 'unattended' {
@@ -2355,7 +2379,9 @@ export async function checkToolApproval(
       // approval waits (e.g. over IM), so it is labelled as a replace too.
       name === TOOL_NAMES.SAVE_AGENT ? { saveAgentReplaces: input.overwrite === true || await saveAgentWouldReplace(input.name) }
         : name === TOOL_NAMES.SAVE_TEAM ? { saveTeamReplaces: saveTeamWouldReplace(input.name) }
-        : {},
+        : name === TOOL_NAMES.MANAGE_MCP_SERVER && input.action === 'ensure' && typeof input.name === 'string'
+          ? { mcpServerConfigured: Object.hasOwn(useMCPStore.getState().servers, input.name) }
+        : { automationTargetName: storedAutomationName(name, input) },
     );
     if (selfExtension) {
       const selfExtensionCeilingDecision = decideStateChangingToolUnderRunPermissionCeiling(
@@ -2373,7 +2399,7 @@ export async function checkToolApproval(
         const confirmed = await onRequireConfirmation({
           command: selfExtension.summary,
           level: 'warn',
-          reason: t.commandConfirm.selfExtensionReason,
+          reason: selfExtension.reason,
           kind: 'self-extension',
           agentName: toolContext?.agentName,
         }, toolContext?.loopId);

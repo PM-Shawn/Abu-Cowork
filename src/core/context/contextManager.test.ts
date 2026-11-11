@@ -346,14 +346,14 @@ describe('trimOldScreenshots — the model is told what happened', () => {
   // The model was told to inspect a picture that had been removed.
   it('puts the removal note in the text the model actually receives', () => {
     const wire = JSON.stringify(normalizeMessages(trimOldScreenshots(many, 90), { supportsVision: true }));
-    expect(wire).toContain('screenshot(s) removed from history');
+    expect(wire).toContain('omitted from this request');
   });
 
   it('leaves the turns it keeps untouched', () => {
     const few = [screenshotTurn('only', 'z')];
     const wire = JSON.stringify(normalizeMessages(trimOldScreenshots(few, 90), { supportsVision: true }));
     expect(wire).toContain('"z"');
-    expect(wire).not.toContain('screenshot(s) removed from history');
+    expect(wire).not.toContain('omitted from this request');
   });
 
   // Legacy toolCallsForContext entries can lack ids. In that case the whole
@@ -369,7 +369,7 @@ describe('trimOldScreenshots — the model is told what happened', () => {
     } as Message;
 
     const out = trimOldScreenshots([mismatched, ...many], 90);
-    expect(JSON.stringify(out)).not.toContain('[0 screenshot(s) removed');
+    expect(JSON.stringify(out)).not.toContain('[0 earlier images');
   });
 
   // Subagent-recorded entries (fromSubagent) never reach the LLM — they are
@@ -401,7 +401,7 @@ describe('trimOldScreenshots — the model is told what happened', () => {
     expect(raw).toContain('REAL_OLD');
     expect(raw).toContain('REAL_NEW');
     expect(raw).toContain('SUBAGENT_SHOT');
-    expect(raw).not.toContain('screenshot(s) removed from history');
+    expect(raw).not.toContain('omitted from this request');
   });
 
   it('matches completion-order context calls by tool_use id', () => {
@@ -430,7 +430,7 @@ describe('trimOldScreenshots — the model is told what happened', () => {
     expect(contextCalls[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
     expect(contextCalls[1].resultContent?.some((block) => block.type === 'image')).toBe(true);
     expect(contextCalls[2].resultContent?.some((block) => block.type === 'image')).toBe(false);
-    expect(contextCalls[2].result).toContain('screenshot(s) removed from history');
+    expect(contextCalls[2].result).toContain('omitted from this request');
   });
 
   it('retains a message context intact when legacy calls lack tool_use ids', () => {
@@ -458,7 +458,7 @@ describe('trimOldScreenshots — the model is told what happened', () => {
 
     expect(out[0].toolCalls?.[0].resultContent?.some((block) => block.type === 'image')).toBe(false);
     expect(out[0].toolCallsForContext?.[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
-    expect(getRecentLogs({ module: 'contextManager' })).toEqual(expect.arrayContaining([
+    expect(getRecentLogs({ module: 'imageBudget' })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Skipped trimming tool call context without tool_use ids' }),
     ]));
   });
@@ -489,7 +489,7 @@ describe('trimOldScreenshots — the model is told what happened', () => {
 
     expect(out[0].toolCalls?.[0].resultContent?.some((block) => block.type === 'image')).toBe(false);
     expect(out[0].toolCallsForContext?.[0].resultContent?.some((block) => block.type === 'image')).toBe(true);
-    expect(getRecentLogs({ module: 'contextManager' })).toEqual(expect.arrayContaining([
+    expect(getRecentLogs({ module: 'imageBudget' })).toEqual(expect.arrayContaining([
       expect.objectContaining({ message: 'Skipped trimming tool call context without tool_use ids' }),
     ]));
   });

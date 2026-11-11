@@ -4,7 +4,7 @@ import { resolveFileSource, resolveOutputRefSource } from '../session/outputSnap
 import { uint8ArrayToBase64 } from '../../utils/base64';
 import { getBaseName } from '../../utils/pathUtils';
 import { createLogger } from '../logging/logger';
-import { enforceImageBudget } from './imageBudget';
+import { dropOldImages } from './imageBudget';
 
 const logger = createLogger('imageRehydration');
 
@@ -269,5 +269,5 @@ export async function rehydrateForSend(
   // recovery retry regressed once already). A sibling call in agentLoop would
   // reintroduce that trap for the next person.
   if (opts.maxRequestImageBytes === undefined) return rehydrated;
-  return enforceImageBudget(rehydrated, opts.maxRequestImageBytes);
+  return dropOldImages(rehydrated, { maxBytes: opts.maxRequestImageBytes });
 }

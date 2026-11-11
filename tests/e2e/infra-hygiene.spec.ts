@@ -570,7 +570,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     // makes every non-`list` action pass the self-extension confirmation before
     // it runs. Approve it — the claim under test is that even a user-approved
     // create cannot pick its own capability tier, not that the gate is absent.
-    await expect(page.getByRole('heading', { name: /^(新增能力确认|Confirm new capability)$/ }))
+    await expect(page.getByRole('heading', { name: /^(需要你确认|Your confirmation needed)$/ }))
       .toBeVisible({ timeout: READY_TIMEOUT });
     await pressWhenSettled(page.getByRole('button', { name: /^(确认执行|Confirm)$/ }));
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(10);

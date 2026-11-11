@@ -172,6 +172,7 @@ exports[`Tool schema snapshot > all tool schemas match snapshot 1`] = `
     "name": "generate_image",
     "paramNames": [
       "prompt",
+      "reference_images",
       "save_path",
       "size",
       "style",

@@ -29,6 +29,7 @@ import { getCapsPort } from './ports/capsPort';
 import { getExecutionPort } from './ports/executionPort';
 import { getAbortRegistry } from './ports/abortRegistry';
 import { getScratchpadPort } from './ports/scratchpadPort';
+import { withUnattendedBlockedTools } from './unattendedTools';
 import { createEventRouter } from './eventRouter';
 // Type-only import — the runtime routeInput/buildSystemPromptSections calls
 // moved to entryOrchestration.ts (P1-3B-3A item 1, dynamically imported from
@@ -1191,9 +1192,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // send_file only makes sense with an IM reply target; keep it off the roster
   // for every other run (desktop / scheduled / trigger) instead of letting the
   // model discover it and hit the runtime refusal.
-  const effectiveBlockedTools = toolContext.imReplyTarget
-    ? options?.blockedTools
-    : [...(options?.blockedTools ?? []), TOOL_NAMES.SEND_FILE];
+  const effectiveBlockedTools = withUnattendedBlockedTools(
+    toolContext.imReplyTarget
+      ? options?.blockedTools
+      : [...(options?.blockedTools ?? []), TOOL_NAMES.SEND_FILE],
+    toolContext.interactionMode,
+  );
   let computerUseTaskEndPromise: Promise<void> | null = null;
   let computerUseTurnStopPromise: Promise<void> | null = null;
   const endComputerUseTaskLease = (): Promise<void> => {

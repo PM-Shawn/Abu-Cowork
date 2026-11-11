@@ -85,6 +85,7 @@ import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malfo
 import { resolveSubagentToolRoster, checkDispatchToolBoundary, type SubagentRunStanding } from './subagentToolRoster';
 import { browserNarrationSection } from './browserNarrationRules';
 import { PRESENT_FILES_RULE } from './prompts/presentFilesGuidance';
+import { SUBAGENT_RESULT_RULES, USER_FACING_RULES, ASK_BEFORE_GUESSING } from './prompts/conversationRules';
 import { TOOL_NAMES } from '../tools/toolNames';
 import {
   appendPreloadedSkills,
@@ -855,7 +856,9 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
     systemPrompt += `\n\n## Tool and Permission Boundaries
 - Your available tool set and permissions were fixed when this run started and cannot be expanded in this session.
 - If you lack a tool needed to complete the task, tell the parent agent exactly what is missing.
-- Do not work around a missing tool by simulating it or installing alternative software.`;
+- Do not work around a missing tool by simulating it or installing alternative software.
+
+${options.ownsUserTurn === true ? `${USER_FACING_RULES}\n\n${ASK_BEFORE_GUESSING}` : SUBAGENT_RESULT_RULES}`;
 
     // 2. Get + filter tools
     if (Array.isArray(agent.tools) && agent.tools.length > 0) {

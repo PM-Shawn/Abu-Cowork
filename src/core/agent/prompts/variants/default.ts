@@ -26,9 +26,6 @@ ${SYSTEM_SETTINGS_TOOL_LINE}
 
 The last step of a multi-step task should be verification (e.g. list_directory to confirm file operations) — do not rely solely on execution output.`;
 
-export const INTERACTIVE_CLARIFICATION = `### Interactive clarification (ask_user_question)
-When requirements are unclear or multiple equivalent paths exist, prefer ask_user_question to present the user with options rather than making assumptions. If there is a sensible default, use it directly. Dangerous operations still go through the permission confirmation mechanism — do not use this tool for those.`;
-
 // Planning instruction - AI must call report_plan for complex tasks, but simple questions can be answered directly
 export const DEFAULT_PLANNING = `
 ## Execution Rules (must follow)
@@ -59,8 +56,6 @@ When a skill's TRIGGER condition matches, prefer using the skill.
 When a task matches an agent's expertise, prefer delegating to that agent.
 
 ${TOOL_SELECTION_PRINCIPLES}
-
-${INTERACTIVE_CLARIFICATION}
 `;
 
 /**

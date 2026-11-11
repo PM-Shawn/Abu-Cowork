@@ -131,6 +131,29 @@ describe('buildSystemPromptSections compaction purpose', () => {
   });
 });
 
+describe('buildSystemPromptSections - ask rule', () => {
+  const route = { type: 'general', cleanInput: 'hi' } as Parameters<typeof buildSystemPromptSections>[0];
+  const names = async (toolContext?: Parameters<typeof buildSystemPromptSections>[5], im?: Parameters<typeof buildSystemPromptSections>[3]) =>
+    (await buildSystemPromptSections(route, 'Assistant', 'test-conv', im, 0, toolContext)).map((s) => s.name);
+
+  it('carries the ask rule in a foreground run and no unattended note', async () => {
+    const got = await names({ interactionMode: 'foreground' });
+    expect(got).toContain('ask-rule');
+    expect(got).toContain('user-facing-rules');
+    expect(got).not.toContain('unattended-run');
+  });
+
+  it('adds the unattended note for a background run with nobody present', async () => {
+    expect(await names({ interactionMode: 'background' })).toContain('unattended-run');
+  });
+
+  it('does not call an IM run unattended: the person there can answer by text', async () => {
+    const got = await names({ interactionMode: 'background' }, { platform: 'dingtalk', chatId: 'c' } as never);
+    expect(got).toContain('ask-rule');
+    expect(got).not.toContain('unattended-run');
+  });
+});
+
 describe('buildSystemPrompt - security features', () => {
   const basePrompt = '你叫阿布，测试用基础 prompt。';
   const generalRoute = routeInput('你好');

@@ -365,8 +365,8 @@ test('lets Abu read and stop the command', async () => {
   await ask(page, PROMPT, STOPPED_REPLY);
   await showSteps(page);
   await expect(page.getByText(BACKGROUND_STEP, { exact: true })).toBeVisible();
-  await expect(page.getByText(/^查看后台命令的输出 node -e/)).toBeVisible();
-  await expect(page.getByText(/^停止后台命令 node -e/)).toBeVisible();
+  await expect(page.getByText('查看后台任务的输出', { exact: true })).toBeVisible();
+  await expect(page.getByText('停止后台任务', { exact: true })).toBeVisible();
 
   await expect(entry(page, ENTRY_TOTAL)).toBeVisible({ timeout: READY_TIMEOUT });
   await entry(page, ENTRY_TOTAL).click();

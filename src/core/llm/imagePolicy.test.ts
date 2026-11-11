@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { admissionMaxDimension, resolveImagePolicy } from './imagePolicy';
+import { admissionMaxDimension, admissionMaxImageBytes, imageAcceptanceLimits, resolveImagePolicy } from './imagePolicy';
 
 describe('resolveImagePolicy', () => {
   it('gives Anthropic the 2000px multi-image ceiling', () => {
@@ -97,5 +97,32 @@ describe('maxDimension is a global floor, not per-route enforcement', () => {
     expect(admission).toBe(Math.min(...perRoute));
     // The looser routes genuinely do not get their own ceiling.
     expect(perRoute.some((value) => value > admission)).toBe(true);
+  });
+});
+
+// What a provider REJECTS is not what we FIT pictures to at entry. The send-time judge
+// uses the first; composer and read_file fit to the second (the strictest of all routes).
+describe('hard limits (what the API rejects)', () => {
+  it('Claude rejects above 8000 px, DeepSeek above 8192 px; OpenAI scales instead of rejecting', () => {
+    expect(resolveImagePolicy('claude-sonnet-4-6').rejectDimension).toBe(8000);
+    expect(resolveImagePolicy('deepseek-v4-flash').rejectDimension).toBe(8192);
+    expect(resolveImagePolicy('gpt-4o').rejectDimension).toBe(Infinity);
+  });
+
+  it('never sits below the size pictures are fitted to, so a fitted picture always passes', () => {
+    for (const id of ['claude-sonnet-4-6', 'deepseek-v4-flash', 'gpt-4o', 'unknown-x']) {
+      const policy = resolveImagePolicy(id);
+      expect(policy.rejectDimension).toBeGreaterThanOrEqual(policy.maxDimension);
+      expect(policy.maxImageBytes).toBeGreaterThan(0);
+    }
+  });
+
+  it('gives every route a per-image byte ceiling; Claude\'s is the 5 MB of the strictest deployment', () => {
+    expect(resolveImagePolicy('claude-sonnet-4-6').maxImageBytes).toBe(5 * 1024 * 1024);
+    expect(admissionMaxImageBytes()).toBe(5 * 1024 * 1024);
+  });
+
+  it('hands the adapters the hard limits under the names the normalizer reads', () => {
+    expect(imageAcceptanceLimits('claude-sonnet-4-6')).toEqual({ maxImageDimension: 8000, maxImageBytes: 5 * 1024 * 1024 });
   });
 });

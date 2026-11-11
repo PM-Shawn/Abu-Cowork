@@ -2,6 +2,7 @@ import type { ChatOptions, LLMAdapter } from './adapter';
 import { LLMError, classifyError, isContextOverflowMessage } from './adapter';
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
+import { imageAcceptanceLimits } from './imagePolicy';
 import { normalizeMessages, type PreparedContentBlock, type PreparedTurn } from './messageNormalizer';
 import {
   createHeartbeat,
@@ -138,7 +139,10 @@ export class OllamaNativeAdapter implements LLMAdapter {
       throw new LLMError('Ollama request is missing its address', 'invalid_request', { retryable: false });
     }
     const hasTools = !!options.tools?.length && options.declaredCapabilities?.supportsTools !== false;
-    const turns = normalizeMessages(messages, { supportsVision: options.supportsVision !== false });
+    const turns = normalizeMessages(messages, {
+      supportsVision: options.supportsVision !== false,
+      ...imageAcceptanceLimits(options.model),
+    });
     const body: Record<string, unknown> = {
       model: options.model,
       messages: toOllamaMessages(turns, options.systemPrompt, options.volatileContextTail),

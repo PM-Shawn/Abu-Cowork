@@ -510,7 +510,7 @@ test.describe('story 1, a command that has not ended', () => {
     await send(page);
     const row = stepRow(page, commandTitle(FAILING));
     await expect(row.locator('[data-exit-code="1"]')).toHaveText('退出码 1', { timeout: REPLY_TIMEOUT });
-    await expect(row.getByText(/^命令已结束：/)).toBeVisible();
+    await expect(row.getByText('这一步已结束，结果请看详情', { exact: true })).toBeVisible();
 
     const stop = page.getByLabel(/^停止$/);
     await stop.click();

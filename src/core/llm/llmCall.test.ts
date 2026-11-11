@@ -113,6 +113,24 @@ describe('llmCall', () => {
     expect(mockProbeContextWindow).not.toHaveBeenCalled();
   });
 
+  it('asks a model that thinks by default not to think, and keeps the whole budget for the answer', async () => {
+    useSettingsStore.setState({
+      providers: [{
+        ...provider('ds'), source: 'builtin', baseUrl: 'https://api.deepseek.com',
+        models: [{ id: 'deepseek-flash', label: 'deepseek-flash', declaredCapabilities: { thinkingEffort: 'max' } }],
+      }],
+      activeModel: { providerId: 'ds', modelId: 'deepseek-flash' },
+    });
+
+    await llmCall({ messages: [{ role: 'user', content: 'hi' }], maxTokens: 300 });
+
+    expect(mockChat.mock.calls[0][1]).toMatchObject({
+      maxTokens: 300,
+      enableThinking: false,
+      declaredCapabilities: { thinkingEffort: 'off' },
+    });
+  });
+
   it('does not mark a cloud provider as a local server', async () => {
     await llmCall({ messages: [{ role: 'user', content: 'hi' }] });
     const options = mockChat.mock.calls[0][1] as { localServer?: boolean; requestedContextLength?: number };

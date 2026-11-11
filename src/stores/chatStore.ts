@@ -947,6 +947,11 @@ let switchSeq = 0;
 /** Retry reads in flight, one per conversation: the re-entry check of `retryLoadConversation`. */
 const loadRetries = new Map<string, Promise<void>>();
 
+/** First user messages whose model-written title waits for the first reply to end (never persisted). */
+const titlePending = new Map<string, { message: Message; autoTitle: string }>();
+/** Conversations whose title call went out; their next run asks it to step aside. */
+const titleSent = new Set<string>();
+
 export const useChatStore = create<ChatStore>()(
   persist(
     immer((set, get) => ({
@@ -1270,6 +1275,8 @@ export const useChatStore = create<ChatStore>()(
 
       deleteConversation: (id) => {
         conversationPersistenceRevisions.delete(id);
+        titlePending.delete(id);
+        titleSent.delete(id);
         // P1-3c-2 (design doc §3 change 3 / P1-3C-SCOUT-REPORT.md §5
         // "secondary finding"): this abort MUST run before the `conversations`/
         // `conversationIndex` deletion below — verified still true, not just
@@ -1526,6 +1533,12 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         });
+        // A model-written title replaces the slice once the first reply is done (see setConversationStatus).
+        const autoTitle = get().conversations[convId]?.title;
+        if (message.role === 'user' && !message.isSystem && autoTitle
+          && (newTitle || autoTitle === getDefaultConvTitle())) {
+          titlePending.set(convId, { message, autoTitle });
+        }
         // Async write to disk (non-blocking for rendering, tracked so a
         // sidecar run can establish a durability barrier before it settles).
         trackConversationPersistence(
@@ -2673,6 +2686,7 @@ export const useChatStore = create<ChatStore>()(
 
       setConversationStatus: (convId, status) => {
         let shouldReindex = false;
+        let runEnded = false;
         const isTerminal = status === 'completed' || status === 'error';
         const nextAgentStates = isTerminal
           ? removeConversationAgentState(get().agentStates, convId)
@@ -2700,6 +2714,7 @@ export const useChatStore = create<ChatStore>()(
             // every transition that re-indexed before still does.
             shouldReindex = prevStatus !== status && (isTerminal || prevStatus === 'running');
             conv.status = status;
+            runEnded = prevStatus === 'running' && status !== 'running';
             if (status === 'completed') {
               conv.completedAt = Date.now();
             } else {
@@ -2707,6 +2722,19 @@ export const useChatStore = create<ChatStore>()(
             }
           }
         });
+        // A title call still out must not make the next run wait (one-slot local server, one-request key).
+        if (status === 'running' && titleSent.delete(convId)) {
+          import('../core/session/titleGen').then(({ abortConversationTitle }) => abortConversationTitle(convId)).catch(() => {});
+        }
+        // The first reply is over (finished, failed or stopped): now the title side call may go out.
+        const pendingTitle = runEnded ? titlePending.get(convId) : undefined;
+        if (pendingTitle) {
+          titlePending.delete(convId);
+          titleSent.add(convId);
+          import('../core/session/titleGen')
+            .then(({ requestConversationTitle }) => requestConversationTitle(convId, pendingTitle.message, pendingTitle.autoTitle))
+            .catch(() => {});
+        }
         // Live-freshness write-through (message-storage hybrid P2): turn-end
         // is the moment a conversation's messages are settled for this round,
         // so re-index its catalog row + FTS body now instead of waiting for

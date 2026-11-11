@@ -8,6 +8,7 @@ import {
   parsePlanSteps,
 } from './workflowExtractor';
 import type { ToolCall } from '@/types';
+import { getToolLabel } from './toolLabels';
 
 describe('workflowExtractor', () => {
   // ── extractWorkflowSteps ──
@@ -28,6 +29,28 @@ describe('workflowExtractor', () => {
         '查看后台任务的输出',
         '停止后台任务',
       ]);
+    });
+
+    it('titles every tool call the way the live step title does (one label source)', () => {
+      const inputs: Array<[string, Record<string, unknown>]> = [
+        ['read_file', { path: '/a/b.txt' }],
+        ['delete_file', { path: '/a/old.txt' }],
+        ['list_directory', { path: '/a/docs' }],
+        ['web_search', { query: 'quarterly results' }],
+        ['http_fetch', { url: 'https://example.com/a' }],
+        ['apply_patch', {}],
+        ['delegate_to_agent', { agent_name: 'Reviewer' }],
+        ['custom_tool', {}],
+      ];
+      const steps = extractWorkflowSteps(inputs.map(([name, input], i) => ({ id: `tc${i}`, name, input, result: 'ok' })));
+      expect(steps.map((step) => step.label)).toEqual(
+        inputs.map(([name, input]) => getToolLabel(name, input, 'zh-CN').label),
+      );
+    });
+
+    it('never shows a tool id as a step title', () => {
+      const steps = extractWorkflowSteps([{ id: 'tc1', name: 'custom_tool', input: {}, result: 'ok' }]);
+      expect(steps[0].label).not.toContain('custom_tool');
     });
 
     it('thinking content without duration → running (still in flight)', () => {
@@ -188,7 +211,6 @@ describe('workflowExtractor', () => {
       }];
       const steps = extractWorkflowSteps(toolCalls);
       expect(steps[0].type).toBe('tool');
-      expect(steps[0].label).toContain('custom_tool');
     });
 
     it('maps search tools correctly', () => {

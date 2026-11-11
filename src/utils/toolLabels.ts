@@ -37,9 +37,12 @@ export function parseMCPToolName(
   };
 }
 
+/** The names a command-running tool call goes by (ours and the common aliases models use). */
+export const COMMAND_TOOL_NAMES: readonly string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
+
 /** A tool call whose title depends on a model-written purpose, not on any other part of its input. */
 export function isCommandToolName(toolName: string): boolean {
-  return toolName === TOOL_NAMES.RUN_COMMAND || toolName === 'execute' || toolName === 'shell' || toolName === 'bash';
+  return COMMAND_TOOL_NAMES.includes(toolName);
 }
 
 function getFileName(path: string): string {

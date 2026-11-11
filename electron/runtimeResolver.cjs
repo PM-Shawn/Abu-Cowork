@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const { REPO_ROOT } = require('./appEnv.cjs');
@@ -171,6 +172,48 @@ function dedupePathEntries(entries, platform) {
   return result;
 }
 
+// Chinese-capable families matplotlib should try, per platform, before DejaVu Sans. Fonts that are not
+// installed are skipped by matplotlib, so a short list of the fonts each system ships is enough.
+const MATPLOTLIB_CJK_FAMILIES = {
+  win32: ['Microsoft YaHei', 'SimHei', 'SimSun', 'Microsoft JhengHei'],
+  darwin: ['PingFang SC', 'Heiti SC', 'Hiragino Sans GB', 'STHeiti', 'Arial Unicode MS'],
+  // matplotlib reads only the first face of a .ttc, so Noto CJK registers as "Noto Sans CJK JP" (the Han glyphs
+  // are the same set); wqy-zenhei registers as "WenQuanYi Zen Hei". The SC names cover a standalone .otf/.ttf.
+  linux: ['Noto Sans CJK SC', 'Noto Sans CJK JP', 'Source Han Sans SC', 'WenQuanYi Zen Hei', 'WenQuanYi Micro Hei'],
+};
+
+function matplotlibRc(platform) {
+  const families = [...(MATPLOTLIB_CJK_FAMILIES[platform] || MATPLOTLIB_CJK_FAMILIES.linux), 'DejaVu Sans'];
+  return [
+    '# Written by the app: lets a plain matplotlib chart show Chinese without any extra code.',
+    'font.family: sans-serif',
+    `font.sans-serif: ${families.join(', ')}`,
+    'axes.unicode_minus: False',
+    '',
+  ].join('\n');
+}
+
+/**
+ * A writable folder for matplotlib's configuration and font cache, holding the rc file above. Under the
+ * macOS sandbox the default (~/.matplotlib) is not writable, so matplotlib would rebuild its font cache
+ * on every run (seconds each time); the temp folder is writable on every platform. Returns null when the
+ * folder cannot be prepared: matplotlib then falls back to its own default.
+ */
+function prepareMatplotlibConfigDir(platform, options = {}) {
+  const dir = options.matplotlibConfigDir || path.join(os.tmpdir(), 'abu-matplotlib');
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const rc = path.join(dir, 'matplotlibrc');
+    const wanted = matplotlibRc(platform);
+    let current = null;
+    try { current = fs.readFileSync(rc, 'utf8'); } catch { /* not there yet */ }
+    if (current !== wanted) fs.writeFileSync(rc, wanted);
+    return dir;
+  } catch {
+    return null;
+  }
+}
+
 function withBundledRuntimeEnv(app, baseEnv = process.env, options = {}) {
   const platform = platformFor(options);
   const layout = runtimeLayout(app, options);
@@ -199,6 +242,9 @@ function withBundledRuntimeEnv(app, baseEnv = process.env, options = {}) {
   env.PYTHONUTF8 = '1';
   env.PYTHONPATH = '';
   env.PYTHONHOME = '';
+  const matplotlibDir = prepareMatplotlibConfigDir(platform, options);
+  if (matplotlibDir) env.MPLCONFIGDIR = matplotlibDir;
+  else delete env.MPLCONFIGDIR;
   return env;
 }
 
@@ -207,4 +253,5 @@ module.exports = {
   runtimeLayout,
   resolveBundledProgram,
   withBundledRuntimeEnv,
+  matplotlibRc,
 };

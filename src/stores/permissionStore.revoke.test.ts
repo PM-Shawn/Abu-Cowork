@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { usePermissionStore } from './permissionStore';
 import { getAuthorizedDirs } from '../core/tools/pathSafety';
 
@@ -30,5 +30,29 @@ describe('permissionStore · revoking a grant', () => {
     expect(Object.keys(usePermissionStore.getState().sessionGrants)).toEqual([`${FOLDER}/archive`]);
     expect(getAuthorizedDirs()).not.toContain(FOLDER);
     usePermissionStore.getState().revokePermission(`${FOLDER}/archive`);
+  });
+
+  it('keeps only read of the home folder, or a folder above it, in the stored grant', async () => {
+    const { homeDir } = await import('@tauri-apps/api/path');
+    const home = await homeDir();
+    for (const root of [home, '/Users']) {
+      usePermissionStore.getState().grantPermission(root, ['read', 'write', 'execute'], 'always');
+      await vi.waitFor(() => {
+        expect(usePermissionStore.getState().persistedGrants[root]?.capabilities).toEqual(['read']);
+      });
+      usePermissionStore.getState().revokePermission(root);
+    }
+  });
+
+  it('does not persist a write grant on a system or program folder', () => {
+    for (const path of ['/Applications/Tool.app', '/opt/homebrew/bin', '/usr/local/bin/tool']) {
+      usePermissionStore.getState().grantPermission(path, ['read', 'write'], 'always');
+      expect(usePermissionStore.getState().persistedGrants[path]).toBeUndefined();
+      expect(usePermissionStore.getState().sessionGrants[path]?.duration).toBe('session');
+      usePermissionStore.getState().revokePermission(path);
+    }
+    usePermissionStore.getState().grantPermission('/Users/testuser/Documents', ['read', 'write'], 'always');
+    expect(usePermissionStore.getState().persistedGrants['/Users/testuser/Documents']).toBeDefined();
+    usePermissionStore.getState().revokePermission('/Users/testuser/Documents');
   });
 });

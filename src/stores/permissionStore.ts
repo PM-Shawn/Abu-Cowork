@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { persist } from 'zustand/middleware';
-import { authorizeWorkspace, revokeWorkspace } from '../core/tools/pathSafety';
+import { authorizeWorkspace, isHomeOrAncestor, isProgramFolder, revokeWorkspace } from '../core/tools/pathSafety';
 import { isWindows } from '../utils/platform';
 
 export type PermissionDuration = 'once' | 'session' | '24h' | 'always';
@@ -118,9 +118,15 @@ export const usePermissionStore = create<PermissionStore>()(
         });
       },
 
-      grantPermission: (path, capabilities, duration) => {
+      grantPermission: (path, capabilities, requestedDuration) => {
         // Normalize path: backslashes → forward slashes, collapse multiple slashes, remove trailing slash
         const normalizedPath = path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/+$/, '');
+        // A program or system folder is never remembered across sessions
+        // (see `isProgramFolder`); home is judged below once its location is known.
+        const duration: PermissionDuration = isProgramFolder(normalizedPath) && capabilities.includes('write')
+          && (requestedDuration === 'always' || requestedDuration === '24h')
+          ? 'session'
+          : requestedDuration;
         const grant: PermissionGrant = {
           path: normalizedPath,
           grantedAt: Date.now(),
@@ -146,6 +152,20 @@ export const usePermissionStore = create<PermissionStore>()(
             state.sessionGrants[normalizedPath] = grant;
           }
         });
+
+        // The home folder (and a folder above it) is never a write unit: the
+        // grant keeps `read` only, in the store as well as in pathSafety.
+        if (capabilities.some((c) => c !== 'read')) {
+          void isHomeOrAncestor(normalizedPath).then((covers) => {
+            if (!covers) return;
+            set((state) => {
+              for (const grants of [state.persistedGrants, state.sessionGrants]) {
+                const stored = grants[normalizedPath];
+                if (stored) stored.capabilities = stored.capabilities.filter((c) => c === 'read');
+              }
+            });
+          });
+        }
       },
 
       revokePermission: (path) => {

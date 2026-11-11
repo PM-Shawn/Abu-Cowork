@@ -469,6 +469,12 @@ interface AuthorizedWorkspaceGrant {
   capabilities: Set<WorkspaceCapability>;
   /** Frozen when the grant is created; authority must not follow a retargeted link. */
   canonicalRoot: Promise<string | null>;
+  /**
+   * Settles once a grant of the home folder (or a folder above it) has lost its
+   * write capability: home is never one unit of a write grant, whoever made the
+   * grant (a picked workspace, a remembered answer, a run's scope).
+   */
+  homeGuard: Promise<void>;
 }
 
 const authorizedWorkspaces: Map<string, AuthorizedWorkspaceGrant> = new Map();
@@ -545,6 +551,7 @@ function addAuthorizedWorkspace(
   const existing = target.get(normalized);
   if (existing) {
     for (const c of caps) existing.capabilities.add(c);
+    existing.homeGuard = dropWriteFromHomeGrant(existing, normalized);
   } else {
     // Start resolution immediately. The promise captures the root at grant
     // time and is reused for the whole scope instead of following later
@@ -562,11 +569,57 @@ function addAuthorizedWorkspace(
         });
         return normalized;
       });
-    target.set(normalized, {
+    const grant: AuthorizedWorkspaceGrant = {
       capabilities: new Set(caps),
       canonicalRoot,
-    });
+      homeGuard: Promise.resolve(),
+    };
+    grant.homeGuard = dropWriteFromHomeGrant(grant, normalized);
+    target.set(normalized, grant);
   }
+}
+
+/**
+ * Whether `root` is the home folder or a folder above it, in its own spelling
+ * or (`canonicalHome`) its real one. Only home itself is judged: a folder below
+ * it is a write unit like any other.
+ */
+function coversHome(root: string, home: string): boolean {
+  return isPathWithin(home, root);
+}
+
+/** Whether `path` is the home folder or a folder above it (see `dropWriteFromHomeGrant`). */
+export async function isHomeOrAncestor(path: string): Promise<boolean> {
+  const home = normalizePath(await getHomeDir());
+  if (coversHome(normalizePath(path), home)) return true;
+  const canonicalHome = await canonicalizePolicyAnchor(home);
+  const resolved = await resolvePathForPolicy(path);
+  return Boolean(canonicalHome && resolved.ok && coversHome(resolved.canonicalPath, canonicalHome));
+}
+
+/**
+ * Take `write` off a grant whose root contains the home folder, so a grant that
+ * a person picked (the folder picker offers `~`) or that was remembered as
+ * "always" reads but never writes. Applied when the grant is made; the part
+ * that needs the real home location finishes asynchronously, and every grant
+ * match waits for it (`homeGuard`). Where home is already known the capability
+ * goes at once, so the sandbox's writable list never holds it.
+ */
+function dropWriteFromHomeGrant(grant: AuthorizedWorkspaceGrant, root: string): Promise<void> {
+  if (cachedHomeDir !== null && coversHome(root, normalizePath(cachedHomeDir))) {
+    grant.capabilities.delete('write');
+  }
+  return (async () => {
+    const home = await getHomeDir();
+    if (coversHome(root, normalizePath(home))) {
+      grant.capabilities.delete('write');
+      return;
+    }
+    const [canonicalRoot, canonicalHome] = await Promise.all([grant.canonicalRoot, canonicalizePolicyAnchor(home)]);
+    if (canonicalRoot && canonicalHome && coversHome(canonicalRoot, canonicalHome)) {
+      grant.capabilities.delete('write');
+    }
+  })().catch(() => undefined);
 }
 
 /**
@@ -1184,6 +1237,7 @@ async function matchAuthorizedWorkspaces(
   let lexical = false;
   let canonical = false;
   for (const [workspace, grant] of target) {
+    if (capability === 'write') await grant.homeGuard;
     if (isBlankWorkspaceGrant(workspace) || !grant.capabilities.has(capability)) continue;
     if (grantsWithin !== undefined && !isPathWithin(workspace, grantsWithin)) continue;
     if (isPathWithin(lexicalPath, workspace)) lexical = true;
@@ -1203,17 +1257,60 @@ function isAuthorizedWorkspaceMatch(match: CanonicalMatch, scopeId?: Authorizati
   return match.canonical && (scopeId === undefined || match.lexical);
 }
 
-async function getImplicitRoots(): Promise<string[]> {
+async function getImplicitRoots(forWrite = false): Promise<string[]> {
   const roots = [...ALWAYS_ALLOWED_PATHS, await getRuntimeTempDir()];
   if (isWindows()) roots.push(`${await getHomeDir()}/AppData/Local/Temp`);
-  return [...new Set(roots.map((root) => normalizePath(root)))];
+  // `/Applications` is readable so app bundles can be inspected; it is not a
+  // place to write without asking (`isProgramFolder`).
+  return [...new Set(roots.map((root) => normalizePath(root)))]
+    .filter((root) => !forWrite || !isListedProgramFolder(root));
 }
+
+/** The Windows system and program folders on any drive (`D:/Windows`, `E:/Program Files`). */
+const WIN_ANY_DRIVE_SYSTEM_FOLDER = /^([a-z]:)\/(windows|program files|program files \(x86\))(?:\/|$)/;
 
 function getWriteBlockedRoot(path: string): string | null {
   const writeBlocked = isWindows()
     ? [...SYSTEM_PATHS_WRITE_BLOCKED, ...WIN_SYSTEM_PATHS_WRITE_BLOCKED]
     : SYSTEM_PATHS_WRITE_BLOCKED;
-  return writeBlocked.find((root) => isPathWithin(path, root)) ?? null;
+  const root = writeBlocked.find((candidate) => isPathWithin(path, candidate));
+  if (root) return root;
+  if (isWindows()) {
+    const match = WIN_ANY_DRIVE_SYSTEM_FOLDER.exec(normalizePath(path).toLowerCase());
+    if (match) return `${match[1]}/${match[2]}`;
+  }
+  return null;
+}
+
+/**
+ * Folders where programs live that are not closed to writes outright: the
+ * application folders, package-manager prefixes and shared program data. A
+ * write there is asked about for the file each time and an answer is never
+ * remembered across sessions: a "always" on `/opt/homebrew/bin` or
+ * `/Applications` would let any later task replace an installed program.
+ */
+const PROGRAM_FOLDERS_POSIX = ['/Applications', '/opt', '/usr/local', '/Users/Shared'];
+const PROGRAM_FOLDERS_HOME = ['Applications', 'AppData/Local/Programs'];
+const WIN_ANY_DRIVE_PROGRAM_DATA = /^[a-z]:\/programdata(?:\/|$)/;
+
+export function isProgramFolder(path: string): boolean {
+  return isListedProgramFolder(path) || getWriteBlockedRoot(normalizePath(path)) !== null;
+}
+
+/** `isProgramFolder` for the folders named in the lists above (not the write-blocked system roots). */
+function isListedProgramFolder(path: string): boolean {
+  const normalized = normalizePath(path);
+  if (isWindows()) {
+    if (WIN_ANY_DRIVE_PROGRAM_DATA.test(normalized.toLowerCase())) return true;
+    if (WIN_ANY_DRIVE_SYSTEM_FOLDER.test(normalized.toLowerCase())) return true;
+  } else if (PROGRAM_FOLDERS_POSIX.some((root) => isPathWithin(normalized, root))) {
+    return true;
+  }
+  if (cachedHomeDir !== null) {
+    const home = normalizePath(cachedHomeDir);
+    return PROGRAM_FOLDERS_HOME.some((root) => isPathWithin(normalized, `${home}/${root}`));
+  }
+  return false;
 }
 
 function canonicalScopeEscapeResult(): PathCheckResult {
@@ -1586,7 +1683,7 @@ export async function checkWritePath(
   const implicitMatch = await matchResolvedRoots(
     resolved.lexicalPath,
     resolved.canonicalPath,
-    await getImplicitRoots(),
+    await getImplicitRoots(true),
   );
   if (implicitMatch.lexical && implicitMatch.canonical) {
     return { allowed: true, resolvedPath: resolved.canonicalPath };
@@ -1681,6 +1778,7 @@ async function outsideHomeWriteFolder(
   if (parent === null || canonicalParent === null) return null;
   if (isPathWithin(home, parent) || isPathWithin(canonicalHome, canonicalParent)) return null;
   if (getWriteBlockedRoot(parent) || getWriteBlockedRoot(canonicalParent)) return null;
+  if (isProgramFolder(parent) || isProgramFolder(canonicalParent)) return null;
   return parent;
 }
 

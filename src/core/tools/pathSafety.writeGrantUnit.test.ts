@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { lstat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
-import { authorizeWorkspace, checkWritePath, revokeWorkspace } from './pathSafety';
+import { authorizeWorkspace, checkReadPath, checkWritePath, getAuthorizedWritablePaths, revokeWorkspace } from './pathSafety';
 
 vi.mock('../../utils/electronHost', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../utils/electronHost')>()),
@@ -76,5 +76,42 @@ describe('pathSafety · what a write grant covers', () => {
     } finally {
       revokeWorkspace(`${HOME}/Documents`);
     }
+  });
+
+  it.each([HOME, '/Users'])('a grant of %s reads but never writes: the home folder is not a write unit', async (root) => {
+    authorizeWorkspace(root, ['read', 'write']);
+    try {
+      expect((await checkReadPath(`${HOME}/Documents/a.txt`)).allowed).toBe(true);
+      expect((await checkWritePath(`${HOME}/Library/Application Support/Foo/x.txt`)).allowed).toBe(false);
+      expect((await checkWritePath(`${HOME}/.config/git/hooks/pre-commit`)).allowed).toBe(false);
+      const documents = await checkWritePath(`${HOME}/Documents/a.txt`);
+      expect(documents).toMatchObject({ allowed: false, needsPermission: true, permissionPath: `${HOME}/Documents` });
+      expect(getAuthorizedWritablePaths()).not.toContain(root);
+    } finally {
+      revokeWorkspace(root);
+    }
+  });
+
+  it('a home alias of another spelling is not a write unit either', async () => {
+    vi.mocked(canonicalizeElectronPathForPolicy).mockImplementation(async (candidate) => {
+      const value = String(candidate);
+      return value.startsWith('/Volumes/Mac/Users/testuser') ? value.replace('/Volumes/Mac', '') : value;
+    });
+    authorizeWorkspace('/Volumes/Mac/Users/testuser', ['read', 'write']);
+    try {
+      expect((await checkWritePath(`${HOME}/Library/Application Support/Foo/x.txt`)).allowed).toBe(false);
+    } finally {
+      revokeWorkspace('/Volumes/Mac/Users/testuser');
+    }
+  });
+
+  it.each([
+    ['/Applications/Tool.app/Contents/x.plist', '/Applications/Tool.app/Contents/x.plist'],
+    ['/opt/homebrew/bin/tool', '/opt/homebrew/bin/tool'],
+  ])('keeps a write to %s per file: no folder grant on a program folder', async (target, unit) => {
+    const result = await checkWritePath(target);
+    expect(result.needsPermission).toBe(true);
+    expect(result.permissionPath).toBe(unit);
+    expect(result.permissionIsFolder).toBeUndefined();
   });
 });

@@ -54,4 +54,19 @@ describe('pathSafety · what a write grant covers on Windows', () => {
     const result = await checkWritePath(`${HOME}\\AppData\\Roaming\\SomeApp\\a.json`);
     expect(result.permissionIsFolder).toBeUndefined();
   });
+
+  it('keeps a write to the shared program data per file', async () => {
+    const result = await checkWritePath('C:\\ProgramData\\Tool\\a.json');
+    expect(result.needsPermission).toBe(true);
+    expect(result.permissionIsFolder).toBeUndefined();
+  });
+
+  it.each(['D:\\Windows\\System32\\a.dll', 'E:\\Program Files\\Tool\\a.dll', 'D:\\Program Files (x86)\\Tool\\a.dll'])(
+    'refuses a write under the system or program folder of any drive: %s',
+    async (target) => {
+      const result = await checkWritePath(target);
+      expect(result.allowed).toBe(false);
+      expect(result.needsPermission).toBeUndefined();
+    },
+  );
 });

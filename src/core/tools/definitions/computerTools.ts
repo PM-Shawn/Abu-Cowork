@@ -30,6 +30,7 @@ import type {
   ToolResultContent,
 } from '../../../types';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
+import { effectivePermissionMode } from '../../permissions/effectivePermissionMode';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
 import { useChatStore } from '../../../stores/chatStore';
 import { resolveCapabilities } from '../../llm/modelCapabilities';
@@ -341,9 +342,7 @@ async function beginComputerUseSession(
       category: input.consequence,
       summary: input.consequence_detail ?? '',
     },
-    permissionMode: currentConversationMode
-      ?? context.permissionMode
-      ?? getSettingsReader().getSnapshot().permissionMode,
+    permissionMode: effectivePermissionMode(currentConversationMode, context.permissionMode),
   }));
   if (response.status === 'target-error') {
     throw new ComputerProtocolFailure(response.error);
@@ -1557,11 +1556,10 @@ All pixel coordinates use screenshot space (max width ${SCREENSHOT_MAX_WIDTH}px)
       }
       const app = explicitTargetApp(input);
       if (!app) return t.errTargetRequired;
-      const permissionMode = (context.conversationId
-        ? useChatStore.getState().conversations[context.conversationId]?.permissionMode
-        : undefined)
-        ?? context.permissionMode
-        ?? getSettingsReader().getSnapshot().permissionMode;
+      const permissionMode = effectivePermissionMode(
+        context.conversationId ? useChatStore.getState().conversations[context.conversationId]?.permissionMode : undefined,
+        context.permissionMode,
+      );
       const consentPause = beginComputerUseConsentPause(context?.conversationId ?? null);
       let response;
       try {

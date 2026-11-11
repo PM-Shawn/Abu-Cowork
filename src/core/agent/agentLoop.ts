@@ -21,6 +21,7 @@ import {
 import { describeManagedModelRevoked, describeManagedProviderUnreachable, describeModelUnavailable } from '../../utils/modelUnavailableCopy';
 import { resolveEntryModel } from './resolveEntryModel';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
+import { effectivePermissionMode } from '../permissions/effectivePermissionMode';
 import { getChatDelta } from './ports/chatDelta';
 import { getConversationReader } from './ports/conversationReader';
 import { settingsForConversation } from './conversationSettings';
@@ -1072,8 +1073,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     loopId,
     interactionMode: runInteractionMode,
     initiatedBy: options?.initiatedBy,
-    permissionMode: precomputeConversation?.permissionMode
-      ?? getSettingsReader().getSnapshot().permissionMode,
+    permissionMode: effectivePermissionMode(precomputeConversation?.permissionMode),
     authorizationScopeId: options?.authorizationScopeId,
     runPermissionCeiling: options?.runPermissionCeiling,
   };
@@ -1166,8 +1166,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     conversationId,
     interactionMode: runInteractionMode,
     initiatedBy: options?.initiatedBy,
-    permissionMode: _convForContext?.permissionMode
-      ?? getSettingsReader().getSnapshot().permissionMode,
+    permissionMode: effectivePermissionMode(_convForContext?.permissionMode),
     runPermissionCeiling: options?.runPermissionCeiling,
     // Team mode: roster the leader may delegate to (enforced in the dispatch tools).
     teamRoster: route.team ? teamRosterNames(route.team) : undefined,

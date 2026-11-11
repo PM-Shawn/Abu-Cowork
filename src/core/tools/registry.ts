@@ -26,6 +26,7 @@ import { mergeToolInventory, summarizeMcpConnectionError, type InventoryCandidat
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { useChatStore } from '../../stores/chatStore';
 import { getPermissionStrategy } from '../permissions/permissionMode';
+import { effectivePermissionMode } from '../permissions/effectivePermissionMode';
 import {
   answersPageDialog,
   browserToolTargetsPage,
@@ -1232,8 +1233,7 @@ export async function checkToolApproval(
       }),
     }, loopId);
   }
-  const convPermissionMode = conversation?.permissionMode;
-  const permissionMode = convPermissionMode ?? getSettingsReader().getSnapshot().permissionMode;
+  const permissionMode = effectivePermissionMode(conversation?.permissionMode);
   const strategy = getPermissionStrategy(permissionMode);
   const runPermissionCeiling = getRunPermissionCeilingFromContext(toolContext);
   const toolCeilingDecision = decideToolUnderRunPermissionCeiling(runPermissionCeiling, name, input);

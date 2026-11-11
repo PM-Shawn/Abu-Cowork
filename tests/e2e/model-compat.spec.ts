@@ -382,8 +382,8 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     await expectRunEnded(page);
 
     expect(mock!.getRequests).toContain('/api/v0/models');
-    // 请求发出前就停下：模拟服务一次对话请求都没收到
-    expect(mock!.requests).toHaveLength(0);
+    // 请求发出前就停下：模拟服务一次对话请求都没收到（标题请求不算，它与任务请求无关）
+    expect(taskRequests(mock!)).toHaveLength(0);
     await expect(page.getByText('abu-e2e-never-sent')).toHaveCount(0);
   });
 

@@ -18,7 +18,7 @@ export interface MockRequest {
   authorization: string | undefined;
   body: unknown;
   pathname: string;
-  purpose: 'compression' | 'memory' | 'task';
+  purpose: 'compression' | 'memory' | 'task' | 'title';
   responseAborted: boolean;
 }
 
@@ -67,15 +67,82 @@ export interface OpenAiMockOptions {
   compressionResponseText?: string;
   /** Controls the compression response for cancellation and failure journeys. */
   compressionReply?: MockReplyPlan;
+  /** The title every title request is answered with (default: the first message's opening words). */
+  titleResponseText?: string;
 }
 
 /** Which kind of model call a request body is: memory extraction, compression, or the task itself. */
 export function classifyMockRequestPurpose(body: unknown): MockRequest['purpose'] {
-  return isMemoryExtractionRequest(body)
-    ? 'memory'
-    : isCompressionRequest(body)
-      ? 'compression'
-      : 'task';
+  return isTitleRequest(body)
+    ? 'title'
+    : isMemoryExtractionRequest(body)
+      ? 'memory'
+      : isCompressionRequest(body)
+        ? 'compression'
+        : 'task';
+}
+
+/**
+ * The side call that names a new conversation once its first reply has ended
+ * (src/core/session/titleGen.ts). It is not a task turn: scripted mocks answer
+ * it on their own and never spend a scripted reply on it.
+ */
+export function isTitleRequest(body: unknown): boolean {
+  if (!body || typeof body !== 'object' || !('messages' in body)) return false;
+  const messages = (body as { messages?: unknown }).messages;
+  return Array.isArray(messages) && messages.some((message) => {
+    if (!message || typeof message !== 'object') return false;
+    const candidate = message as { content?: unknown; role?: unknown };
+    return candidate.role === 'system' &&
+      typeof candidate.content === 'string' &&
+      candidate.content.startsWith('You name chat conversations.');
+  });
+}
+
+/**
+ * The title a mock answers a title request with: the opening words of the first
+ * message, which is what the conversation was already called, so a journey that
+ * reads the sidebar sees the same text as before titles were model-written.
+ * A journey that tests the title itself passes its own text.
+ */
+export function mockTitleFor(body: unknown, override?: string): string {
+  if (override !== undefined) return override;
+  const messages = (body as { messages?: { role?: string; content?: unknown }[] }).messages ?? [];
+  const user = messages.find((message) => message.role === 'user');
+  const content = typeof user?.content === 'string' ? user.content : '';
+  const first = /<first_message>\n([\s\S]*?)\n<\/first_message>/.exec(content)?.[1] ?? '';
+  return first.slice(0, 30) || 'E2E title';
+}
+
+/**
+ * Answers a title request on `res` and returns true; returns false for any other
+ * request so a spec-private mock can call it first and carry on. Both the
+ * streamed and the plain-JSON shape are served, like a real endpoint.
+ */
+export function answerTitleRequest(body: unknown, res: ServerResponse, override?: string): boolean {
+  if (!isTitleRequest(body)) return false;
+  const text = mockTitleFor(body, override);
+  const streamed = !(typeof body === 'object' && body && (body as { stream?: unknown }).stream === false);
+  if (!streamed) {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({
+      id: 'chatcmpl-abu-e2e-title',
+      object: 'chat.completion',
+      created: 0,
+      model: TEST_MODEL_ID,
+      choices: [{ index: 0, message: { content: text, role: 'assistant' }, finish_reason: 'stop' }],
+    }));
+    return true;
+  }
+  res.writeHead(200, {
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+    'content-type': 'text/event-stream; charset=utf-8',
+  });
+  res.write(sseChunk(text, null));
+  res.write(sseChunk('', 'stop'));
+  res.end('data: [DONE]\n\n');
+  return true;
 }
 
 export async function startOpenAiMock(
@@ -122,6 +189,10 @@ export async function startOpenAiMock(
     }
 
     requests.push(mockRequest);
+    if (purpose === 'title') {
+      answerTitleRequest(body, res, options.titleResponseText);
+      return;
+    }
     const replySource =
       purpose === 'memory'
         ? { kind: 'complete' as const, responseText: '[]' }
@@ -298,6 +369,10 @@ function isCompressionRequest(body: unknown): boolean {
 
 export function taskRequests(mock: OpenAiMock): MockRequest[] {
   return mock.requests.filter((request) => request.purpose === 'task');
+}
+
+export function titleRequests(mock: OpenAiMock): MockRequest[] {
+  return mock.requests.filter((request) => request.purpose === 'title');
 }
 
 export function compressionRequests(mock: OpenAiMock): MockRequest[] {

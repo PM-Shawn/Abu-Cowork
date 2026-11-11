@@ -18,6 +18,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { answerTitleRequest } from './openAiMock';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -128,6 +129,9 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlan[]): Promise<Op
       res.end(JSON.stringify({ error: 'unexpected local E2E mock route' }));
       return;
     }
+
+    // The title call that follows a first reply is not a scripted turn (src/core/session/titleGen.ts).
+    if (answerTitleRequest(body, res)) return;
 
     requests.push({
       authorization: req.headers.authorization,

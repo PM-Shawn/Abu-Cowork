@@ -32,6 +32,21 @@ const CLOSED_READS = [
   `${HOME}/Documents/client.p12`,
   `${HOME}/Documents/work/.env`,
   `${HOME}/Documents/work/.env.production`,
+  `${HOME}/.bash_history`,
+  `${HOME}/.zsh_history`,
+  `${HOME}/.local/share/fish/fish_history`,
+  `${HOME}/.python_history`,
+  `${HOME}/.config/op/config`,
+  `${HOME}/.config/doctl/config.yaml`,
+  `${HOME}/Library/Application Support/Slack/Cookies`,
+  `${HOME}/Library/Application Support/discord/Local Storage/leveldb/000005.ldb`,
+  `${HOME}/Library/Application Support/Code/Cookies`,
+  `${HOME}/Library/Application Support/Cursor/User/globalStorage/state.vscdb`,
+  `${HOME}/Documents/work/id_rsa_work`,
+  `${HOME}/Documents/work/id_ed25519_sk`,
+  `${HOME}/Documents/work/deploy_ed25519`,
+  `${HOME}/Documents/work/AuthKey_ABC123.p8`,
+  `${HOME}/Documents/work/release.jks`,
 ];
 
 describe('pathSafety · credential locations are closed to reads', () => {
@@ -84,12 +99,6 @@ describe('pathSafety · credential locations are closed to reads', () => {
     expect((await checkReadPath(`${HOME}/Documents/wg0.conf`)).denialKind).toBe('blocked');
   });
 
-  it('does not read a key-like file that is too large to be one', async () => {
-    vi.mocked(stat).mockResolvedValueOnce({ size: 5_000_000, isDirectory: false } as never);
-    expect((await checkReadPath(`${HOME}/Documents/big.key`)).allowed).toBe(true);
-    expect(readFile).not.toHaveBeenCalled();
-  });
-
   it('closes a key-like file whose text cannot be read to tell', async () => {
     vi.mocked(readFile).mockRejectedValueOnce(new Error('EACCES'));
     expect((await checkReadPath(`${HOME}/Documents/x.key`)).denialKind).toBe('blocked');
@@ -101,6 +110,34 @@ describe('pathSafety · credential locations are closed to reads', () => {
       expect((await checkReadPath(path)).denialKind).toBe('blocked');
     }
     expect((await checkListPath(appData)).denialKind).toBe('blocked');
+  });
+
+  it('keeps a public key and key-like words in ordinary names readable', async () => {
+    for (const name of ['id_rsa.pub', 'id_ed25519.pub', 'id_card.png', 'rsa notes.txt']) {
+      const result = await checkReadPath(`${HOME}/Documents/work/${name}`);
+      expect(result.denialKind, name).toBeUndefined();
+    }
+  });
+
+  it('finds a private key in a large .pem bundle past the first 64 KB', async () => {
+    const filler = '-----BEGIN CERTIFICATE-----\n' + 'A'.repeat(100_000) + '\n-----END CERTIFICATE-----\n';
+    const bundle = new TextEncoder().encode(filler + '-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n');
+    vi.mocked(stat).mockResolvedValueOnce({ size: bundle.length, isDirectory: false } as never);
+    vi.mocked(readFile).mockResolvedValueOnce(bundle);
+    expect((await checkReadPath(`${HOME}/Documents/work/chain.pem`)).denialKind).toBe('blocked');
+  });
+
+  it('closes an extension-less file whose text is a private key', async () => {
+    vi.mocked(stat).mockResolvedValueOnce({ size: 400, isDirectory: false } as never);
+    vi.mocked(readFile).mockResolvedValueOnce(new TextEncoder().encode('-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n'));
+    expect((await checkReadPath(`${HOME}/Documents/work/deploy_key`)).denialKind).toBe('blocked');
+  });
+
+  it('closes a larger-than-scannable .pem and leaves a larger-than-scannable Keynote .key alone', async () => {
+    vi.mocked(stat).mockResolvedValueOnce({ size: 200_000_000, isDirectory: false } as never);
+    expect((await checkReadPath(`${HOME}/Documents/work/huge.pem`)).denialKind).toBe('blocked');
+    vi.mocked(stat).mockResolvedValueOnce({ size: 200_000_000, isDirectory: false } as never);
+    expect((await checkReadPath(`${HOME}/Documents/work/talk.key`)).allowed).toBe(true);
   });
 
   it('closes a closed location reached through a link', async () => {

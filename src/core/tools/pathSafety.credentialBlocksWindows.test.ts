@@ -46,6 +46,12 @@ describe('pathSafety · credential locations on Windows', () => {
     `${HOME}\\AppData\\Local\\Tencent\\QQBrowser\\User Data\\Default\\Cookies`,
     `${HOME}\\AppData\\Roaming\\Microsoft\\Crypto\\RSA\\key`,
     `${HOME}\\AppData\\Roaming\\Bitwarden\\data.json`,
+    `${HOME}\\AppData\\Roaming\\Slack\\Cookies`,
+    `${HOME}\\AppData\\Roaming\\discord\\Local Storage\\leveldb\\000005.ldb`,
+    `${HOME}\\AppData\\Roaming\\Code\\Cookies`,
+    `${HOME}\\AppData\\Roaming\\Microsoft\\Windows\\PowerShell\\PSReadLine\\ConsoleHost_history.txt`,
+    `${HOME}\\AppData\\Roaming\\1Password\\op\\config`,
+    `${HOME}\\.bash_history`,
     `${HOME}\\.ssh\\id_rsa`,
     `${HOME}\\Documents\\keys\\server.ppk`,
   ])('refuses %s', async (path) => {

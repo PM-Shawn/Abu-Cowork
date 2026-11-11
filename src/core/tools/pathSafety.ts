@@ -130,6 +130,50 @@ const CLOUD_CLI_CREDENTIAL_PATHS = [
   '.config/clash.meta',
   '.config/mihomo',
   '.config/filezilla',
+  // 1Password and DigitalOcean CLIs, Vault, Stripe, Fly.io: session tokens.
+  '.config/op',
+  '.op',
+  '.config/doctl',
+  '.vault-token',
+  '.config/stripe',
+  '.config/flyctl',
+  // Shell and REPL histories hold typed passwords, tokens and connection strings.
+  '.bash_history',
+  '.zsh_history',
+  '.zhistory',
+  '.sh_history',
+  '.history',
+  '.zsh_sessions',
+  '.python_history',
+  '.psql_history',
+  '.mysql_history',
+  '.sqlite_history',
+  '.node_repl_history',
+  '.rediscli_history',
+  '.local/share/fish/fish_history',
+];
+
+/**
+ * Electron desktop apps keep the signed-in session (Cookies, Local Storage,
+ * IndexedDB, saved tokens) in their data folder, the same as a browser does.
+ * The whole folder is closed: none of them holds a file a person asks an
+ * assistant to read.
+ */
+const ELECTRON_APP_NAMES = [
+  'Slack', 'discord', 'Discord', 'Code', 'Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf',
+  'Microsoft Teams', 'Notion', 'Signal', 'Telegram Desktop', 'Element', 'Obsidian',
+  'Lark', 'Feishu', 'DingTalk', 'WeChat', 'Tencent', 'QQ', 'WhatsApp', 'Figma', 'Postman',
+  'GitHub Desktop', 'Spotify', 'Zoom', 'zoom.us',
+];
+const ELECTRON_APP_DATA_PATHS_MAC = [
+  ...ELECTRON_APP_NAMES.map((name) => `Library/Application Support/${name}`),
+  'Library/Containers/com.tencent.xinWeChat',
+  'Library/Group Containers/5A4RE8SF68.com.tencent.xinWeChat',
+];
+const ELECTRON_APP_DATA_PATHS_WIN = [
+  ...ELECTRON_APP_NAMES.flatMap((name) => [`AppData/Roaming/${name}`, `AppData/Local/${name}`]),
+  'AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine',
+  'AppData/Roaming/1Password',
 ];
 
 /** The same kind of store in the macOS application folders. */
@@ -161,7 +205,18 @@ const CLIENT_CREDENTIAL_PATHS_WIN = [
  * passwords and certificates.
  */
 const BLOCKED_FILE_NAMES = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519']);
-const BLOCKED_FILE_EXTENSIONS = ['.kdbx', '.ppk', '.keychain', '.keychain-db', '.pfx', '.p12', '.ovpn', '.mobileconfig'];
+const BLOCKED_FILE_EXTENSIONS = [
+  '.kdbx', '.ppk', '.keychain', '.keychain-db', '.pfx', '.p12', '.ovpn', '.mobileconfig',
+  '.jks', '.keystore', '.p8',
+];
+
+/**
+ * An SSH private key saved under a name of its own: `id_rsa_work`,
+ * `id_ed25519_sk`, `deploy_ed25519`. Never a `.pub` file, and never a name with
+ * an extension other than the key type itself (`id_card.png`, `rsa notes.txt`).
+ */
+const SSH_KEY_TYPE = '(?:rsa|dsa|ecdsa|ed25519)(?:[_-]sk)?';
+const SSH_PRIVATE_KEY_NAME = new RegExp(`^id_${SSH_KEY_TYPE}(?:[_-][^.]*)?$|^[^.]*[_-]${SSH_KEY_TYPE}$`);
 
 /**
  * `.env` and its variants (`.env.local`, `.env.production`, `.env.dev`) hold a
@@ -183,7 +238,16 @@ function isEnvSecretFile(filename: string): boolean {
  * small; a key file is a few kilobytes.
  */
 const CONTENT_CHECKED_EXTENSIONS = ['.pem', '.key', '.conf'];
-const CONTENT_CHECK_MAX_BYTES = 64 * 1024;
+/**
+ * A key bundle is a few kilobytes, but a chain file can be larger and carry its
+ * key after the certificates, so the whole file is scanned up to this size. The
+ * host reads whole files only, so the bound keeps the check cheap. A `.pem`
+ * above it is closed unread (no certificate is that large); a `.key` or `.conf`
+ * above it is a deck or a log, not a key.
+ */
+const CONTENT_CHECK_MAX_BYTES = 16 * 1024 * 1024;
+/** Extension-less files are sniffed only when small: a key saved as `deploy_key`. */
+const CONTENT_CHECK_BARE_NAME_MAX_BYTES = 64 * 1024;
 const PRIVATE_KEY_MARKERS = [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/, /^\s*PrivateKey\s*=/im];
 
 /**
@@ -272,6 +336,7 @@ const BLOCKED_PATHS = [
   ...PASSWORD_MANAGER_PATHS_MAC,
   ...CLOUD_CLI_CREDENTIAL_PATHS,
   ...CLIENT_CREDENTIAL_PATHS_MAC,
+  ...ELECTRON_APP_DATA_PATHS_MAC,
 ];
 
 /**
@@ -372,6 +437,7 @@ const WIN_BLOCKED_PATHS = [
   ...PASSWORD_MANAGER_PATHS_WIN,
   ...CLOUD_CLI_CREDENTIAL_PATHS,
   ...CLIENT_CREDENTIAL_PATHS_WIN,
+  ...ELECTRON_APP_DATA_PATHS_WIN,
   'AppData/Roaming/gcloud',
   'AppData/Roaming/GitHub CLI',
 ];
@@ -839,26 +905,35 @@ async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blo
 /** A file closed by its name alone, wherever it sits (`filename` folded to lower case). */
 function isBlockedFileName(filename: string): boolean {
   return BLOCKED_FILE_NAMES.has(filename)
+    || SSH_PRIVATE_KEY_NAME.test(filename)
     || BLOCKED_FILE_EXTENSIONS.some((ext) => filename.endsWith(ext))
     || isEnvSecretFile(filename);
 }
 
 /**
- * Whether a file of a `CONTENT_CHECKED_EXTENSIONS` kind holds a private key.
- * A folder (a Keynote package), a missing file and a file too large to be a
- * key are not one; a file that cannot be read to tell is treated as one.
+ * Whether a file of a `CONTENT_CHECKED_EXTENSIONS` kind, or a small file with
+ * no extension, holds a private key. A folder (a Keynote package) and a missing
+ * file are not one; a key-like file that cannot be read to tell is treated as one.
  */
 async function holdsPrivateKey(path: string): Promise<boolean> {
   const filename = foldPath(path).split('/').pop() ?? '';
-  if (!CONTENT_CHECKED_EXTENSIONS.some((ext) => filename.endsWith(ext))) return false;
+  const checkedExtension = CONTENT_CHECKED_EXTENSIONS.find((ext) => filename.endsWith(ext));
+  const bareName = !filename.includes('.');
+  if (!checkedExtension && !bareName) return false;
   try {
     const info = await stat(path);
-    if (info.isDirectory || (typeof info.size === 'number' && info.size > CONTENT_CHECK_MAX_BYTES)) return false;
+    if (info.isDirectory) return false;
+    const size = typeof info.size === 'number' ? info.size : 0;
+    if (checkedExtension) {
+      if (size > CONTENT_CHECK_MAX_BYTES) return checkedExtension === '.pem';
+    } else if (size > CONTENT_CHECK_BARE_NAME_MAX_BYTES) {
+      return false;
+    }
     const bytes = await readFile(path);
     const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(0, CONTENT_CHECK_MAX_BYTES));
     return PRIVATE_KEY_MARKERS.some((marker) => marker.test(text));
   } catch (error) {
-    return !isMissingPathError(error);
+    return !isMissingPathError(error) && checkedExtension !== undefined;
   }
 }
 

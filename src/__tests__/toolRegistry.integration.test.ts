@@ -570,6 +570,40 @@ describe('toolRegistry integration', () => {
   describe('unattended capability ceiling', () => {
     const workspace = '/Users/testuser/Projects/unattended-ceiling';
 
+    it('does not auto-grant a read outside its scope to an unattended run in standard mode', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, workspace);
+      const executeFn = vi.fn().mockResolvedValue('contract text');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      // The scheduler's own callback: nobody is there, so a request is refused.
+      const onFilePermission = vi.fn().mockResolvedValue(false);
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'standard' });
+        const context = { authorizationScopeId: scopeId, workspacePath: workspace, interactionMode: 'background' } as never;
+        const outside = await executeAnyTool(
+          'read_file', { path: '/Users/testuser/Documents/contract.pdf' }, undefined, onFilePermission, context,
+        );
+        expect(String(outside)).toContain('user denied access');
+        expect(executeFn).not.toHaveBeenCalled();
+        expect(onFilePermission).toHaveBeenCalledTimes(1);
+        expect((await checkReadPath('/Users/testuser/Documents/other.pdf', scopeId)).allowed).toBe(false);
+
+        await expect(executeAnyTool(
+          'read_file', { path: `${workspace}/notes.md` }, undefined, onFilePermission, context,
+        )).resolves.toBe('contract text');
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
     it('blocks shell commands for safe_tools even when global mode is autonomous', async () => {
       const previousMode = useSettingsStore.getState().permissionMode;
       const scopeId = createAuthorizationScope();

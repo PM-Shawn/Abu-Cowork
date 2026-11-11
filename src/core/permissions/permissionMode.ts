@@ -69,8 +69,15 @@ export interface PermissionStrategy {
    */
   decideCommand(info: ConfirmationInfo, readOnly: boolean, boundary?: CmdBoundary): PermissionDecision;
 
-  /** Decide gating for file tools (read_file, write_file, edit_file, etc.). */
-  decideFileAccess(capability: 'read' | 'write', needsPermission: boolean): PermissionDecision;
+  /**
+   * Decide gating for file tools (read_file, write_file, edit_file, etc.).
+   * @param unattended - nobody is present to see the run (scheduler, trigger,
+   *   IM, background). A read outside the run's scope then is never granted by
+   *   the gate itself: it goes to the run tier's own callback, which refuses
+   *   (`scheduled`, `safe_tools`) or grants it (`full`). Autonomous mode is the
+   *   person's own choice to let runs act freely and is unchanged.
+   */
+  decideFileAccess(capability: 'read' | 'write', needsPermission: boolean, unattended?: boolean): PermissionDecision;
 
   /**
    * Decide gating for MCP/other tools.
@@ -117,8 +124,8 @@ const standardStrategy: PermissionStrategy = {
     if (boundary === 'outside') return 'confirm';
     return 'allow';
   },
-  decideFileAccess(capability, needsPermission) {
-    if (capability === 'read') return 'allow';
+  decideFileAccess(capability, needsPermission, unattended) {
+    if (capability === 'read' && !unattended) return 'allow';
     // needsPermission === true means the path isn't in an authorized working dir yet.
     return needsPermission ? 'confirm' : 'allow';
   },
@@ -133,8 +140,9 @@ const smartStrategy: PermissionStrategy = {
     if (readOnly) return 'allow';
     return (isRiskyCommand(info.level) || boundary === 'outside') ? 'review' : 'allow';
   },
-  decideFileAccess(capability, needsPermission) {
-    if (capability === 'read') return 'allow';
+  decideFileAccess(capability, needsPermission, unattended) {
+    if (capability === 'read' && !unattended) return 'allow';
+    if (capability === 'read') return needsPermission ? 'confirm' : 'allow';
     return needsPermission ? 'review' : 'allow';
   },
   decideOtherTool(consequence, alreadyGranted) {

@@ -1434,7 +1434,7 @@ export async function checkToolApproval(
           }
           // Decide gating based on permission mode.
           const cap = pathCheck.capability || pathInfo.capability;
-          let fileDecision = strategy.decideFileAccess(cap, true);
+          let fileDecision = strategy.decideFileAccess(cap, true, browserRunMode(toolContext) === 'unattended');
           // smart tier → AI reviewer resolves to allow / confirm / deny.
           if (fileDecision === 'review') {
             const verdict = await reviewAction(

@@ -49,6 +49,11 @@ describe('permissionMode', () => {
       expect(s.decideFileAccess('write', true)).toBe('confirm');
     });
 
+    it('an unattended run asks the run tier before reading outside its scope', () => {
+      expect(s.decideFileAccess('read', true, true)).toBe('confirm');
+      expect(s.decideFileAccess('read', false, true)).toBe('allow');
+    });
+
     it('access inside authorized dirs auto-proceeds', () => {
       expect(s.decideFileAccess('read', false)).toBe('allow');
       expect(s.decideFileAccess('write', false)).toBe('allow');
@@ -70,6 +75,10 @@ describe('permissionMode', () => {
     it('safe / read-only commands auto-proceed', () => {
       expect(s.decideCommand(cmd('safe'), false)).toBe('allow');
       expect(s.decideCommand(cmd('danger'), true)).toBe('allow');
+    });
+
+    it('an unattended run asks the run tier, not the reviewer, before reading outside its scope', () => {
+      expect(s.decideFileAccess('read', true, true)).toBe('confirm');
     });
 
     it('safe command writing outside workspace routes to review', () => {

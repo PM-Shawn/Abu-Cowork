@@ -13,13 +13,13 @@ import { getVisibleTeamById } from '../../stores/teamStore';
 import { getI18n, format } from '../../i18n';
 import type { ScheduledTask } from '../../types/schedule';
 import type { PermissionMode } from '../permissions/permissionMode';
+import { effectivePermissionMode } from '../permissions/effectivePermissionMode';
 import type { ConfirmationInfo, FilePermissionCallback } from '../tools/registry';
 import {
   createAuthorizationScope,
   disposeAuthorizationScope,
   scopedAuthorizeWorkspace,
 } from '../tools/pathSafety';
-import { getSettingsReader } from '../agent/ports/settingsReader';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { outputSender } from '../im/outputSender';
 import { isImOutputChannelEnabled, resolveUnattendedImTarget } from '../im/approvalTarget';
@@ -51,13 +51,6 @@ import {
 
 /** How many distinct denials to quote back; beyond this the list is summarized. */
 const MAX_REPORTED_DENIALS = 5;
-
-/** task.permissionMode, falling back to the global settings mode — the same
- *  fallback registry.ts applies for a conversation carrying no mode of its
- *  own. `undefined` on the task means "follow settings", not "strictest". */
-function resolveEffectivePermissionMode(task: ScheduledTask): PermissionMode {
-  return task.permissionMode ?? getSettingsReader().getSnapshot().permissionMode;
-}
 
 /** Same wording chat's PermissionModeChip uses — no scheduler-only vocabulary. */
 function permissionModeLabel(mode: PermissionMode): string {
@@ -351,7 +344,7 @@ class SchedulerEngine {
     }
 
     const authorizationScopeId = createAuthorizationScope(
-      resolveEffectivePermissionMode(task) === 'autonomous'
+      effectivePermissionMode(task.permissionMode) === 'autonomous'
         ? { shell: 'full' }
         : undefined,
     );
@@ -526,7 +519,7 @@ class SchedulerEngine {
         // carries the fix instead of the user having to guess.
         const errorMsg = baseError + describeDenials(
           permissions.getDenials(),
-          resolveEffectivePermissionMode(task),
+          effectivePermissionMode(task.permissionMode),
         );
         useScheduleStore.getState().errorRun(task.id, runId, errorMsg);
         /**

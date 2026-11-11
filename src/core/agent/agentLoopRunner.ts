@@ -70,6 +70,7 @@ import { getCapsPort } from './ports/capsPort';
 import { getAbortRegistry } from './ports/abortRegistry';
 import { getToolInvoker } from './ports/toolInvoker';
 import { getSettingsReader, type SettingsReader } from './ports/settingsReader';
+import { effectivePermissionMode } from '../permissions/effectivePermissionMode';
 import { getWorkspaceReader } from './ports/workspaceReader';
 import { toSerializableTool } from './subagentRunner';
 import { registerToolInvokeSource, ensureToolInvokeRouterRegistered } from './toolInvokeRouter';
@@ -3189,8 +3190,7 @@ async function buildAgentRunParams(
       initiatedBy: options?.initiatedBy,
     }),
     initiatedBy: options?.initiatedBy,
-    permissionMode: initialConversationSnapshot.permissionMode
-      ?? getSettingsReader().getSnapshot().permissionMode,
+    permissionMode: effectivePermissionMode(initialConversationSnapshot.permissionMode),
     authorizationScopeId: options?.authorizationScopeId,
     runPermissionCeiling: options?.runPermissionCeiling,
   }, {

@@ -77,8 +77,9 @@ describe('withDocumentReading dispatch', () => {
     expect(args[2]).toBe('image-view');
     expect(JSON.parse(args[3] as string)).toMatchObject({ region: [0.5, 0.5, 1, 1], rotate: 0, side: 1600 });
     expect(result).toEqual([
-      { type: 'text', text: expect.stringMatching(/^\[Picture scan\.png \(4000×3000 px\): region x 0\.5–1, y 0\.5–1, shown at 1600×1200 px\./) },
-      { type: 'text', text: '[scan.png, region x 0.5–1, y 0.5–1, 1600×1200 px]' },
+      { type: 'text', text: expect.stringMatching(/^The rulers give fractions of the whole picture as shown here/) },
+      // The label is the caption: one block, naming the file, its own size and the size shown.
+      { type: 'text', text: '[Image: scan.png (4000×3000 px): region x 0.5–1, y 0.5–1, shown at 1600×1200 px.]' },
       { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'ZOOM' } },
     ]);
     expect(await recordedFileVersion('/d/scan.png', context)).toEqual(expect.any(String));

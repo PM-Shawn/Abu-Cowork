@@ -3,6 +3,7 @@ import { LLMError, classifyError, LOG_TOOL_ARG_PREVIEW, buildToolParseError } fr
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
+import { captionedToolResultImages } from './toolResultImageCaptions';
 import type { PreparedTurn, PreparedContentBlock } from './messageNormalizer';
 import {
   createHeartbeat,
@@ -211,10 +212,6 @@ export const DOCUMENT_UNSUPPORTED_NOTE =
   '[A document was attached but the current model cannot receive file attachments. ' +
   'Tell the user their model does not support documents, or ask them to paste the relevant text.]';
 
-/** 工具结果里的截图随后作为一条用户消息补发时附带的说明（给模型看，英文）。 */
-export const TOOL_RESULT_IMAGES_NOTE =
-  '[SCREENSHOT] Tool results produced these screenshot(s). You MUST describe what you actually see in the image before deciding next action. If you cannot see the image, say "I cannot see the screenshot" — do NOT guess or fabricate what is on screen.';
-
 /** Convert PreparedContentBlock[] to OpenAI content parts */
 function toOpenAIContentParts(blocks: PreparedContentBlock[]): OpenAIContentPart[] {
   const parts: OpenAIContentPart[] = [];
@@ -296,28 +293,25 @@ function serializeForOpenAI(
 
         // Add tool results — normalizeMessages guarantees every tool_use has a result
         // OpenAI only supports images in role:"user", not in role:"tool"
-        const pendingImages: OpenAIContentPart[] = [];
         for (const tc of turn.toolCalls) {
           result.push({
             role: 'tool',
             tool_call_id: tc.id,
             content: tc.result,
           });
-          // Collect images for a follow-up user message
-          for (const img of tc.resultImages) {
-            pendingImages.push({
-              type: 'image_url',
-              image_url: { url: `data:${img.mediaType};base64,${img.data}` },
-            });
-          }
         }
-        // Inject collected images as a user message so the model can actually see them
-        if (pendingImages.length > 0) {
+        // Inject the turn's images as a user message so the model can actually
+        // see them, each after a caption naming the call that produced it.
+        const { note, images } = captionedToolResultImages(turn.toolCalls);
+        if (images.length > 0) {
           result.push({
             role: 'user',
             content: [
-              { type: 'text' as const, text: TOOL_RESULT_IMAGES_NOTE },
-              ...pendingImages,
+              { type: 'text' as const, text: note },
+              ...images.flatMap(({ caption, image }) => [
+                { type: 'text' as const, text: caption },
+                { type: 'image_url' as const, image_url: { url: `data:${image.mediaType};base64,${image.data}` } },
+              ]),
             ],
           });
         }

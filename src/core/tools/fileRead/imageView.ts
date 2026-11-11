@@ -4,6 +4,7 @@ import { format, getI18n } from '@/i18n';
 import { runDocumentProbe, tooLargeError, type RasterViewProbe } from './documentProbe';
 import type { DocumentReadOutcome } from './pdfRead';
 import { describeView, enlargedNote, viewRulerNote, type DocumentReadParams } from './readParams';
+import { pictureCaption } from './imageCaption';
 import { labeledImage, withImages } from './resultImages';
 
 /** Long side of a picture view, before its rulers. */
@@ -39,10 +40,14 @@ export async function readImageView(
   const name = getBaseName(filePath);
   const where = describeView(view.region, view.rotate, 'whole picture');
   const enlarged = enlargedNote(view.zoom, 'picture');
-  const text = `[Picture ${name} (${view.size[0]}×${view.size[1]} px): ${where}, shown at ${view.img.w}×${view.img.h} px. ${viewRulerNote('picture')}]`
-    + (enlarged ? `\n${enlarged}` : '');
+  const caption = pictureCaption({
+    fileName: name,
+    original: { w: view.size[0], h: view.size[1] },
+    shown: { w: view.img.w, h: view.img.h },
+    where,
+  });
   return {
     kind: 'done',
-    result: withImages(text, labeledImage(`${name}, ${where}, ${view.img.w}×${view.img.h} px`, view.img)),
+    result: withImages(`${viewRulerNote('picture')}${enlarged ? `\n${enlarged}` : ''}`, labeledImage(caption, view.img)),
   };
 }

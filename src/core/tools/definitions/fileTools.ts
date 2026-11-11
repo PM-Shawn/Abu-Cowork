@@ -2,7 +2,7 @@ import { readTextFile, readFile as readBinFile, writeTextFile, readDir, exists, 
 import { invoke } from '@tauri-apps/api/core';
 import type { ToolDefinition, ToolExecutionContext, ToolResultContent } from '../../../types';
 import { isWindows } from '../../../utils/platform';
-import { ensureParentDir, normalizeSeparators } from '../../../utils/pathUtils';
+import { ensureParentDir, getBaseName, normalizeSeparators } from '../../../utils/pathUtils';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import { isCatastrophicDeleteTarget } from '../pathSafety';
 import {
@@ -20,7 +20,9 @@ import {
 import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedCommand';
 import { withDocumentReading } from '../fileRead';
 import { admissionRawBytes, planImageFit } from '@/core/llm/imageFit';
-import { imageHeaderSize } from '@/utils/imageHeaderSize';
+import { pictureCaption } from '../fileRead/imageCaption';
+import { imageLabelBlock } from '../../llm/toolResultImageCaptions';
+import { base64ImageHeaderSize, imageHeaderSize } from '@/utils/imageHeaderSize';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
@@ -199,15 +201,21 @@ export const readFileTool: ToolDefinition = withDocumentReading({
         }
         const bytes = new Uint8Array(await io.readFile(filePath));
         const fitted = await fitToAdmissionLimit(filePath, bytes, mediaType, context);
-        const sizeKB = Math.round(bytes.length / 1024);
-        const resizeNote = !fitted ? ''
-          : fitted.longSide !== null ? ` (auto-resized to ${fitted.longSide}px on its long side)`
-            : ' (re-encoded as JPEG to stay under the per-picture size limit)';
+        const data = uint8ArrayToBase64(fitted?.bytes ?? bytes);
         await recordFileVersion(filePath, await sha256Hex(bytes), context);
 
+        // The caption is the picture's label: the file's own size and the size
+        // shown (smaller when the picture was resized above) tell the model what
+        // detail it may have lost.
+        const caption = pictureCaption({
+          fileName: getBaseName(filePath),
+          original: imageHeaderSize(bytes),
+          shown: fitted ? base64ImageHeaderSize(data) : imageHeaderSize(bytes),
+          zoomNote: true,
+        });
         return [
-          { type: 'text', text: `Image: ${filePath} (${sizeKB}KB, ${mediaType})${resizeNote}` },
-          { type: 'image', source: { type: 'base64', media_type: fitted?.mediaType ?? mediaType, data: uint8ArrayToBase64(fitted?.bytes ?? bytes) } },
+          imageLabelBlock(caption),
+          { type: 'image', source: { type: 'base64', media_type: fitted?.mediaType ?? mediaType, data } },
         ] as ToolResultContent[];
       }
 

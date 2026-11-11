@@ -45,7 +45,7 @@ describe('read_file fits a plain picture by its long side to the admission limit
     expect(processImage).toHaveBeenCalledWith('/d/plan.png', null, 'fit-width', { width: limit });
     const image = result.find((block) => block.type === 'image');
     expect(image).toMatchObject({ type: 'image', source: { media_type: 'image/png' } });
-    expect(JSON.stringify(result[0])).toContain(`${limit}px on its long side`);
+    expect(JSON.stringify(result[0])).toContain(`shown at ${limit}×${Math.round(4178 * limit / 10032)} px`);
   });
 
   it('fits a tall picture by its height, so no side is over the limit (1000x20000)', async () => {

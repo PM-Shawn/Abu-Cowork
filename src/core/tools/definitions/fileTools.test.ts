@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { writeTextFile, readTextFile, exists, stat } from '@tauri-apps/plugin-fs';
+import { writeTextFile, readTextFile, readFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { readFileTool, writeFileTool, deleteFileTool, editFileTool, searchFilesTool, findFilesTool, checkOpenDocumentTool } from './fileTools';
 import { registerBuiltinTools } from '../builtins';
 import { toolRegistry } from '../registry';
@@ -8,6 +8,7 @@ import { platform } from '@tauri-apps/plugin-os';
 import { initPlatform } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 import { recordFileVersion } from '../fileReadRecords';
+import { PICTURE_ZOOM_NOTE } from '../fileRead/imageCaption';
 import { sha256Hex } from '@/core/session/turnUndoRecord';
 import type { ToolExecutionContext } from '@/types';
 
@@ -277,6 +278,52 @@ describe('readFileTool — non-vision model image gating', () => {
     // did NOT take the non-vision shortcut.
     const result = await readFileTool.execute({ path: '/tmp/图片.png' });
     expect(String(result)).not.toContain('no vision capability');
+  });
+});
+
+describe('readFileTool: a plain picture read labels the picture', () => {
+  /** A PNG header that declares its size. */
+  const png = (w: number, h: number) => {
+    const bytes = new Uint8Array(33);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+    new DataView(bytes.buffer).setUint32(16, w);
+    new DataView(bytes.buffer).setUint32(20, h);
+    return bytes;
+  };
+
+  it('puts one label block before the image: the file name, its pixel size and how to look closer', async () => {
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(readFile).mockResolvedValueOnce(png(640, 480));
+    try {
+      const result = await readFileTool.execute({ path: '/tmp/work/photo.png' }, {});
+      expect(result).toEqual([
+        { type: 'text', text: `[Image: photo.png (640×480 px), shown at 640×480 px. ${PICTURE_ZOOM_NOTE}]` },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: expect.any(String) } },
+      ]);
+      expect(JSON.stringify(result)).not.toContain('/tmp/work');
+    } finally {
+      vi.mocked(exists).mockResolvedValue(false);
+    }
+  });
+
+  it('gives the size of the copy the model sees when the picture was scaled down', async () => {
+    vi.mocked(exists).mockResolvedValue(true);
+    // Over 2 MB, which read_file hands to the native resizer.
+    const original = new Uint8Array(3 * 1024 * 1024);
+    original.set(png(4000, 3000));
+    const processImage = vi.fn().mockResolvedValue(png(1280, 960));
+    const files = {
+      readFile: vi.fn().mockResolvedValue(original),
+      exists: vi.fn().mockResolvedValue(true),
+      stat: vi.fn().mockResolvedValue({ size: original.length, isFile: true, isDirectory: false }),
+      processImage,
+    } as unknown as ToolExecutionContext['files'];
+    try {
+      const result = await readFileTool.execute({ path: '/tmp/work/big.png' }, { files });
+      expect(Array.isArray(result) && result[0]).toEqual({ type: 'text', text: `[Image: big.png (4000×3000 px), shown at 1280×960 px. ${PICTURE_ZOOM_NOTE}]` });
+    } finally {
+      vi.mocked(exists).mockResolvedValue(false);
+    }
   });
 });
 

@@ -1,18 +1,19 @@
 import type { ToolResultContent } from '@/types';
+import { imageLabelBlock } from '@/core/llm/toolResultImageCaptions';
 import type { ProbeImage } from './documentProbe';
 
 /**
  * One picture of a read_file result, introduced by its label.
  *
- * The label is a one-line text block placed right before the image. The
- * message normalizer takes the text block that precedes a tool-result image
- * as that image's label (`PreparedImage.label`), and the serializers that
- * re-send tool images in a separate message put it beside the image, so the
- * model knows which page or picture it is looking at.
+ * The label is the one-line text block `imageLabelBlock` writes, placed right
+ * before the image (core/llm/toolResultImageCaptions.ts holds the convention:
+ * the message normalizer reads it back as `PreparedImage.label`, and the
+ * serializers that re-send tool images in a separate message put it beside
+ * the image, so the model knows which page or picture it is looking at).
  */
 export function labeledImage(label: string, image: ProbeImage): ToolResultContent[] {
   return [
-    { type: 'text', text: `[${label}]` },
+    imageLabelBlock(label),
     { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image.data } },
   ];
 }

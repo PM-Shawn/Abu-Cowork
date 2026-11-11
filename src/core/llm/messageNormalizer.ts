@@ -13,6 +13,7 @@
 
 import type { Message, MessageContent, ToolCall, ToolCallForContext, ToolResultContent } from '../../types';
 import { judgeImage } from './imageAcceptance';
+import { imageLabel } from './toolResultImageCaptions';
 import { withIntroductionContext } from '../team/expertContact';
 
 // ─── Normalized types ────────────────────────────────────────────────
@@ -21,6 +22,8 @@ import { withIntroductionContext } from '../team/expertContact';
 export interface PreparedImage {
   mediaType: 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
   data: string; // base64
+  /** What the tool said the image is: the label block right before it (toolResultImageCaptions.ts). */
+  label?: string;
 }
 
 /** A normalized tool call — `result` is guaranteed non-undefined */
@@ -198,7 +201,7 @@ function extractImages(
   if (!resultContent || !Array.isArray(resultContent)) return { images: [], notes: [] };
   const images: PreparedImage[] = [];
   const notes: string[] = [];
-  for (const b of resultContent) {
+  resultContent.forEach((b, i) => {
     // Skip images whose base64 was stripped and not rehydrated — emitting an
     // empty `data:<mime>;base64,` makes providers reject the whole request.
     if (b.type === 'image' && b.source.data) {
@@ -207,13 +210,14 @@ function extractImages(
         const verdict = judgeImage(b.source.media_type, b.source.data, maxImageDimension, maxImageBytes);
         if (verdict.kind === 'leave-out') {
           notes.push(verdict.note);
-          continue;
+          return;
         }
         mediaType = verdict.mediaType;
       }
-      images.push({ mediaType, data: b.source.data });
+      const label = imageLabel(resultContent[i - 1]);
+      images.push({ mediaType, data: b.source.data, ...(label ? { label } : {}) });
     }
-  }
+  });
   return { images, notes };
 }
 

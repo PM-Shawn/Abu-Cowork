@@ -17,7 +17,7 @@ describe('workflowExtractor', () => {
       expect(steps).toHaveLength(0);
     });
 
-    it('labels a background command by its purpose, the others by the recorded command', () => {
+    it('labels a background command by its purpose, the others by a plain sentence', () => {
       const steps = extractWorkflowSteps([
         { id: 'tc1', name: 'run_command', input: { command: 'npm run dev', background: true, purpose: '启动预览' }, result: 'exit code: 0' },
         { id: 'tc2', name: 'background_command_output', input: { id: 'bg-0a1b2c3d' }, result: 'status: running', backgroundCommand: { command: 'npm run dev' } },
@@ -25,8 +25,8 @@ describe('workflowExtractor', () => {
       ]);
       expect(steps.map((step) => step.label)).toEqual([
         '启动预览（在后台）',
-        '查看后台命令的输出 npm run dev',
-        '停止后台命令 bg-0a1b2c3d',
+        '查看后台任务的输出',
+        '停止后台任务',
       ]);
     });
 

@@ -74,14 +74,14 @@ describe('MessageGroup background command of a saved step', () => {
     cleanup();
   });
 
-  it('names the command its tool call recorded', () => {
+  it('shows the plain sentence for a saved step', () => {
     const messages = savedTurn([stopCall]);
     setConversation(messages);
 
     render(<MessageGroup conversationId={CONVERSATION_ID} messages={messages} isLastGroup />);
     openSteps();
 
-    expect(screen.getByText('Stop background command npm run dev')).toBeInTheDocument();
+    expect(screen.getByText('Stop a background task')).toBeInTheDocument();
   });
 
   it('keeps the saved label when the tool call recorded no command', () => {

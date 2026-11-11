@@ -37,10 +37,6 @@ export function parseMCPToolName(
   };
 }
 
-function shortCommand(command: string): string {
-  return command.length > 20 ? command.slice(0, 20) + '...' : command;
-}
-
 /** A tool call whose title depends on a model-written purpose, not on any other part of its input. */
 export function isCommandToolName(toolName: string): boolean {
   return toolName === TOOL_NAMES.RUN_COMMAND || toolName === 'execute' || toolName === 'shell' || toolName === 'bash';
@@ -206,11 +202,10 @@ export function getToolLabel(
       const command = record?.backgroundCommand?.command
         ?? (typeof toolInput.id === 'string' ? toolInput.id : '');
       const task = dictionary(isZh).task;
-      const template = toolName === TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT
-        ? task.readBackgroundCommandOutput
-        : task.stopBackgroundCommand;
       return {
-        label: format(template, { command: command ? shortCommand(command) : '' }).trim(),
+        label: toolName === TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT
+          ? task.readBackgroundCommandOutput
+          : task.stopBackgroundCommand,
         detail: command || undefined,
       };
     }

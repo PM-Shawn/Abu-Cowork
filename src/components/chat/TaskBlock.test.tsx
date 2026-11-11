@@ -644,7 +644,7 @@ describe('TaskBlock — the command of a background-command step', () => {
     executionId: 'exec-1',
     toolCallId: 'tc-output',
     type: 'tool',
-    label: 'Read background command output bg-0a1b2c3d',
+    label: 'Read the output of a background task',
     status: 'completed',
     toolName: 'background_command_output',
     toolInput: { id: 'bg-0a1b2c3d' },
@@ -659,22 +659,22 @@ describe('TaskBlock — the command of a background-command step', () => {
     fireEvent.click(screen.getAllByRole('button')[0]);
   }
 
-  it('names the command the step recorded', () => {
+  it('shows the plain sentence for the step', () => {
     renderOpen([outputStep]);
 
-    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+    expect(screen.getByText('Read the output of a background task')).toBeInTheDocument();
   });
 
-  it('names the command for a step restored from a saved snapshot', () => {
+  it('shows the plain sentence for a step restored from a saved snapshot', () => {
     const restored = snapshotToExecutionSteps(snapshotExecutionSteps([outputStep]));
     expect(restored[0].toolInput).toEqual({});
 
     renderOpen(restored);
 
-    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+    expect(screen.getByText('Read the output of a background task')).toBeInTheDocument();
   });
 
-  it('names the command for a legacy step by its tool call id', () => {
+  it('shows the plain sentence for a legacy step by its tool call id', () => {
     render(
       <TaskBlock
         steps={[{
@@ -692,7 +692,7 @@ describe('TaskBlock — the command of a background-command step', () => {
     );
     fireEvent.click(screen.getAllByRole('button')[0]);
 
-    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+    expect(screen.getByText('Read the output of a background task')).toBeInTheDocument();
   });
 });
 

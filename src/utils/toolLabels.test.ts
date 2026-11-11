@@ -31,19 +31,19 @@ describe('getToolLabel', () => {
       expect(getToolLabel('run_command', { command: 'npm run dev', purpose: '启动预览', background: false }, 'zh-CN').label).toBe('启动预览');
     });
 
-    it('background_command_output names the command from the step record, else its id', () => {
+    it('background_command_output and stop_background_command are plain sentences; the command stays in the detail', () => {
       const record = { backgroundCommand: { command: 'npm run dev' } };
-      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'zh-CN', record).label).toBe('查看后台命令的输出 npm run dev');
-      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'en-US', record).label).toBe('Read background command output npm run dev');
-      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'zh-CN').label).toBe('查看后台命令的输出 bg-0a1b2c3d');
-      expect(getToolLabel('background_command_output', {}, 'en-US').label).toBe('Read background command output');
-    });
-
-    it('stop_background_command names the command from the step record, else its id', () => {
-      const record = { backgroundCommand: { command: 'npm run dev' } };
-      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'zh-CN', record).label).toBe('停止后台命令 npm run dev');
-      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'en-US', record).label).toBe('Stop background command npm run dev');
-      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'en-US').label).toBe('Stop background command bg-0a1b2c3d');
+      const out = getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'en-US', record);
+      expect(out.label).toBe('Read the output of a background task');
+      expect(out.detail).toBe('npm run dev');
+      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'zh-CN', record).label).toBe('查看后台任务的输出');
+      const stop = getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'en-US', record);
+      expect(stop.label).toBe('Stop a background task');
+      expect(stop.detail).toBe('npm run dev');
+      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'zh-CN').label).toBe('停止后台任务');
+      // without the step record the detail falls back to the id; no label carries a command or an id
+      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'en-US').label).not.toContain('bg-0a1b2c3d');
+      expect(getToolLabel('background_command_output', {}, 'en-US').detail).toBeUndefined();
     });
 
     it('use_skill follows locale', () => {

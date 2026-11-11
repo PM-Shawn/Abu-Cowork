@@ -146,7 +146,14 @@ import {
   pauseUserInputQueue,
   removeQueuedInput,
   restoreDequeuedUserInput,
+  requeueUserInput,
+  restoreSteeringInputs,
+  steeredMessageId,
   subscribeToInputQueue,
+  takeSteeringInputsNow,
+  beginSteeringRun,
+  endSteeringRun,
+  type QueuedInput,
 } from './userInputQueue';
 import { registerSidecarRunPredicate } from './sidecarRunPredicate';
 import { bindWorkspaceFromWrite } from './defaultWorkspace';
@@ -429,6 +436,15 @@ export interface RunSession {
    */
   forwardedQueueIds?: Set<string>;
   /**
+   * Steering entries this run took from the shell queue (`input.takeSteering`,
+   * see `handleTakeSteering`). The sidecar turns each into a user message
+   * right after the take; one whose message never reaches the conversation
+   * (Stop landed between the take and the message, the frame was fenced off,
+   * the reply was lost) is put back as a chip by `closeRunSteering` when the
+   * run settles, so a typed message is never silently lost.
+   */
+  steeringTaken?: QueuedInput[];
+  /**
    * Per-run FIFO for asynchronous `agent.delta` application. JSON-RPC
    * notifications arrive in order, but their handlers are synchronous and
    * cannot await `applyDeltaFrames`; without this chain, separate batches
@@ -505,6 +521,14 @@ export function registerRunSession(runId: string, session: RunSession): void {
     setPlanMode(session.conversationId, 'planning');
   }
   session.runId = runId;
+  // A run the user is watching reads what is typed into it from now on
+  // (userInputQueue.ts); the loop says when it stops reading, and the run's
+  // settle ends it in any case (`closeRunSteering`, `unregisterRunSession`).
+  // An `@expert` turn, known from the shell's own routing, has no step of its
+  // own to read one at: what is typed into it waits for after the turn.
+  if (session.interactionMode === 'foreground' && !session.options.directDelegateAgent) {
+    beginSteeringRun(session.conversationId, runId);
+  }
   session.resourceSettlement ??= createRunResourceSettlement(
     session.shellAbortController.signal,
     () => { session.committed = true; },
@@ -569,6 +593,8 @@ export function unregisterRunSession(runId: string): void {
   const session = sessions.get(runId);
   if (session?.abortWatchdog) clearTimeout(session.abortWatchdog);
   if (session?.firstFrameStallTimer) clearTimeout(session.firstFrameStallTimer);
+  // Last line of defence: a run that is gone reads no steering message.
+  if (session) endSteeringRun(session.conversationId, runId);
   session?.resourceSettlement?.seal();
   unregisterRunResourceSettlement(runId, session?.resourceSettlement);
   session?.releasePluginUse?.();
@@ -1072,7 +1098,37 @@ async function preservedMultimodalContent(params: {
 
 async function settleRunPersistence(session: RunSession): Promise<void> {
   await (session.frameApplyTail ?? Promise.resolve());
+  closeRunSteering(session);
   await waitForConversationPersistence(session.conversationId);
+}
+
+/**
+ * The run reads no more steering. Called once every frame the run will
+ * deliver has been applied (the frame FIFO has drained and no later frame is
+ * accepted), so a missing message is missing for good: the steering entries
+ * this run took whose message never reached the conversation are put back,
+ * and then every entry typed into this run, those included, becomes an entry
+ * for after the task (`endSteeringRun`), which starts its own turn and never
+ * joins a later run. A conversation deleted meanwhile gets nothing back: its
+ * queue went with it. Idempotent: the taken list is cleared.
+ */
+function closeRunSteering(session: RunSession): void {
+  const taken = session.steeringTaken;
+  session.steeringTaken = undefined;
+  const conversation = getConversationReader().getConversation(session.conversationId);
+  if (taken?.length && conversation) {
+    const present = new Set(conversation.messages.map((message) => message.id));
+    const undelivered = taken.filter((item) => !present.has(steeredMessageId(item.id)));
+    if (undelivered.length > 0) {
+      logger.warn('steered input never reached the conversation; restoring it to the queue', {
+        runId: session.runId,
+        conversationId: session.conversationId,
+        count: undelivered.length,
+      });
+      restoreSteeringInputs(session.conversationId, undelivered);
+    }
+  }
+  if (session.runId) endSteeringRun(session.conversationId, session.runId);
 }
 
 /**
@@ -1096,6 +1152,7 @@ async function finalizeFailedRun(
     session.heldFinalStatus = undefined;
     updateSessionMessageState(session, state, displayMessage, errorDetails);
     await (session.frameApplyTail ?? Promise.resolve());
+    closeRunSteering(session);
     try {
       const chatDelta = getChatDelta();
       if (!skipErrorAppend) {
@@ -1164,6 +1221,8 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
       }
 
       await (session.frameApplyTail ?? Promise.resolve());
+      // Before the queue is paused below, so a restored entry is paused with it.
+      closeRunSteering(session);
 
       // Permission dialogs live in the shell and must not survive a force-stop.
       drainConfirmationQueue();
@@ -1277,6 +1336,9 @@ async function finalizeAbortedRun(session: RunSession, source: 'ack' | 'watchdog
 function requestSidecarRunAbort(session: RunSession): Promise<void> {
   if (session.abortRequestPromise) return session.abortRequestPromise;
   session.abortRequested = true;
+  // A stopping run takes nothing more (`handleTakeSteering`): what is typed
+  // from now on, and what was typed and not taken, waits for after the task.
+  if (session.runId) endSteeringRun(session.conversationId, session.runId);
   markRuntimeRunStage(session.runId ?? session.loopId, 'abort_requested');
   traceRuntimeEvent('renderer.agent_abort_requested', {
     runId: session.runId ?? session.loopId,
@@ -2233,6 +2295,48 @@ function handleInputConsumed(rawParams: unknown): void {
   }
 }
 
+/**
+ * `input.takeSteering` (REQUEST) → {runId} → `{ items }`: the sidecar loop
+ * reached a step boundary (`agentLoop.ts`, `takeSteeringInputs`) and asks for
+ * the messages the user typed for this run. The shell owns the queue, so the
+ * removal and the answer are one synchronous step (nothing is awaited before
+ * the take): an entry is handed out once, and a chip's × or "send after the
+ * task" either wins before the take or finds the entry gone. Only the entries
+ * typed into this run are handed out (`registerRunSession` bound them to it),
+ * whether or not the after-run queue is paused. A run that is stopping,
+ * stopped, unknown or not watched by the user gets nothing; what it was handed
+ * and never delivered is restored when it settles (`closeRunSteering`).
+ */
+async function handleTakeSteering(rawParams: unknown): Promise<{ items: Array<Pick<QueuedInput, 'id' | 'text' | 'timestamp'>> }> {
+  const params = rawParams as { runId?: unknown } | null;
+  if (!params || typeof params.runId !== 'string') {
+    throw new SidecarRequestError(-32602, 'Invalid input.takeSteering params: runId must be a string');
+  }
+  const session = sessions.get(params.runId);
+  if (!session || session.abortRequested || session.dropFrames || session.terminal) return { items: [] };
+  if (session.interactionMode !== 'foreground') return { items: [] };
+  const taken = takeSteeringInputsNow(session.conversationId, params.runId);
+  if (taken.length === 0) return { items: [] };
+  session.steeringTaken = [...(session.steeringTaken ?? []), ...taken];
+  return { items: taken.map(({ id, text, timestamp }) => ({ id, text, timestamp })) };
+}
+
+/**
+ * `input.steeringEnded` (NOTIFICATION) → {runId}: the sidecar loop reads no
+ * more steering messages (it handed the turn to an `@expert`, was stopped, or
+ * ended). The messages typed into the run become entries for after the task
+ * at once, so their chips stop saying they join the next step. The run's
+ * settle does the same in any case (`closeRunSteering`). Unknown runId →
+ * silent drop.
+ */
+function handleSteeringEnded(rawParams: unknown): void {
+  const params = rawParams as { runId?: unknown } | null;
+  if (!params || typeof params.runId !== 'string') return;
+  const session = sessions.get(params.runId);
+  if (!session) return;
+  endSteeringRun(session.conversationId, params.runId);
+}
+
 let handlersRegistered = false;
 
 /** Idempotent — registers every reverse-channel handler exactly once, no matter how many times it's called. Mirrors subagentRunner.ts's ensureHandlersRegistered() shape. */
@@ -2279,6 +2383,7 @@ export function ensureHandlersRegistered(): void {
   onSidecarNotification('cu.setState', handleCuSetState);
   onSidecarNotification('skillHooks.clearAll', handleSkillHooksClearAll);
   onSidecarNotification('input.consumed', handleInputConsumed);
+  onSidecarNotification('input.steeringEnded', handleSteeringEnded);
   onSidecarNotification('workspace.bindFromWrite', handleWorkspaceBindFromWrite);
   onSidecarNotification('shell.sandboxBlocked', handleShellSandboxBlocked);
 
@@ -2290,6 +2395,7 @@ export function ensureHandlersRegistered(): void {
   onSidecarRequest('fileReads.record', handleFileReadsRecord);
   onSidecarRequest('fileReads.get', handleFileReadsGet);
   onSidecarRequest('workspace.authorizedWritablePaths', handleWorkspaceAuthorizedPaths);
+  onSidecarRequest('input.takeSteering', handleTakeSteering);
 }
 
 /** Test-only — lets tests re-register handlers against fresh mocks. Not used by production code. */
@@ -2514,9 +2620,13 @@ function pushExecPatchesForActiveSessions(): void {
  * re-scan this conversation's still-lingering (not-yet-consumed) entries and
  * re-send them.
  *
- * User-authored queue entries are deliberately NOT forwarded. They remain as
- * cancellable chips until the current run terminates, then the dispatcher
- * starts them as independent runs with fresh loopIds.
+ * User-authored queue entries are deliberately NOT forwarded. A steering
+ * entry is pulled by the sidecar loop at its step boundary
+ * (`input.takeSteering`, `handleTakeSteering`), so the shell decides in one
+ * step who gets it; any other user entry waits for the run to terminate and is
+ * then started by the dispatcher as an independent run with a fresh loopId.
+ * A user entry forwarded ahead of time would leave a copy in the sidecar
+ * that the chip's × or "send after the task" could no longer reach.
  *
  * Deliberately does NOT touch the shell queue itself (no `removeQueuedInput`
  * here) — the chip must linger until the sidecar loop actually CONSUMES the
@@ -3407,7 +3517,11 @@ async function runSingleAgentLoopDispatchedWithOwnership(
             messageTaken: false,
           };
         }
-        if (options?.imageEditRequest) {
+        // A queued hand-off was typed for an earlier run: it goes back for
+        // after this one (`AgentLoopOptions.queuedHandoff`) and never steers it.
+        if (options?.queuedHandoff) {
+          requeueUserInput(conversationId, options.queuedHandoff);
+        } else if (options?.imageEditRequest) {
           enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask, options.imageEditRequest);
           options.onMessageTaken?.(options.imageEditRequest.messageId);
         } else if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
@@ -3431,8 +3545,10 @@ async function runSingleAgentLoopDispatchedWithOwnership(
         }
         // A live IN-PROCESS run for this conversation — stage into ITS
         // queue via the same real function the in-process guard itself
-        // calls (userInputQueue.ts, unchanged).
-        if (options?.imageEditRequest) {
+        // calls (userInputQueue.ts); a queued hand-off goes back for after it.
+        if (options?.queuedHandoff) {
+          requeueUserInput(conversationId, options.queuedHandoff);
+        } else if (options?.imageEditRequest) {
           enqueueUserInput(conversationId, userMessage, false, options.teamConfirmationRetryId, options.continuesTeamTask, options.imageEditRequest);
           options.onMessageTaken?.(options.imageEditRequest.messageId);
         } else if (options?.teamConfirmationRetryId || options?.continuesTeamTask) {
@@ -3576,6 +3692,9 @@ async function runSingleAgentLoopDispatchedWithOwnership(
       // one of the two seals, so the bridge is told once. No run key: this is
       // the conversation's own loop, which the bridge reads as `main`.
       releaseRunBrowserTabClaims(conversationId);
+      // The loop ends its own steering on every way it returns; a throw that
+      // escaped it must not leave typed messages bound to a run that is gone.
+      endSteeringRun(conversationId, ownedLoopId);
     }
   }
 
@@ -4548,8 +4667,17 @@ async function runDispatchedTurns(
           continuesTeamTask: queuedInput.continuesTeamTask,
           ...(queuedInput.imageEditRequest ? { imageEditRequest: queuedInput.imageEditRequest } : {}),
           operationOwner: options?.operationOwner,
-          onAbortControllerReady: options?.onAbortControllerReady },
+          onAbortControllerReady: options?.onAbortControllerReady,
+          // A run another surface started meanwhile does not get it as a
+          // message: it goes back for after that run, whose dispatcher starts it.
+          queuedHandoff: queuedInput },
       );
+      if (handoffResult.reason === 'enqueued') {
+        // Back in the queue, behind the live run; this conversation is still
+        // left with the previous run's result.
+        queuedInputInFlight = undefined;
+        break;
+      }
       if (handoffResult.reason === 'error' && !handoffResult.messageTaken) {
         restoreDequeuedUserInput(conversationId, queuedInput);
         queuedInputInFlight = undefined;

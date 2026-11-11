@@ -2,6 +2,7 @@ import { useChatStore } from '@/stores/chatStore';
 import { runAgentLoopDispatched, type AgentLoopDispatchResult } from '@/core/agent/agentLoopRunner';
 import { getMessageText } from '@/core/context/contextUtils';
 import { getI18n, format } from '@/i18n';
+import { steeredTextsOf } from '@/utils/steeredTurn';
 
 const MAX_REQUEST_CHARS = 500;
 
@@ -21,9 +22,15 @@ const MAX_REQUEST_CHARS = 500;
 export async function resumeTeamRunAfterRestart(conversationId: string): Promise<AgentLoopDispatchResult | null> {
   const conversation = useChatStore.getState().conversations[conversationId];
   if (!conversation?.teamId || conversation.readOnly) return null;
-  const lastUser = [...conversation.messages].reverse().find((m) => m.role === 'user' && !m.isSystem);
+  // The last request, not a message steered into its run; what was steered
+  // into the run belongs to the request. Each part is cut on its own, so a
+  // long request never pushes the corrections steered into it out of the quote.
+  const lastUser = [...conversation.messages].reverse().find((m) => m.role === 'user' && !m.isSystem && !m.steered);
   if (!lastUser) return null;
-  const request = getMessageText(lastUser.content).trim().slice(0, MAX_REQUEST_CHARS);
+  const request = [getMessageText(lastUser.content), ...steeredTextsOf(conversation.messages, lastUser)]
+    .map((part) => part.trim().slice(0, MAX_REQUEST_CHARS).trim())
+    .filter((part) => part.length > 0)
+    .join('\n\n');
   if (!request) return null;
   return runAgentLoopDispatched(
     conversationId,

@@ -33,6 +33,25 @@
  *     conversation with an active sidecar `RunSession`. User follow-ups are
  *     never forwarded; the shell starts them as independent runs.
  *
+ * ── Steering: the take goes to the shell ─────────────────────────────────
+ * User entries typed while a task runs live only in the shell's queue. When
+ * the loop reaches a step boundary it calls `takeSteeringInputs`, which here
+ * asks the shell (`input.takeSteering { runId }`, handled by
+ * `agentLoopRunner.ts`'s `handleTakeSteering`). The shell removes the entries
+ * and answers with them in one synchronous step, so a chip's × or its "send
+ * after the task" and the take can never both win, and nothing is forwarded
+ * ahead of time that could later go stale in this process. A failed or
+ * malformed answer takes nothing. `restoreSteeringInputs` is a no-op here:
+ * the shell remembers what it handed out and, when it finalizes the run,
+ * puts back every entry whose message never reached it.
+ *
+ * Which run a typed message is bound to is decided in the shell as well: it
+ * opens a run the user is watching for steering when it registers the run.
+ * `beginSteeringRun` therefore only updates this process's copy; the loop's
+ * `endSteeringRun` (the run goes on without steps of its own, was stopped, or
+ * ended) also tells the shell (`input.steeringEnded { runId }`), so a message
+ * the run will never read stops saying it joins the next step at once.
+ *
  * ── runId resolution for the consumed-notify ─────────────────────────────
  * `drainQueuedInputs`/`clearInputQueue` take a `conversationId`, not a
  * `runId` — but `input.consumed` needs `runId` (the shell's session
@@ -63,9 +82,19 @@ import {
   clearInputQueue as realClearInputQueue,
   subscribeToInputQueue as realSubscribeToInputQueue,
   getInputQueueSnapshot as realGetInputQueueSnapshot,
+  dequeueNextUserInput as realDequeueNextUserInput,
+  restoreDequeuedUserInput as realRestoreDequeuedUserInput,
+  requeueUserInput as realRequeueUserInput,
+  takeSteeringInputsNow as realTakeSteeringInputsNow,
+  beginSteeringRun as realBeginSteeringRun,
+  endSteeringRun as realEndSteeringRun,
+  sendQueuedInputAfterRun as realSendQueuedInputAfterRun,
+  isSteerableText as realIsSteerableText,
+  isSteeringInput as realIsSteeringInput,
+  steeredMessageId as realSteeredMessageId,
   type QueuedInput,
 } from '@/core/agent/userInputQueue';
-import { sendNotification } from '../rpcClient';
+import { sendNotification, sendRequest } from '../rpcClient';
 import { agentRunContext } from '../agentRunContext';
 
 export type { QueuedInput };
@@ -86,6 +115,15 @@ export const pauseUserInputQueue = realPauseUserInputQueue;
 export const resumeUserInputQueue = realResumeUserInputQueue;
 export const subscribeToInputQueue = realSubscribeToInputQueue;
 export const getInputQueueSnapshot = realGetInputQueueSnapshot;
+export const dequeueNextUserInput = realDequeueNextUserInput;
+export const restoreDequeuedUserInput = realRestoreDequeuedUserInput;
+export const requeueUserInput = realRequeueUserInput;
+export const takeSteeringInputsNow = realTakeSteeringInputsNow;
+export const beginSteeringRun = realBeginSteeringRun;
+export const sendQueuedInputAfterRun = realSendQueuedInputAfterRun;
+export const isSteerableText = realIsSteerableText;
+export const isSteeringInput = realIsSteeringInput;
+export const steeredMessageId = realSteeredMessageId;
 
 function notifyConsumed(queueIds: string[]): void {
   if (queueIds.length === 0) return;
@@ -115,3 +153,52 @@ export function clearInputQueue(conversationId: string): void {
   realClearInputQueue(conversationId);
   notifyConsumed(queueIds);
 }
+
+function isTakenItem(value: unknown): value is { id: string; text: string; timestamp: number } {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as { id?: unknown; text?: unknown; timestamp?: unknown };
+  return typeof item.id === 'string' && item.id.length > 0
+    && typeof item.text === 'string' && item.text.trim().length > 0
+    && typeof item.timestamp === 'number' && Number.isFinite(item.timestamp);
+}
+
+/**
+ * The step-boundary take, answered by the shell (see the module doc). Never
+ * rejects: outside a run, on a transport failure or on a malformed answer it
+ * takes nothing, and whatever the shell did hand out comes back as a chip when
+ * the shell finalizes the run.
+ */
+export async function takeSteeringInputs(_conversationId: string, _runId: string): Promise<QueuedInput[]> {
+  const runId = agentRunContext.getStore()?.runId;
+  if (!runId) return [];
+  let reply: unknown;
+  try {
+    reply = await sendRequest('input.takeSteering', { runId });
+  } catch {
+    return [];
+  }
+  const items = (reply as { items?: unknown } | null)?.items;
+  if (!Array.isArray(items)) return [];
+  return items.filter(isTakenItem).map((item) => ({
+    id: item.id,
+    text: item.text,
+    timestamp: item.timestamp,
+    delivery: 'steer' as const,
+  }));
+}
+
+/**
+ * The run reads no more steering (see the module doc): this process's copy
+ * releases its entries and the shell is told, so the chips of the messages it
+ * will not read say they wait for the end of the task. Outside a run nothing
+ * is sent; the shell releases a run's entries when it settles anyway.
+ */
+export function endSteeringRun(conversationId: string, runId: string): void {
+  realEndSteeringRun(conversationId, runId);
+  const ambientRunId = agentRunContext.getStore()?.runId;
+  if (!ambientRunId) return;
+  sendNotification('input.steeringEnded', { runId: ambientRunId });
+}
+
+/** No-op in the sidecar: the shell restores undelivered entries itself (see the module doc). */
+export function restoreSteeringInputs(_conversationId: string, _items: readonly QueuedInput[]): void {}

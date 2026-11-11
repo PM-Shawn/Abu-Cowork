@@ -4,7 +4,8 @@
  * "test the shim against the real underlying module" discipline
  * `lifecycleHooksRun.test.ts` uses for `agentRunContext`) and adds the
  * `input.consumed` notify side effect to `drainQueuedInputs`/
- * `clearInputQueue`, resolved via the ambient `agentRunContext` ALS.
+ * `clearInputQueue`, resolved via the ambient `agentRunContext` ALS, and the
+ * `input.steeringEnded` notify to `endSteeringRun`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { agentRunContext, type AgentRunContext } from '../agentRunContext';
@@ -19,6 +20,11 @@ import {
   drainQueuedInputs,
   drainSystemQueuedInputs,
   clearInputQueue,
+  restoreSteeringInputs,
+  takeSteeringInputs,
+  beginSteeringRun,
+  endSteeringRun,
+  requeueUserInput,
 } from './userInputQueueRun';
 
 function makeAgentCtx(overrides?: Partial<AgentRunContext>): AgentRunContext {
@@ -59,6 +65,11 @@ describe('userInputQueueRun shim', () => {
     it('enqueueUserInputWithId preserves the caller id through the shim', () => {
       enqueueUserInputWithId(CONV, 'preserved-id', 'staged');
       expect(getQueuedInputs(CONV)[0].id).toBe('preserved-id');
+    });
+
+    it('requeueUserInput puts a hand-off back through the shim', () => {
+      requeueUserInput(CONV, { id: 'back', text: 'x', timestamp: 1, delivery: 'steer', runId: 'run-old' });
+      expect(getQueuedInputs(CONV).map((qi) => [qi.id, qi.delivery])).toEqual([['back', undefined]]);
     });
 
     it('removeQueuedInput removes by id through the shim', () => {
@@ -134,6 +145,105 @@ describe('userInputQueueRun shim', () => {
       const spy = vi.spyOn(rpcClient, 'sendNotification').mockImplementation(() => {});
       agentRunContext.run(makeAgentCtx({ runId: 'run-99', conversationId: CONV }), () => clearInputQueue(CONV));
       expect(spy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('takeSteeringInputs — asks the shell, which owns the queue', () => {
+    it('sends input.takeSteering for the ambient run and returns the shell\'s items as steering entries', async () => {
+      const spy = vi.spyOn(rpcClient, 'sendRequest').mockResolvedValue({
+        items: [
+          { id: 'q1', text: '改成蓝色', timestamp: 10 },
+          { id: 'q2', text: '再加一页', timestamp: 11 },
+        ],
+      });
+
+      const taken = await agentRunContext.run(makeAgentCtx({ runId: 'run-7', conversationId: CONV }), () =>
+        takeSteeringInputs(CONV, 'run-1'),
+      );
+
+      expect(spy).toHaveBeenCalledExactlyOnceWith('input.takeSteering', { runId: 'run-7' });
+      expect(taken).toEqual([
+        { id: 'q1', text: '改成蓝色', timestamp: 10, delivery: 'steer' },
+        { id: 'q2', text: '再加一页', timestamp: 11, delivery: 'steer' },
+      ]);
+    });
+
+    it('never touches the sidecar\'s own queue: a user entry staged here is neither taken nor sent', async () => {
+      vi.spyOn(rpcClient, 'sendRequest').mockResolvedValue({ items: [] });
+      enqueueUserInput(CONV, 'local only');
+      const taken = await agentRunContext.run(makeAgentCtx({ conversationId: CONV }), () => takeSteeringInputs(CONV, 'run-1'));
+      expect(taken).toEqual([]);
+      expect(getQueuedInputs(CONV).map((item) => item.text)).toEqual(['local only']);
+    });
+
+    it('outside a run context takes nothing and sends nothing', async () => {
+      const spy = vi.spyOn(rpcClient, 'sendRequest');
+      await expect(takeSteeringInputs(CONV, 'run-1')).resolves.toEqual([]);
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('a failed request takes nothing instead of failing the step', async () => {
+      vi.spyOn(rpcClient, 'sendRequest').mockRejectedValue(new Error('Shell request "input.takeSteering" timed out'));
+      const taken = await agentRunContext.run(makeAgentCtx({ conversationId: CONV }), () => takeSteeringInputs(CONV, 'run-1'));
+      expect(taken).toEqual([]);
+    });
+
+    it('drops malformed items and malformed replies', async () => {
+      const spy = vi.spyOn(rpcClient, 'sendRequest');
+      spy.mockResolvedValueOnce({
+        items: [
+          { id: 'ok', text: 'keep', timestamp: 1 },
+          { id: '', text: 'no id', timestamp: 1 },
+          { id: 'blank', text: '   ', timestamp: 1 },
+          { id: 'no-time', text: 'x' },
+          'not an object',
+          null,
+        ],
+      });
+      spy.mockResolvedValueOnce(null);
+      spy.mockResolvedValueOnce({ items: 'nope' });
+      const run = () => agentRunContext.run(makeAgentCtx({ conversationId: CONV }), () => takeSteeringInputs(CONV, 'run-1'));
+
+      expect((await run()).map((item) => item.id)).toEqual(['ok']);
+      expect(await run()).toEqual([]);
+      expect(await run()).toEqual([]);
+    });
+
+    it('restoreSteeringInputs is a no-op here (the shell restores what never arrived)', () => {
+      const notify = vi.spyOn(rpcClient, 'sendNotification');
+      const request = vi.spyOn(rpcClient, 'sendRequest');
+      agentRunContext.run(makeAgentCtx({ conversationId: CONV }), () =>
+        restoreSteeringInputs(CONV, [{ id: 'q1', text: 'x', timestamp: 1, delivery: 'steer' }]),
+      );
+      expect(getQueuedInputs(CONV)).toHaveLength(0);
+      expect(notify).not.toHaveBeenCalled();
+      expect(request).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the run\'s steering: the shell binds, the loop tells it when it stops reading', () => {
+    it('beginSteeringRun updates this copy only and tells the shell nothing', () => {
+      const notify = vi.spyOn(rpcClient, 'sendNotification').mockImplementation(() => {});
+      agentRunContext.run(makeAgentCtx({ runId: 'run-3', conversationId: CONV }), () => beginSteeringRun(CONV, 'run-3'));
+      expect(enqueueUserInput(CONV, 'typed here')?.runId).toBe('run-3');
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('endSteeringRun releases this copy\'s entries and tells the shell for the ambient run', () => {
+      const notify = vi.spyOn(rpcClient, 'sendNotification').mockImplementation(() => {});
+      beginSteeringRun(CONV, 'run-3');
+      enqueueUserInput(CONV, 'typed here');
+
+      agentRunContext.run(makeAgentCtx({ runId: 'run-3', conversationId: CONV }), () => endSteeringRun(CONV, 'run-3'));
+
+      expect(notify).toHaveBeenCalledExactlyOnceWith('input.steeringEnded', { runId: 'run-3' });
+      expect(getQueuedInputs(CONV).map((item) => item.delivery)).toEqual([undefined]);
+    });
+
+    it('endSteeringRun outside a run context tells the shell nothing', () => {
+      const notify = vi.spyOn(rpcClient, 'sendNotification').mockImplementation(() => {});
+      endSteeringRun(CONV, 'run-3');
+      expect(notify).not.toHaveBeenCalled();
     });
   });
 });

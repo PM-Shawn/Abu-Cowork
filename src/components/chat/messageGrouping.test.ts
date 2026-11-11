@@ -51,6 +51,33 @@ describe('groupMessagesByLoop', () => {
       ]);
   });
 
+  it('keeps messages steered into a run inside that run, in order', () => {
+    const messages = [
+      message('user-1', 'user', 'loop-1'),
+      message('assistant-1', 'assistant', 'loop-1'),
+      { ...message('steer-q1', 'user', 'loop-1'), steered: true as const },
+      message('assistant-2', 'assistant', 'loop-1'),
+      { ...message('steer-q2', 'user', 'loop-1'), steered: true as const },
+      message('assistant-3', 'assistant', 'loop-1'),
+      message('user-2', 'user', 'loop-2'),
+    ];
+
+    expect(groupMessagesByLoop(messages).map((group) => group.map((item) => item.id))).toEqual([
+      ['user-1', 'assistant-1', 'steer-q1', 'assistant-2', 'steer-q2', 'assistant-3'],
+      ['user-2'],
+    ]);
+    expect(lastGroupIndexByLoop(groupMessagesByLoop(messages)).get('loop-1')).toBe(0);
+  });
+
+  it('a steered message of another run still starts a group', () => {
+    const messages = [
+      message('user-1', 'user', 'loop-1'),
+      message('assistant-1', 'assistant', 'loop-1'),
+      { ...message('steer-q1', 'user', 'loop-2'), steered: true as const },
+    ];
+    expect(groupMessagesByLoop(messages)).toHaveLength(2);
+  });
+
   it('keeps legacy messages without loopIds as separate groups', () => {
     expect(groupMessagesByLoop([
       message('legacy-user', 'user'),

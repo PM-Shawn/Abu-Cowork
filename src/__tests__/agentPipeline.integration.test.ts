@@ -233,6 +233,12 @@ vi.mock('../core/agent/userInputQueue', () => ({
   hasSystemQueuedInputs: vi.fn().mockReturnValue(false),
   enqueueUserInput: vi.fn(),
   pauseUserInputQueue: vi.fn(),
+  takeSteeringInputs: vi.fn().mockResolvedValue([]),
+  restoreSteeringInputs: vi.fn(),
+  beginSteeringRun: vi.fn(),
+  endSteeringRun: vi.fn(),
+  requeueUserInput: vi.fn(),
+  steeredMessageId: (id: string) => `steer-${id}`,
 }));
 
 vi.mock('../core/agent/executionSnapshot', () => ({
@@ -1619,6 +1625,472 @@ describe('Agent Pipeline Integration', () => {
       release();
       await first;
       expect(streamCalls).toBe(1);
+    });
+  });
+
+  describe('steering: messages typed while the run works', () => {
+    const toolStepThenAnswer = () => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          if (calls === 1) {
+            onEvent({ type: 'tool_use', id: 't-1', name: 'read_file', input: { path: '/x' } });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+            return;
+          }
+          onEvent({ type: 'text', text: '好的，已改成蓝色' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+    };
+
+    it('takes them after a tool step and puts them, in order, before the next model request', async () => {
+      const { takeSteeringInputs } = await import('../core/agent/userInputQueue');
+      toolStepThenAnswer();
+      vi.mocked(takeSteeringInputs).mockResolvedValueOnce([
+        { id: 'q1', text: '改成蓝色', timestamp: 11, delivery: 'steer' },
+        { id: 'q2', text: '标题也改短', timestamp: 12, delivery: 'steer' },
+      ]);
+      const convId = useChatStore.getState().createConversation();
+
+      const result = await runAgentLoop(convId, '做一张图表');
+
+      expect(result.reason).toBe('completed');
+      // Once, at the step after the tool step: not before the first request,
+      // not after the final answer.
+      // The take names the run: only what was typed into it is handed out.
+      const runLoopId = useChatStore.getState().conversations[convId].messages[0].loopId;
+      expect(vi.mocked(takeSteeringInputs)).toHaveBeenCalledExactlyOnceWith(convId, runLoopId);
+      const takeOrder = vi.mocked(takeSteeringInputs).mock.invocationCallOrder[0];
+      expect(takeOrder).toBeGreaterThan(mockClaudeChat.mock.invocationCallOrder[0]);
+      expect(takeOrder).toBeLessThan(mockClaudeChat.mock.invocationCallOrder[1]);
+
+      const secondRequest = mockClaudeChat.mock.calls[1][0] as Message[];
+      const tail = secondRequest.slice(-3).map((m) => [m.role, m.role === 'user' ? m.content : 'step']);
+      expect(tail).toEqual([['assistant', 'step'], ['user', '改成蓝色'], ['user', '标题也改短']]);
+
+      const messages = useChatStore.getState().conversations[convId].messages;
+      const loopId = messages[0].loopId;
+      const steered = messages.filter((m) => m.steered);
+      expect(steered.map((m) => ({ id: m.id, role: m.role, content: m.content, loopId: m.loopId, timestamp: m.timestamp })))
+        .toEqual([
+          { id: 'steer-q1', role: 'user', content: '改成蓝色', loopId, timestamp: 11 },
+          { id: 'steer-q2', role: 'user', content: '标题也改短', loopId, timestamp: 12 },
+        ]);
+      // In the transcript after the tool step and before the answer.
+      const index = (id: string) => messages.findIndex((m) => m.id === id);
+      const toolStep = messages.findIndex((m) => m.toolCalls?.some((tc) => tc.id === 't-1'));
+      const answer = messages.findIndex((m) => m.role === 'assistant' && m.content === '好的，已改成蓝色');
+      expect(toolStep).toBeLessThan(index('steer-q1'));
+      expect(index('steer-q2')).toBe(index('steer-q1') + 1);
+      expect(index('steer-q2')).toBeLessThan(answer);
+      expect(steered.every((m) => !m.isSystem)).toBe(true);
+    });
+
+    it('a run that answers in plain text takes nothing: what was typed starts its own turn', async () => {
+      const { takeSteeringInputs } = await import('../core/agent/userInputQueue');
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          onEvent({ type: 'text', text: '这是最终答案' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+      const convId = useChatStore.getState().createConversation();
+
+      await runAgentLoop(convId, '你好');
+
+      expect(vi.mocked(takeSteeringInputs)).not.toHaveBeenCalled();
+    });
+
+    it('the final answer after the last tool step takes nothing more', async () => {
+      const { takeSteeringInputs } = await import('../core/agent/userInputQueue');
+      toolStepThenAnswer();
+      const convId = useChatStore.getState().createConversation();
+
+      await runAgentLoop(convId, '做一张图表');
+
+      // Taken once, before the answer; the answer ends the run with no take.
+      expect(vi.mocked(takeSteeringInputs)).toHaveBeenCalledTimes(1);
+      expect(useChatStore.getState().conversations[convId].messages.some((m) => m.steered)).toBe(false);
+    });
+
+    it('Stop during the take gives the messages back instead of showing them', async () => {
+      const { takeSteeringInputs, restoreSteeringInputs, pauseUserInputQueue, endSteeringRun } = await import('../core/agent/userInputQueue');
+      toolStepThenAnswer();
+      const convId = useChatStore.getState().createConversation();
+      const taken = [{ id: 'q1', text: '先别发', timestamp: 11, delivery: 'steer' as const }];
+      vi.mocked(takeSteeringInputs).mockImplementationOnce(async () => {
+        useChatStore.getState().getAbortController(convId).abort();
+        return taken;
+      });
+
+      const result = await runAgentLoop(convId, '发邮件');
+
+      expect(result.reason).toBe('aborted');
+      expect(vi.mocked(restoreSteeringInputs)).toHaveBeenCalledExactlyOnceWith(convId, taken);
+      expect(vi.mocked(pauseUserInputQueue)).toHaveBeenCalledWith(convId);
+      // The run's steering ends before the pause, so the restored entry is
+      // paused as one for after the task.
+      expect(vi.mocked(endSteeringRun).mock.invocationCallOrder[0])
+        .toBeGreaterThan(vi.mocked(restoreSteeringInputs).mock.invocationCallOrder[0]);
+      expect(vi.mocked(endSteeringRun).mock.invocationCallOrder[0])
+        .toBeLessThan(vi.mocked(pauseUserInputQueue).mock.invocationCallOrder.at(-1)!);
+      expect(useChatStore.getState().conversations[convId].messages.some((m) => m.steered)).toBe(false);
+      expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+    });
+
+    it('a step the turn cap stops is never handed a message', async () => {
+      const { takeSteeringInputs } = await import('../core/agent/userInputQueue');
+      const defaultMaxTurns = useSettingsStore.getState().agentMaxTurns;
+      useSettingsStore.setState({ agentMaxTurns: 2 });
+      try {
+        let calls = 0;
+        mockClaudeChat.mockImplementation(
+          async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+            calls++;
+            onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: '/x' } });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+          },
+        );
+        const convId = useChatStore.getState().createConversation();
+
+        const result = await runAgentLoop(convId, 'loop until capped');
+
+        expect(result.reason).toBe('max_turns');
+        // After step 1 (step 2 runs); never after step 2, which hits the cap.
+        expect(vi.mocked(takeSteeringInputs)).toHaveBeenCalledTimes(1);
+      } finally {
+        // The file's beforeEach merges settings: a cap left here would stop
+        // every later multi-step run early.
+        useSettingsStore.setState({ agentMaxTurns: defaultMaxTurns });
+      }
+    });
+
+    it('a run reads steering from the start of its own steps to its end; a run nobody watches never does', async () => {
+      const { beginSteeringRun, endSteeringRun } = await import('../core/agent/userInputQueue');
+      toolStepThenAnswer();
+      const convId = useChatStore.getState().createConversation();
+
+      await runAgentLoop(convId, '做一张图表');
+      const loopId = useChatStore.getState().conversations[convId].messages[0].loopId;
+      expect(vi.mocked(beginSteeringRun).mock.calls).toEqual([[convId, loopId]]);
+      expect(vi.mocked(endSteeringRun)).toHaveBeenCalledWith(convId, loopId);
+      expect(vi.mocked(endSteeringRun).mock.invocationCallOrder.at(-1)!)
+        .toBeGreaterThan(vi.mocked(beginSteeringRun).mock.invocationCallOrder[0]);
+
+      vi.mocked(beginSteeringRun).mockClear();
+      toolStepThenAnswer();
+      await runAgentLoop(useChatStore.getState().createConversation(), '定时汇总', { initiatedBy: 'automation' });
+      expect(vi.mocked(beginSteeringRun)).not.toHaveBeenCalled();
+    });
+
+    it('a run nobody is watching (automation) takes nothing', async () => {
+      const { takeSteeringInputs } = await import('../core/agent/userInputQueue');
+      toolStepThenAnswer();
+      const convId = useChatStore.getState().createConversation();
+
+      await runAgentLoop(convId, '定时汇总', { initiatedBy: 'automation' });
+
+      expect(vi.mocked(takeSteeringInputs)).not.toHaveBeenCalled();
+    });
+  });
+
+  // Tester additions (P7): the in-process loop against the REAL input queue,
+  // so a message typed into the queue, the loop's take, a restore and the
+  // pause on Stop are the product's own code end to end.
+  describe('steering against the real input queue (tester)', () => {
+    type Queue = typeof import('../core/agent/userInputQueue');
+    let real: Queue;
+    let mocked: Queue;
+    const touched: string[] = [];
+
+    beforeEach(async () => {
+      // The file's beforeEach merges settings, so a turn cap an earlier test
+      // set (the steering block's 'a step the turn cap stops ...' sets 2)
+      // would otherwise stop these multi-step runs early.
+      useSettingsStore.setState({ agentMaxTurns: useSettingsStore.getInitialState().agentMaxTurns });
+      real = await vi.importActual<Queue>('../core/agent/userInputQueue');
+      mocked = await import('../core/agent/userInputQueue');
+      vi.mocked(mocked.takeSteeringInputs).mockImplementation(real.takeSteeringInputs);
+      vi.mocked(mocked.restoreSteeringInputs).mockImplementation(real.restoreSteeringInputs);
+      vi.mocked(mocked.pauseUserInputQueue).mockImplementation(real.pauseUserInputQueue);
+      vi.mocked(mocked.clearInputQueue).mockImplementation(real.clearInputQueue);
+      vi.mocked(mocked.beginSteeringRun).mockImplementation(real.beginSteeringRun);
+      vi.mocked(mocked.endSteeringRun).mockImplementation(real.endSteeringRun);
+      vi.mocked(mocked.requeueUserInput).mockImplementation(real.requeueUserInput);
+    });
+
+    afterEach(() => {
+      vi.mocked(mocked.takeSteeringInputs).mockReset().mockResolvedValue([]);
+      vi.mocked(mocked.restoreSteeringInputs).mockReset();
+      vi.mocked(mocked.pauseUserInputQueue).mockReset();
+      vi.mocked(mocked.clearInputQueue).mockReset();
+      vi.mocked(mocked.beginSteeringRun).mockReset();
+      vi.mocked(mocked.endSteeringRun).mockReset();
+      vi.mocked(mocked.requeueUserInput).mockReset();
+      for (const id of touched.splice(0)) real.clearInputQueue(id);
+    });
+
+    const newConversation = (): string => {
+      const id = useChatStore.getState().createConversation();
+      touched.push(id);
+      return id;
+    };
+
+    /** The model calls a tool `toolSteps` times, then answers. */
+    const toolStepsThenAnswer = (toolSteps: number) => {
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          if (calls <= toolSteps) {
+            onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: '/x' } });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+            return;
+          }
+          onEvent({ type: 'text', text: '完成' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+    };
+
+    /** Runs `typing` while the n-th tool step executes (the user types while the task works). */
+    const typeDuringToolStep = (typing: () => void) => {
+      vi.mocked(executeToolBatch).mockImplementationOnce(async () => {
+        typing();
+        return { mcpChanged: false, requiresUserRecovery: false, observations: [] };
+      });
+    };
+
+    const requestTail = (call: number, count: number) => (mockClaudeChat.mock.calls[call][0] as Message[])
+      .slice(-count)
+      .map((m) => [m.role, m.role === 'user' ? m.content : 'step']);
+
+    const userTexts = (convId: string) => useChatStore.getState().conversations[convId].messages
+      .filter((m) => m.role === 'user')
+      .map((m) => [m.content, m.steered ?? false]);
+
+    it('two messages typed during one tool step arrive together, in order, right after the step', async () => {
+      toolStepsThenAnswer(1);
+      const convId = newConversation();
+      typeDuringToolStep(() => {
+        real.enqueueUserInput(convId, '只要华东区');
+        real.enqueueUserInput(convId, '/ppt 做成汇报'); // names its own route: waits for the end
+        real.enqueueUserInput(convId, '按月排序');
+      });
+
+      const result = await runAgentLoop(convId, '整理销售表');
+
+      expect(result.reason).toBe('completed');
+      expect(requestTail(1, 3)).toEqual([['assistant', 'step'], ['user', '只要华东区'], ['user', '按月排序']]);
+      expect(userTexts(convId)).toEqual([['整理销售表', false], ['只要华东区', true], ['按月排序', true]]);
+      expect(real.getQueuedInputs(convId).map((item) => [item.text, item.delivery])).toEqual([['/ppt 做成汇报', undefined]]);
+    });
+
+    // Re-review addition (P7): on the sidecar path the shell opens a watched
+    // run for steering when it registers it, before the loop has routed. An
+    // `@expert` turn has no step of its own, so the loop ends that steering at
+    // once and what was typed waits for after the turn.
+    it('an @expert turn reads no steering: a message the shell bound to the run waits for after the turn', async () => {
+      const { routeInput } = await import('../core/agent/orchestrator');
+      vi.mocked(routeInput).mockReturnValueOnce({
+        type: 'delegate', cleanInput: '查一下十月的销量', name: 'abu',
+        delegateAgent: { name: 'researcher', description: 'research', systemPrompt: 'research', filePath: '__preset__' },
+      } as never);
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          onEvent({ type: 'text', text: '查好了' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+      const completedSpy = vi.spyOn(notifications, 'notifyTaskCompleted').mockResolvedValue(undefined);
+      const convId = newConversation();
+      real.beginSteeringRun(convId, 'loop-expert');
+      expect(real.enqueueUserInput(convId, '只看华东区')).toMatchObject({ delivery: 'steer', runId: 'loop-expert' });
+
+      let reason: string | undefined;
+      try {
+        reason = (await runAgentLoop(convId, '@researcher 查一下十月的销量', { loopId: 'loop-expert' })).reason;
+      } finally {
+        completedSpy.mockRestore();
+      }
+
+      // The expert answered the whole turn (the delegate branch returns before the loop's own end).
+      expect(reason).toBe('completed');
+      expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(mocked.endSteeringRun)).toHaveBeenCalledWith(convId, 'loop-expert');
+      expect(vi.mocked(mocked.takeSteeringInputs)).not.toHaveBeenCalled();
+      expect(useChatStore.getState().conversations[convId].messages.some((m) => m.steered)).toBe(false);
+      expect(real.getQueuedInputs(convId).map((item) => [item.text, item.delivery])).toEqual([['只看华东区', undefined]]);
+      expect(real.enqueueUserInput(convId, '再加一句结论')?.delivery).toBeUndefined();
+    });
+
+    it('a message typed while the take is in flight is delivered exactly once, at the next step', async () => {
+      toolStepsThenAnswer(2);
+      const convId = newConversation();
+      typeDuringToolStep(() => { real.enqueueUserInput(convId, 'early'); });
+      vi.mocked(mocked.takeSteeringInputs).mockImplementationOnce(async (id: string, runId: string) => {
+        const taken = await real.takeSteeringInputs(id, runId);
+        real.enqueueUserInput(id, 'late'); // typed between the take and the message
+        return taken;
+      });
+
+      await runAgentLoop(convId, '做报表');
+
+      expect(requestTail(1, 2)).toEqual([['assistant', 'step'], ['user', 'early']]);
+      expect(requestTail(2, 2)).toEqual([['assistant', 'step'], ['user', 'late']]);
+      expect(userTexts(convId)).toEqual([['做报表', false], ['early', true], ['late', true]]);
+      expect(real.getQueuedInputs(convId)).toEqual([]);
+    });
+
+    it('a message typed during the take of the last step is not lost: it waits once in the queue for its own turn', async () => {
+      toolStepsThenAnswer(1);
+      const convId = newConversation();
+      vi.mocked(mocked.takeSteeringInputs).mockImplementationOnce(async (id: string, runId: string) => {
+        const taken = await real.takeSteeringInputs(id, runId);
+        real.enqueueUserInput(id, 'late');
+        return taken;
+      });
+
+      await runAgentLoop(convId, '做报表');
+
+      expect(userTexts(convId)).toEqual([['做报表', false]]);
+      expect(real.getQueuedInputs(convId).map((item) => item.text)).toEqual(['late']);
+    });
+
+    it('Stop pressed exactly during the take: the messages wait as paused chips for after the task, and none is shown', async () => {
+      toolStepsThenAnswer(1);
+      const convId = newConversation();
+      typeDuringToolStep(() => {
+        real.enqueueUserInput(convId, '先别发邮件');
+        real.enqueueUserInput(convId, '改成草稿');
+      });
+      vi.mocked(mocked.takeSteeringInputs).mockImplementationOnce(async (id: string, runId: string) => {
+        const taken = await real.takeSteeringInputs(id, runId);
+        useChatStore.getState().getAbortController(id).abort();
+        return taken;
+      });
+
+      const result = await runAgentLoop(convId, '发邮件');
+
+      expect(result.reason).toBe('aborted');
+      expect(mockClaudeChat).toHaveBeenCalledTimes(1);
+      expect(userTexts(convId)).toEqual([['发邮件', false]]);
+      expect(real.getQueuedInputs(convId).map((item) => [item.text, item.delivery])).toEqual([
+        ['先别发邮件', undefined],
+        ['改成草稿', undefined],
+      ]);
+      expect(real.isUserInputQueuePaused(convId)).toBe(true);
+    });
+
+    it('a message typed into another conversation is not taken by this run', async () => {
+      toolStepsThenAnswer(1);
+      const convId = newConversation();
+      const other = newConversation();
+      typeDuringToolStep(() => { real.enqueueUserInput(other, '这是另一个对话的'); });
+
+      await runAgentLoop(convId, '做报表');
+
+      expect(userTexts(convId)).toEqual([['做报表', false]]);
+      expect(real.getQueuedInputs(other).map((item) => item.text)).toEqual(['这是另一个对话的']);
+    });
+
+    // Found by the tester: same as the sidecar path (agentLoopRunner.test.ts,
+    // "a run of a conversation deleted after a take ..."): the conversation is
+    // deleted during the take; deleteConversation clears the queue, then the
+    // loop restored the taken entries into it.
+    it('a conversation deleted during the take keeps no queued entries afterwards', async () => {
+      toolStepsThenAnswer(1);
+      const convId = newConversation();
+      typeDuringToolStep(() => { real.enqueueUserInput(convId, '先别发'); });
+      vi.mocked(mocked.takeSteeringInputs).mockImplementationOnce(async (id: string, runId: string) => {
+        const taken = await real.takeSteeringInputs(id, runId);
+        // What chatStore.deleteConversation does, in its order (the action
+        // itself needs store mocks this file does not set up): abort the run,
+        // clear the conversation's queue, drop the record.
+        useChatStore.getState().getAbortController(id).abort('conversation-deleted');
+        real.clearInputQueue(id);
+        useChatStore.setState((state) => {
+          const { [id]: _deleted, ...rest } = state.conversations;
+          return { conversations: rest };
+        });
+        return taken;
+      });
+
+      await runAgentLoop(convId, '发邮件').catch(() => undefined);
+
+      expect(real.getQueuedInputs(convId)).toEqual([]);
+    });
+
+    it('a queued hand-off that meets the live run goes back for after it: the loop never takes it as a message', async () => {
+      toolStepsThenAnswer(1);
+      const convId = newConversation();
+      const handoff = { id: 'qi-before', text: '最后再总结三句话', timestamp: 7 };
+      let staged: Promise<{ reason: string }> | undefined;
+      // Another surface's dispatcher hands off an entry typed for the run before, while this run works.
+      typeDuringToolStep(() => { staged = runAgentLoop(convId, handoff.text, { queuedHandoff: handoff }); });
+
+      const result = await runAgentLoop(convId, '整理销售表');
+
+      expect(result.reason).toBe('completed');
+      await expect(staged).resolves.toEqual({ reason: 'enqueued' });
+      expect(vi.mocked(mocked.enqueueUserInput)).not.toHaveBeenCalled();
+      expect(userTexts(convId)).toEqual([['整理销售表', false]]);
+      expect(real.getQueuedInputs(convId)).toEqual([handoff]);
+    });
+
+    // The sequence the harness cannot drive (one inject per run, no Stop):
+    // Stop a task, start a new one, steer the new one, then resume the queue.
+    it('Stop, then a new task the user steers: the new task reads its correction, the stopped one\'s message waits and later joins nothing', async () => {
+      // The model's steps across the three runs, in order.
+      const script: Array<'tool' | 'answer'> = ['tool', 'tool', 'answer', 'tool', 'answer'];
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          if (script.shift() === 'tool') {
+            onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: '/x' } });
+            onEvent({ type: 'done', stopReason: 'tool_use' });
+            return;
+          }
+          onEvent({ type: 'text', text: '完成' });
+          onEvent({ type: 'done', stopReason: 'end_turn' });
+        },
+      );
+      const convId = newConversation();
+
+      // Run A: the user types a correction during its tool step, then presses
+      // Stop while the run takes it.
+      typeDuringToolStep(() => { real.enqueueUserInput(convId, '先别发邮件'); });
+      vi.mocked(mocked.takeSteeringInputs).mockImplementationOnce(async (id: string, runId: string) => {
+        const taken = await real.takeSteeringInputs(id, runId);
+        useChatStore.getState().getAbortController(id).abort();
+        return taken;
+      });
+      expect((await runAgentLoop(convId, '发邮件')).reason).toBe('aborted');
+      expect(real.isUserInputQueuePaused(convId)).toBe(true);
+      expect(real.getQueuedInputs(convId).map((item) => [item.text, item.delivery])).toEqual([['先别发邮件', undefined]]);
+      const requestsOfA = mockClaudeChat.mock.calls.length;
+
+      // Run C: the user starts a new task by sending normally and types a
+      // correction during its tool step. The paused queue does not hold it back.
+      typeDuringToolStep(() => { real.enqueueUserInput(convId, '标题改成周报'); });
+      expect((await runAgentLoop(convId, '写周报')).reason).toBe('completed');
+      expect(requestTail(requestsOfA + 1, 2)).toEqual([['assistant', 'step'], ['user', '标题改成周报']]);
+      const messages = useChatStore.getState().conversations[convId].messages;
+      const loopOfC = messages.find((m) => m.role === 'user' && m.content === '写周报')?.loopId;
+      expect(messages.filter((m) => m.steered).map((m) => [m.content, m.loopId])).toEqual([['标题改成周报', loopOfC]]);
+      // A's message still waits, paused, for after the task.
+      expect(real.getQueuedInputs(convId).map((item) => [item.text, item.delivery])).toEqual([['先别发邮件', undefined]]);
+
+      // 「继续队列」: A's message starts its own run D, which is handed nothing.
+      real.resumeUserInputQueue(convId);
+      const next = real.dequeueNextUserInput(convId)!;
+      expect(next.text).toBe('先别发邮件');
+      expect((await runAgentLoop(convId, next.text)).reason).toBe('completed');
+      expect(useChatStore.getState().conversations[convId].messages.filter((m) => m.steered)).toHaveLength(1);
+      expect(real.getQueuedInputs(convId)).toEqual([]);
     });
   });
 

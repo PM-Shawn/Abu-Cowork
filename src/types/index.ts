@@ -563,6 +563,10 @@ export interface Message {
   plannedSteps?: import('./execution').PlannedStep[];
   // System-injected messages (e.g. max_tokens recovery) — hidden from chat UI
   isSystem?: boolean;
+  // A user message typed while this run worked and delivered to it at a step
+  // boundary (userInputQueue.ts). It shares the run's loopId, sits after the
+  // step it followed and is shown inside that run's block, not as a new turn.
+  steered?: true;
   // Goal mode: set on the (isSystem) user message that opens an automatic goal
   // round, so the UI can render a round marker and the goal tool can tell an
   // automatic round from a human-initiated run.

@@ -243,20 +243,20 @@ test('one long line folds by characters and shows all of it', async () => {
   await expect(area).toContainText('a'.repeat(3000));
 });
 
-test('where Abu read only the start and end of a long output, the result says how many lines it left out', async () => {
+test('where Abu read only the start and end of a long output, the result says how much it left out', async () => {
   test.setTimeout(180_000);
+  // About 170 000 characters: past the one bound a result gets (12 500 tokens), so the middle is cut.
   const page = await launchInProject(() => [
-    commandCall('call-many', 'seq 1 5000'),
+    commandCall('call-many', 'seq 1 30000'),
     finalReply(),
   ]);
   await runTurn(page);
   await showSteps(page);
 
-  const area = await openBlock(stepRow(page, '执行 seq 1 5000'), '结果');
-  await area.getByRole('button', { name: '显示全部 180 行', exact: true }).click();
-  // The output section holds the 5000 numbers; Abu kept 150 + 30.
-  await expect(area.getByText('内容过长，阿布没有读取中间的 4820 行', { exact: true })).toBeVisible();
-  expect(await shownLines(area)).toContain('4999');
+  const area = await openBlock(stepRow(page, '执行 seq 1 30000'), '结果');
+  await area.getByRole('button', { name: /^显示全部 \d+ 行$/ }).click();
+  await expect(area.getByText(/^内容过长，阿布没有读取中间的 \d+ 个字符$/)).toBeVisible();
+  expect(await shownLines(area)).toContain('30000');
   await expect(area).not.toContainText('omitted');
   await shot(page, '05-lines-not-read');
 });

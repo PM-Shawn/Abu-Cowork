@@ -53,7 +53,7 @@ The default Vitest gate continues to check the shared history and file selection
 |---|---|
 | Unit (`*.test.ts(x)`, Vitest) | 1104 |
 | Integration (`*.integration.test.ts`) | 25 |
-| Contract (`*.contract.test.ts`) | 32 |
+| Contract (`*.contract.test.ts`) | 33 |
 | Enterprise (`enterprise-tests/**`, `npm run test:enterprise`, private build only — not in the default gate) | 60 |
 | Quarantined (`src/__tests__/quarantine/`) | 0 |
 | Quarantined specs (`e2e/**/*.spec.ts`, `tests/e2e/**/*.spec.ts`) | 0 |

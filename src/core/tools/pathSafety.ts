@@ -11,6 +11,7 @@ import { isMissingPathError } from '../../utils/fsErrors';
 import { normalizeLexicalPath, normalizeSeparators } from '../../utils/pathUtils';
 import { isMacOS, isWindows } from '../../utils/platform';
 import { createLogger } from '../logging/logger';
+import sensitivePaths from './sensitivePaths.json';
 
 const logger = createLogger('pathSafety');
 
@@ -37,166 +38,6 @@ async function getHomeDir(): Promise<string> {
   }
   return cachedHomeDir;
 }
-
-/**
- * The data folders of the browsers people use on macOS, relative to home.
- * Each holds every profile's cookies, saved passwords and site storage.
- */
-const BROWSER_DATA_PATHS_MAC = [
-  'Library/Application Support/Google/Chrome',
-  'Library/Application Support/Google/Chrome Beta',
-  'Library/Application Support/Google/Chrome Canary',
-  'Library/Application Support/Google/Chrome Dev',
-  'Library/Application Support/Chromium',
-  'Library/Application Support/Microsoft Edge',
-  'Library/Application Support/Microsoft Edge Beta',
-  'Library/Application Support/Microsoft Edge Dev',
-  'Library/Application Support/Microsoft Edge Canary',
-  'Library/Application Support/BraveSoftware',
-  'Library/Application Support/Firefox',
-  'Library/Application Support/Arc',
-  'Library/Application Support/Vivaldi',
-  'Library/Application Support/com.operasoftware.Opera',
-  'Library/Safari',
-  'Library/Cookies',
-  'Library/Containers/com.apple.Safari',
-];
-
-/** The same folders on Windows, relative to the user profile. */
-const BROWSER_DATA_PATHS_WIN = [
-  'AppData/Local/Google/Chrome/User Data',
-  'AppData/Local/Google/Chrome Beta/User Data',
-  'AppData/Local/Google/Chrome SxS/User Data',
-  'AppData/Local/Google/Chrome Dev/User Data',
-  'AppData/Local/Chromium/User Data',
-  'AppData/Local/Microsoft/Edge/User Data',
-  'AppData/Local/Microsoft/Edge Beta/User Data',
-  'AppData/Local/Microsoft/Edge Dev/User Data',
-  'AppData/Local/Microsoft/Edge SxS/User Data',
-  'AppData/Local/BraveSoftware/Brave-Browser/User Data',
-  'AppData/Roaming/Mozilla/Firefox',
-  'AppData/Roaming/Opera Software',
-  'AppData/Local/Vivaldi/User Data',
-  // Browsers common in China, each a Chromium build with its own data folder.
-  'AppData/Local/360Chrome/Chrome/User Data',
-  'AppData/Roaming/360se6/User Data',
-  'AppData/Local/Tencent/QQBrowser/User Data',
-  'AppData/Roaming/SogouExplorer',
-  'AppData/Local/2345Explorer/User Data',
-  'AppData/Local/liebao/User Data',
-  'AppData/Local/CentBrowser/User Data',
-];
-
-const PASSWORD_MANAGER_PATHS_MAC = [
-  'Library/Application Support/1Password',
-  'Library/Group Containers/2BUA8C4S2C.com.1password',
-  'Library/Application Support/Bitwarden',
-  'Library/Application Support/KeePassXC',
-];
-
-const PASSWORD_MANAGER_PATHS_WIN = [
-  'AppData/Local/1Password',
-  'AppData/Roaming/Bitwarden',
-  'AppData/Roaming/KeePass',
-  'AppData/Roaming/KeePassXC',
-];
-
-/**
- * Where command-line tools keep their access keys and tokens, on both systems:
- * cloud CLIs, sync and database clients, the AI coding CLIs, proxy clients
- * whose configs hold subscription secrets, and SSH/FTP clients' saved sessions.
- * The single-name entries (`.s3cfg`, `.pgpass`) are closed wherever they sit.
- */
-const CLOUD_CLI_CREDENTIAL_PATHS = [
-  '.config/gh',
-  '.aliyun',
-  '.tccli',
-  '.ossutilconfig',
-  '.cos.conf',
-  '.hcloud',
-  '.volcengine',
-  '.terraform.d/credentials.tfrc.json',
-  '.config/git/credentials',
-  '.config/rclone',
-  '.s3cfg',
-  '.pgpass',
-  '.cache/huggingface/token',
-  '.cache/huggingface/stored_tokens',
-  '.huggingface/token',
-  '.codex/auth.json',
-  '.claude/.credentials.json',
-  '.gemini/oauth_creds.json',
-  '.config/clash',
-  '.config/clash.meta',
-  '.config/mihomo',
-  '.config/filezilla',
-  // 1Password and DigitalOcean CLIs, Vault, Stripe, Fly.io: session tokens.
-  '.config/op',
-  '.op',
-  '.config/doctl',
-  '.vault-token',
-  '.config/stripe',
-  '.config/flyctl',
-  // Shell and REPL histories hold typed passwords, tokens and connection strings.
-  '.bash_history',
-  '.zsh_history',
-  '.zhistory',
-  '.sh_history',
-  '.history',
-  '.zsh_sessions',
-  '.python_history',
-  '.psql_history',
-  '.mysql_history',
-  '.sqlite_history',
-  '.node_repl_history',
-  '.rediscli_history',
-  '.local/share/fish/fish_history',
-];
-
-/**
- * Electron desktop apps keep the signed-in session (Cookies, Local Storage,
- * IndexedDB, saved tokens) in their data folder, the same as a browser does.
- * The whole folder is closed: none of them holds a file a person asks an
- * assistant to read.
- */
-const ELECTRON_APP_NAMES = [
-  'Slack', 'discord', 'Discord', 'Code', 'Code - Insiders', 'VSCodium', 'Cursor', 'Windsurf',
-  'Microsoft Teams', 'Notion', 'Signal', 'Telegram Desktop', 'Element', 'Obsidian',
-  'Lark', 'Feishu', 'DingTalk', 'WeChat', 'Tencent', 'QQ', 'WhatsApp', 'Figma', 'Postman',
-  'GitHub Desktop', 'Spotify', 'Zoom', 'zoom.us',
-];
-const ELECTRON_APP_DATA_PATHS_MAC = [
-  ...ELECTRON_APP_NAMES.map((name) => `Library/Application Support/${name}`),
-  'Library/Containers/com.tencent.xinWeChat',
-  'Library/Group Containers/5A4RE8SF68.com.tencent.xinWeChat',
-];
-const ELECTRON_APP_DATA_PATHS_WIN = [
-  ...ELECTRON_APP_NAMES.flatMap((name) => [`AppData/Roaming/${name}`, `AppData/Local/${name}`]),
-  'AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine',
-  'AppData/Roaming/1Password',
-];
-
-/** The same kind of store in the macOS application folders. */
-const CLIENT_CREDENTIAL_PATHS_MAC = [
-  'Library/Application Support/io.github.clash-verge-rev.clash-verge-rev',
-  'Library/Application Support/mihomo-party',
-  'Library/Application Support/VanDyke',
-  'Library/Application Support/Tunnelblick',
-];
-
-/** And on Windows. */
-const CLIENT_CREDENTIAL_PATHS_WIN = [
-  'AppData/Roaming/rclone',
-  'AppData/Roaming/postgresql/pgpass.conf',
-  'AppData/Roaming/io.github.clash-verge-rev.clash-verge-rev',
-  'AppData/Roaming/mihomo-party',
-  'AppData/Roaming/FileZilla',
-  'AppData/Roaming/VanDyke',
-  'AppData/Roaming/NetSarang',
-  'Documents/NetSarang Computer',
-  'AppData/Local/WireGuard',
-  'OpenVPN/config',
-];
 
 /**
  * File names that are a private key or a password database wherever they sit.
@@ -295,48 +136,20 @@ function isPowerShellProfile(foldedPath: string): boolean {
 }
 
 /**
- * Sensitive paths that should NEVER be accessed (relative to home or absolute)
+ * Sensitive paths that should NEVER be accessed (relative to home).
+ *
+ * The data is `sensitivePaths.json`, shared with the macOS sandbox's read-deny
+ * list and the preview server's blocked names. Reading a file never asks, so
+ * every place a signed-in session or a stored password lives is named there:
+ * a browser's whole data folder, not one file of its default profile.
+ * Environment files are also caught anywhere by `isEnvSecretFile`.
  */
 const BLOCKED_PATHS = [
-  // SSH keys and config
-  '.ssh',
-  // Cloud credentials
-  '.aws',
-  '.config/gcloud',
-  '.azure',
-  '.kube',
-  // API keys and tokens
-  '.netrc',
-  '.npmrc',
-  '.pypirc',
-  '.docker/config.json',
-  // Shell configs (can be used for injection)
-  '.bashrc',
-  '.bash_profile',
-  '.zshrc',
-  '.zprofile',
-  '.profile',
-  '.zshenv',
-  // Git credentials
-  '.git-credentials',
-  '.gitconfig',
-  // Application sensitive data
-  '.gnupg',
-  '.password-store',
-  'Library/Keychains',
-  'Library/Application Support/Google/Chrome/Default/Login Data',
-  'Library/Application Support/Firefox/Profiles',
-  // Environment files: `isEnvSecretFile`.
-  // Reading a file never asks, so every place a signed-in session or a stored
-  // password lives has to be named here. A browser keeps its cookies, saved
-  // passwords, card data and the tokens sites put in local storage in every
-  // profile folder, so the whole data folder of each browser is closed, not
-  // one file of its default profile.
-  ...BROWSER_DATA_PATHS_MAC,
-  ...PASSWORD_MANAGER_PATHS_MAC,
-  ...CLOUD_CLI_CREDENTIAL_PATHS,
-  ...CLIENT_CREDENTIAL_PATHS_MAC,
-  ...ELECTRON_APP_DATA_PATHS_MAC,
+  ...sensitivePaths.credentials.all,
+  ...sensitivePaths.credentials.mac,
+  // Shell configs and git config can be used for injection.
+  ...sensitivePaths.startupConfigs.all,
+  ...sensitivePaths.startupConfigs.mac,
 ];
 
 /**
@@ -402,44 +215,11 @@ const ALLOWED_HOME_PATHS = [
 // ── Windows-specific paths (only used when isWindows() is true) ──
 
 const WIN_BLOCKED_PATHS = [
-  // Windows credential stores
-  'AppData/Local/Microsoft/Credentials',
-  'AppData/Roaming/Microsoft/Credentials',
-  'AppData/Roaming/Microsoft/Protect',
-  'AppData/Local/Microsoft/Vault',
-  'AppData/Roaming/Microsoft/Vault',
-  // PowerShell profiles (can be used for injection)
-  'Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1',
-  'Documents/PowerShell/Microsoft.PowerShell_profile.ps1',
-  // Browser credentials
-  'AppData/Local/Google/Chrome/User Data/Default/Login Data',
-  'AppData/Local/Google/Chrome/User Data/Default/Cookies',
-  'AppData/Local/Microsoft/Edge/User Data/Default/Login Data',
-  'AppData/Roaming/Mozilla/Firefox/Profiles',
-  // Standard dotfile secrets
-  '.ssh',
-  '.aws',
-  '.azure',
-  '.kube',
-  '.gnupg',
-  '.password-store',
-  '.npmrc',
-  '.netrc',
-  '_netrc',
-  '.pypirc',
-  '.docker/config.json',
-  '.git-credentials',
-  '.gitconfig',
-  // Windows' own key store for the files DPAPI protects.
-  'AppData/Roaming/Microsoft/Crypto',
-  // See BLOCKED_PATHS: every store of sessions and passwords is closed by name.
-  ...BROWSER_DATA_PATHS_WIN,
-  ...PASSWORD_MANAGER_PATHS_WIN,
-  ...CLOUD_CLI_CREDENTIAL_PATHS,
-  ...CLIENT_CREDENTIAL_PATHS_WIN,
-  ...ELECTRON_APP_DATA_PATHS_WIN,
-  'AppData/Roaming/gcloud',
-  'AppData/Roaming/GitHub CLI',
+  ...sensitivePaths.credentials.all,
+  ...sensitivePaths.credentials.win,
+  // PowerShell profiles and git config can be used for injection.
+  ...sensitivePaths.startupConfigs.all,
+  ...sensitivePaths.startupConfigs.win,
 ];
 
 const WIN_SYSTEM_PATHS_WRITE_BLOCKED = [

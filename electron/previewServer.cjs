@@ -90,7 +90,9 @@ const MAX_ROOTS = 16;
 const MAX_HTML_INJECT_BYTES = 16 * 1024 * 1024;
 
 // ─── Blocklist (mirrors preview_server.rs's BLOCKED_* consts) ─────────────
-const BLOCKED_PATH_SEGMENTS = ['.ssh', '.aws', '.gnupg', '.kube', '.docker'];
+// Single-name entries of the shared credential list (the rest are multi-segment).
+const BLOCKED_PATH_SEGMENTS = require('../src/core/tools/sensitivePaths.json')
+  .credentials.all.filter((p) => !p.includes('/'));
 const BLOCKED_FILE_PREFIXES = ['.env', 'id_rsa', 'id_dsa', 'id_ed25519', 'id_ecdsa'];
 const BLOCKED_FILE_EXTS = new Set(['pem', 'key', 'p12', 'pfx']);
 
@@ -574,6 +576,7 @@ module.exports = {
   PREVIEW_MISS,
   // Exported for the headless verify harness (electron/spike/f13Verify.cjs).
   startServer,
+  isBlocked,
   registerRoot,
   unregisterRoot,
 };

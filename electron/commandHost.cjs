@@ -46,29 +46,14 @@ const { runtimeState } = require('./runtimeObservability.cjs');
 // ── Seatbelt (SBPL) profile generation ──
 
 /**
- * Sensitive paths under $HOME that should never be readable.
- * Maintained independently from TS pathSafety.ts (defense in depth).
- * IDENTICAL to sandbox.rs's SENSITIVE_READ_PATHS — do not let these drift.
+ * Sensitive paths under $HOME that should never be readable by a sandboxed
+ * command: the credential locations of `sensitivePaths.json`, the same list
+ * the TS path checks and the preview server read. Shell rc files and
+ * `.gitconfig` stay out (`startupConfigs`): commands read them. The frozen
+ * Rust sandbox (sandbox.rs) keeps its own older copy.
  */
-const SENSITIVE_READ_PATHS = [
-  '.ssh',
-  '.gnupg',
-  '.gpg',
-  '.aws/credentials',
-  '.azure',
-  '.config/gcloud',
-  '.env',
-  '.env.local',
-  '.env.production',
-  '.npmrc',
-  '.pypirc',
-  '.netrc',
-  '.docker/config.json',
-  '.kube/config',
-  '.git-credentials',
-  '.password-store',
-  'Library/Keychains',
-];
+const sensitivePaths = require('../src/core/tools/sensitivePaths.json');
+const SENSITIVE_READ_PATHS = [...sensitivePaths.credentials.all, ...sensitivePaths.credentials.mac];
 
 /** Escape special characters in path strings for SBPL (matches sandbox.rs's escape_sbpl_path). */
 function escapeSbplPath(p) {

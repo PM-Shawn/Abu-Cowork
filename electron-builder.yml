@@ -70,6 +70,8 @@ files:
   - "src-tauri/inspect/abu-preview-inspect.js"
   # computerUseGate.cjs loads the reviewed policy in Electron main.
   - "src/core/tools/computerUsePolicy.json"
+  # commandHost.cjs and previewServer.cjs read the shared credential path list.
+  - "src/core/tools/sensitivePaths.json"
   - "dist-electron-spike/**/*"
   - "package.json"
   - "node_modules/node-pty/**/*"

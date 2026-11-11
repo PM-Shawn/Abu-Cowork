@@ -40,6 +40,19 @@
  * and nothing is remembered; on a government host the first action of a task
  * asks. Opening and reading a page is not an action (`navigatesOnly`).
  *
+ * ## Why host classes and not the path again
+ *
+ * Reviewing the host-only version found common banks, brokers and government
+ * sites unprotected (`bankofchina.com`, `ebank.pingan.com`, `eastmoney.com`,
+ * `gov.hk`). The gap is the domain table's reach, not the lack of a path rule:
+ * a path rule reads an address the page can rewrite (`history.replaceState`),
+ * and it flagged ordinary sites (a company OA's payment report), which made
+ * every click ask with no way to remember. So the fix widens what a HOST can
+ * match instead: more named banks, brokers and payment services; a bank class
+ * by host label (`ebank.`, `netbank.`, `banking.`, the `.bank` TLD); and the
+ * government suffixes of the large jurisdictions (`gov.hk`, `gov.sg`,
+ * `gov.tw`, `.mil`, `go.kr`, ...). The path stays unread.
+ *
  * ## Deliberately minimal, deliberately incomplete
  *
  * The domain table below is a list of unambiguous money-movement hosts, not an
@@ -79,6 +92,23 @@ const MONEY_MOVEMENT_DOMAINS = [
   'cib.com.cn',
   'spdb.com.cn',
   'cebbank.com',
+  'bankofchina.com',
+  'bochk.com',
+  'hsbc.com.cn',
+  'hsbc.com.hk',
+  'hangseng.com',
+  'citibank.com.cn',
+  'standardchartered.com',
+  'dbs.com',
+  'ocbc.com',
+  'uob.com',
+  'jpmorgan.com',
+  'capitalone.com',
+  'usbank.com',
+  'tdbank.com',
+  'ccb.com.cn',
+  'abchina.com.cn',
+  'ebank.pingan.com',
   'citicbank.com',
   'cmbc.com.cn',
   'hxb.com.cn',
@@ -101,6 +131,21 @@ const MONEY_MOVEMENT_DOMAINS = [
   'gtja.com',
   'cmschina.com',
   'gf.com.cn',
+  'eastmoney.com',
+  'csc108.com',
+  'cicc.com',
+  'guosen.com.cn',
+  'ebscn.com',
+  'orientsec.com.cn',
+  'swhysc.com',
+  'xyzq.com.cn',
+  'gjzq.com.cn',
+  'cgws.com',
+  'dwzq.com.cn',
+  'essence.com.cn',
+  'futunn.com',
+  'tigerbrokers.com',
+  'interactivebrokers.com',
   'schwab.com',
   'fidelity.com',
   'robinhood.com',
@@ -116,12 +161,52 @@ const MONEY_MOVEMENT_DOMAINS = [
  */
 const GOVERNMENT_HOST_SUFFIXES = [
   'gov',
+  'mil',
   'gov.cn',
+  'mil.cn',
+  'gov.hk',
+  'gov.mo',
+  'gov.tw',
+  'gov.sg',
   'gov.uk',
   'gov.au',
+  'gov.nz',
+  'govt.nz',
+  'gov.in',
+  'gov.my',
+  'gov.ph',
+  'gov.vn',
+  'gov.ae',
+  'gov.sa',
+  'gov.il',
+  'gov.tr',
+  'gov.br',
+  'gov.za',
+  'gov.ie',
+  'gov.it',
   'go.jp',
+  'go.kr',
+  'go.th',
+  'go.id',
   'gouv.fr',
+  'gouv.qc.ca',
+  'gc.ca',
+  'canada.ca',
+  'gob.mx',
+  'gob.es',
+  'bund.de',
+  'admin.ch',
+  'overheid.nl',
+  'europa.eu',
 ];
+
+/**
+ * Host labels that name a bank's online banking wherever the bank keeps it:
+ * `ebank.<bank>.com`, `netbank.`, `banking.`, `perbank.`. Matched as a whole
+ * label, so `bankrate.com` and `bankofexample-news.test` are not banks. The
+ * `.bank` top-level domain is restricted to banks.
+ */
+const BANK_HOST_LABEL = /^(?:e|net|i|m|p|per|corp|mobile|online|internet|tele|phone)?bank(?:ing)?$/;
 
 /**
  * `host` is exactly `suffix`, or a subdomain of it. NOT `endsWith`: that would
@@ -161,6 +246,10 @@ export function classifyHighRiskUrl(url) {
 
   for (const domain of MONEY_MOVEMENT_DOMAINS) {
     if (hostMatchesSuffix(host, domain)) return { reason: 'money-domain', matched: domain };
+  }
+  const labels = host.split('.');
+  if (labels[labels.length - 1] === 'bank' || labels.slice(0, -1).some((label) => BANK_HOST_LABEL.test(label))) {
+    return { reason: 'money-domain', matched: 'bank-host' };
   }
   for (const suffix of GOVERNMENT_HOST_SUFFIXES) {
     if (hostMatchesSuffix(host, suffix)) return { reason: 'government-domain', matched: suffix };

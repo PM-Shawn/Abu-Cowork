@@ -47,6 +47,51 @@ describe('classifyHighRiskUrl', () => {
     });
   });
 
+  describe('banks, brokerages and payment hosts beyond the listed names', () => {
+    it.each([
+      'https://www.bankofchina.com/',
+      'https://ebank.pingan.com/',
+      'https://www.hsbc.com.cn/',
+      'https://www.hsbc.com.hk/',
+      'https://www.eastmoney.com/',
+      'https://jywg.eastmoney.com/',
+      'https://www.csc108.com/',
+      'https://www.cicc.com/',
+      'https://www.bochk.com/',
+      'https://ebank.example-lender.test/',
+      'https://netbank.example-lender.test/login',
+      'https://banking.example-lender.test/',
+      'https://www.example-lender.bank/',
+    ])('flags %s as a money domain', (url) => {
+      expect(classifyHighRiskUrl(url)?.reason).toBe('money-domain');
+    });
+
+    it('does not flag a site that only has bank in its name', () => {
+      for (const url of ['https://www.bankrate.com/', 'https://bankofexample-news.test/', 'https://blog.example.com/bank-holidays']) {
+        expect(classifyHighRiskUrl(url), url).toBeNull();
+      }
+    });
+  });
+
+  describe('government hosts outside .gov and .gov.cn', () => {
+    it.each([
+      'https://www.gov.hk/',
+      'https://www.ird.gov.hk/',
+      'https://www.gov.sg/',
+      'https://www.gov.tw/',
+      'https://www.gov.mo/',
+      'https://www.gov.in/',
+      'https://www.gob.mx/',
+      'https://www.bund.de/',
+      'https://www.canada.ca/',
+      'https://www.army.mil/',
+      'https://www.mofa.go.kr/',
+      'https://europa.eu/',
+    ])('flags %s', (url) => {
+      expect(classifyHighRiskUrl(url)?.reason).toBe('government-domain');
+    });
+  });
+
   describe('domain categories', () => {
     it('flags a payment processor by exact host', () => {
       expect(classifyHighRiskUrl('https://www.paypal.com/')?.reason).toBe('money-domain');

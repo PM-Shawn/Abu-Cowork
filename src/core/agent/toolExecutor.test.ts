@@ -729,7 +729,6 @@ describe('executeToolBatch · result image snapshots', () => {
       'conv-1',
       toolCall.id,
       { mediaType: 'image/png', base64: 'AQID' },
-      '/Users/testuser/Desktop/chart.png',
     );
     expect(mocks.updateToolCall).toHaveBeenCalledWith(
       'conv-1', 'msg-1', toolCall.id, String(imageResult), imageResult, false, undefined, undefined,
@@ -737,7 +736,26 @@ describe('executeToolBatch · result image snapshots', () => {
     expect(result.requiresUserRecovery).toBe(false);
   });
 
-  it('keeps a scoped read image pending and snapshots the returned bytes instead of rereading the source path', async () => {
+  it.each([
+    ['a PDF page render', { path: '/Users/testuser/Desktop/scan.pdf' }],
+    ['a picture inside a Word file', { path: 'C:\\Users\\testuser\\report.docx', image_index: 1 }],
+    ['a region of a picture', { path: '/Users/testuser/Desktop/chart.png', region: { x0: 0, y0: 0, x1: 0.5, y1: 0.5 } }],
+  ])('records %s from the returned bytes and never names the file it was read from', async (_name, input) => {
+    const toolCall = makeToolCall('read_file', input);
+    const imageResult = [
+      { type: 'text' as const, text: '[Page 1, whole page, 1035×1427 px]' },
+      { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/jpeg', data: '/9j/4AAQ' } },
+    ];
+
+    await executeToolBatch(makeParams(toolCall, makeInvoker(vi.fn().mockResolvedValue(imageResult))));
+
+    expect(mocks.snapshotResultImage).toHaveBeenCalledOnce();
+    expect(mocks.snapshotResultImage.mock.calls[0]).toEqual([
+      'conv-1', toolCall.id, { mediaType: 'image/jpeg', base64: '/9j/4AAQ' },
+    ]);
+  });
+
+  it('keeps a scoped read image pending until its returned bytes are recorded', async () => {
     let resolveSnapshot!: () => void;
     mocks.snapshotResultImage.mockReturnValueOnce(new Promise<void>((resolve) => {
       resolveSnapshot = resolve;
@@ -761,7 +779,6 @@ describe('executeToolBatch · result image snapshots', () => {
       'conv-1',
       toolCall.id,
       { mediaType: 'image/png', base64: 'AQID' },
-      undefined,
     );
     expect(batchSettled).toBe(false);
 
@@ -794,7 +811,7 @@ describe('executeToolBatch · result image snapshots', () => {
     await executeToolBatch(makeParams(toolCall, invoker));
 
     expect(mocks.snapshotResultImage).toHaveBeenCalledWith(
-      'conv-1', toolCall.id, { mediaType: 'image/png', base64: 'AQID' }, undefined,
+      'conv-1', toolCall.id, { mediaType: 'image/png', base64: 'AQID' },
     );
   });
 });

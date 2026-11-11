@@ -661,21 +661,17 @@ export async function executeToolBatch(params: ToolBatchParams): Promise<ToolBat
 
         const image = firstImageContent(resultContent);
         if (image) {
-          // A scoped/background run must not re-read a user path after its
-          // authority owner can be released. Persist the immutable bytes the
-          // tool already returned and join that internal write before the
-          // batch settles. Runs without host output capture retain the
-          // existing non-blocking path-copy behavior.
-          const sourcePath = !isScopedRun && !metadata?.outputSnapshotsHandled
-            && matchedTc.name === TOOL_NAMES.READ_FILE
-            && typeof matchedTc.input.path === 'string'
-            ? matchedTc.input.path
-            : undefined;
+          // The record is the bytes the tool returned, never the file at
+          // read_file's path: that file is the source of the picture (a PDF,
+          // an Office file, a picture shown in part or scaled), not the
+          // picture, and this record is what later turns send again. A
+          // scoped/background run joins the write before the batch settles;
+          // other runs do not wait for it.
           const isPersistedExplicitScreenshot = matchedTc.name === TOOL_NAMES.COMPUTER
             && matchedTc.input.action === 'screenshot'
             && resultContent?.some((block) => block.type === 'text' && block.text.includes('Screenshot saved to:'));
           if (!isPersistedExplicitScreenshot) {
-            const snapshotPromise = snapshotResultImage(conversationId, id, image, sourcePath)
+            const snapshotPromise = snapshotResultImage(conversationId, id, image)
               .catch((e) => logger.warn('snapshot tool result image failed', { tool: matchedTc.name, err: e }));
             if (isScopedRun || metadata?.outputSnapshotsHandled) {
               await snapshotPromise;

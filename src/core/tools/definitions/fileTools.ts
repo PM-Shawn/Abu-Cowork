@@ -1,6 +1,6 @@
 import { readTextFile, readFile as readBinFile, writeTextFile, readDir, exists, stat } from '../fsBridge';
 import { invoke } from '@tauri-apps/api/core';
-import type { ToolDefinition, ToolResultContent } from '../../../types';
+import type { ToolDefinition, ToolExecutionContext, ToolResultContent } from '../../../types';
 import { isWindows } from '../../../utils/platform';
 import { ensureParentDir, normalizeSeparators } from '../../../utils/pathUtils';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
@@ -9,7 +9,6 @@ import {
   getFileExtension,
   IMAGE_EXTENSIONS,
   IMAGE_MEDIA_TYPES,
-  resizeImageIfNeeded,
   uint8ArrayToBase64,
   OFFICE_EXTENSIONS,
   ARCHIVE_EXTENSIONS,
@@ -20,6 +19,8 @@ import {
 } from '../helpers/toolHelpers';
 import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedCommand';
 import { withDocumentReading } from '../fileRead';
+import { admissionRawBytes, planImageFit } from '@/core/llm/imageFit';
+import { imageHeaderSize } from '@/utils/imageHeaderSize';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
@@ -27,7 +28,7 @@ import { captureTurnFileBefore, snapshotBeforeAiEdit } from '@/utils/aiEditSnaps
 import { formatFileSize } from '@/utils/formatFileSize';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@/core/files/fileChange';
-import type { ToolFileAccess } from '@/core/tools/fileOperation';
+import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
 import { Minimatch } from 'minimatch';
 import { isToolResultError } from '@/core/agent/toolResultErrors';
 import { recordFileVersion, recordedFileVersion } from '@/core/tools/fileReadRecords';
@@ -102,6 +103,44 @@ pdf = pdfplumber.open(sys.argv[1])
 print(chr(10).join((p.extract_text() or '') for p in pdf.pages))
 pdf.close()`;
 
+/**
+ * The picture fitted by the one fitting rule (`planImageFit`: the long side at the
+ * admission limit and the encoded size under the per-picture byte limit, a photo
+ * kept a JPEG), as encoded bytes with their media type; null when it is inside both
+ * limits, its size is unknown (svg, a damaged header), the native fit failed, or no
+ * step brought it under the byte limit. In those cases the picture goes as it is and
+ * the send-time check judges it against the route. The size comes from the header,
+ * so a picture is fitted by its dimensions whatever its byte size.
+ */
+async function fitToAdmissionLimit(
+  path: string,
+  bytes: Uint8Array,
+  mediaType: string,
+  context?: ToolExecutionContext,
+): Promise<{ bytes: Uint8Array; mediaType: string; longSide: number | null } | null> {
+  const size = imageHeaderSize(bytes);
+  if (!size || !context?.files) return null;
+  const steps = planImageFit({ width: size.w, height: size.h, byteLength: bytes.length, mediaType });
+  const limit = admissionRawBytes();
+  for (const step of steps) {
+    // The native fit writes PNG unless asked for a JPEG; a JPEG source stays one.
+    const jpeg = step.format === 'jpeg' || (step.format === 'same' && mediaType === 'image/jpeg');
+    try {
+      const fitted = await context.files.processImage(path, null, 'fit-width',
+        jpeg ? { width: step.width, format: 'jpeg', quality: step.quality } : { width: step.width });
+      if (fitted instanceof Uint8Array && fitted.length <= limit) {
+        // `longSide` is set only when the picture got smaller; otherwise it was re-encoded at its size.
+        const longSide = step.width < size.w ? Math.round(Math.max(step.width, step.width * size.h / size.w)) : null;
+        return { bytes: fitted, mediaType: jpeg ? 'image/jpeg' : 'image/png', longSide };
+      }
+    } catch (err) {
+      if (isTaskCommandAbortedError(err) || err instanceof FileOperationDenied) throw err;
+      return null;
+    }
+  }
+  return null;
+}
+
 // PDFs and views of part of a picture are read by fileRead/, which also sets the
 // description and adds pages/region/rotate.
 export const readFileTool: ToolDefinition = withDocumentReading({
@@ -159,20 +198,16 @@ export const readFileTool: ToolDefinition = withDocumentReading({
           return format(getI18n().toolResult.file.imageSkipNoVision, { path: filePath, mediaType });
         }
         const bytes = new Uint8Array(await io.readFile(filePath));
-        const needsNativeResize = Boolean(context?.files && bytes.length > 2 * 1024 * 1024);
-        const resizedBytes = needsNativeResize
-          ? await context!.files!.processImage(filePath, null, 'fit-width', { width: 1280 }) : null;
-        if (needsNativeResize && !(resizedBytes instanceof Uint8Array)) throw new Error('Image processing returned no bytes');
-        const { data, resized } = resizedBytes instanceof Uint8Array
-          ? { data: uint8ArrayToBase64(resizedBytes), resized: true }
-          : await resizeImageIfNeeded(bytes, 1280, context);
+        const fitted = await fitToAdmissionLimit(filePath, bytes, mediaType, context);
         const sizeKB = Math.round(bytes.length / 1024);
-        const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';
+        const resizeNote = !fitted ? ''
+          : fitted.longSide !== null ? ` (auto-resized to ${fitted.longSide}px on its long side)`
+            : ' (re-encoded as JPEG to stay under the per-picture size limit)';
         await recordFileVersion(filePath, await sha256Hex(bytes), context);
 
         return [
           { type: 'text', text: `Image: ${filePath} (${sizeKB}KB, ${mediaType})${resizeNote}` },
-          { type: 'image', source: { type: 'base64', media_type: resizedBytes ? 'image/png' : mediaType, data } },
+          { type: 'image', source: { type: 'base64', media_type: fitted?.mediaType ?? mediaType, data: uint8ArrayToBase64(fitted?.bytes ?? bytes) } },
         ] as ToolResultContent[];
       }
 

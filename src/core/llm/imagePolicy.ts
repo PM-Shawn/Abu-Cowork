@@ -9,7 +9,7 @@
  * would happily read, 8192 earns a 400 from Anthropic.
  *
  * Before this module those thresholds were unrelated magic numbers
- * (`SCREENSHOT_MAX_WIDTH`, `resizeImageIfNeeded`'s 1280, `getMaxScreenshots`),
+ * (`SCREENSHOT_MAX_WIDTH`, read_file's 1280, `getMaxScreenshots`),
  * none of which knew which route the turn was going to. This is the one table
  * they resolve from.
  *

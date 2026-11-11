@@ -19,6 +19,8 @@
  * screenshot.
  */
 
+import { planImageFit } from '../core/llm/imageFit';
+
 export interface CompressImageInput {
   bytes: Uint8Array;
   mediaType: string;
@@ -148,6 +150,8 @@ const PROVIDER_SAFE = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/we
 export async function fitImageToDimension(
   input: CompressImageInput,
   maxDimension: number,
+  /** Raw bytes the encoded picture must stay under (`admissionRawBytes`); no byte judgement when left out. */
+  maxBytes?: number,
 ): Promise<FitImageResult> {
   if (!Number.isFinite(maxDimension) || maxDimension <= 0) return input;
 
@@ -156,39 +160,49 @@ export async function fitImageToDimension(
     const bitmap = await createImageBitmap(blob);
     try {
       const { width, height } = bitmap;
-      // Re-encode when the image is too big for the route OR when its type is
-      // one no route accepts. Checking only the dimension produced a trap the
-      // wrong way round: an oversized .bmp came out fixed (ENCODABLE excludes
-      // bmp, so the resize path re-encoded it to PNG) while a small one sailed
-      // through still labelled image/bmp — the same file poisoning the session
-      // precisely because it was NOT big enough to trigger a resize.
-      const fitsDimension = Math.max(width, height) <= maxDimension;
-      if (fitsDimension && PROVIDER_SAFE.has(input.mediaType)) return input;
+      // The steps come from the one fitting rule (core/llm/imageFit.ts), which is also what
+      // read_file applies: the side at the limit and the bytes under the limit, a photo kept
+      // a JPEG. Re-encode when the image is too big for the route OR when its type is one no
+      // route accepts. Checking only the dimension produced a trap the wrong way round: an
+      // oversized .bmp came out fixed (ENCODABLE excludes bmp, so the resize path re-encoded it
+      // to PNG) while a small one sailed through still labelled image/bmp — the same file
+      // poisoning the session precisely because it was NOT big enough to trigger a resize.
+      const steps = planImageFit(
+        { width, height, byteLength: input.bytes.length, mediaType: input.mediaType },
+        { maxDimension, maxBytes: maxBytes ?? Infinity },
+      );
+      if (steps.length === 0 && PROVIDER_SAFE.has(input.mediaType)) return input;
+      // A wire-legal type is converted at its own size, as before.
+      const attempts = steps.length > 0 ? steps : [{ width, format: 'same' as const, quality: Math.round(DEFAULT_QUALITY * 100) }];
 
-      const scale = fitsDimension ? 1 : maxDimension / Math.max(width, height);
-      const toWidth = Math.max(1, Math.round(width * scale));
-      const toHeight = Math.max(1, Math.round(height * scale));
+      for (const step of attempts) {
+        const toWidth = Math.max(1, Math.min(width, step.width));
+        const toHeight = Math.max(1, Math.round(height * toWidth / width));
+        const canvas = document.createElement('canvas');
+        canvas.width = toWidth;
+        canvas.height = toHeight;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return input;
+        ctx.drawImage(bitmap, 0, 0, toWidth, toHeight);
 
-      const canvas = document.createElement('canvas');
-      canvas.width = toWidth;
-      canvas.height = toHeight;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return input;
-      ctx.drawImage(bitmap, 0, 0, toWidth, toHeight);
+        const outType = step.format === 'jpeg' ? 'image/jpeg' : ENCODABLE.has(input.mediaType) ? input.mediaType : 'image/png';
+        const outBlob = await new Promise<Blob | null>((resolve) => {
+          canvas.toBlob((b) => resolve(b), outType, step.quality / 100);
+        });
+        if (!outBlob) return input;
+        if (maxBytes !== undefined && outBlob.size > maxBytes) continue;
 
-      const outType = ENCODABLE.has(input.mediaType) ? input.mediaType : 'image/png';
-      const outBlob = await new Promise<Blob | null>((resolve) => {
-        canvas.toBlob((b) => resolve(b), outType, DEFAULT_QUALITY);
-      });
-      if (!outBlob) return input;
-
-      return {
-        bytes: new Uint8Array(await outBlob.arrayBuffer()),
-        mediaType: outType,
-        // A pure format conversion keeps every pixel, so it is not a resize and
-        // must not produce an <image_resize_notice> claiming otherwise.
-        ...(fitsDimension ? {} : { resized: { fromWidth: width, fromHeight: height, toWidth, toHeight } }),
-      };
+        const resized = toWidth < width;
+        return {
+          bytes: new Uint8Array(await outBlob.arrayBuffer()),
+          mediaType: outType,
+          // A pure format conversion keeps every pixel, so it is not a resize and
+          // must not produce an <image_resize_notice> claiming otherwise.
+          ...(resized ? { resized: { fromWidth: width, fromHeight: height, toWidth, toHeight } } : {}),
+        };
+      }
+      // No step got it under the byte limit: it goes as it is and the send-time check judges it.
+      return input;
     } finally {
       bitmap.close();
     }

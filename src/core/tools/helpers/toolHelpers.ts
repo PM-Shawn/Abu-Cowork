@@ -1,7 +1,6 @@
-import { readFile as readBinFile, writeFile as writeBinFile } from '@tauri-apps/plugin-fs';
-import { homeDir, desktopDir, documentDir, downloadDir, tempDir } from '@tauri-apps/api/path';
+import { readFile as readBinFile } from '@tauri-apps/plugin-fs';
+import { homeDir, desktopDir, documentDir, downloadDir } from '@tauri-apps/api/path';
 import { platform } from '@tauri-apps/plugin-os';
-import { invoke } from '@tauri-apps/api/core';
 import type { ToolExecutionContext } from '../../../types';
 import { initPlatform, isWindows } from '../../../utils/platform';
 import { extractUsername } from '../../../utils/pathUtils';
@@ -49,57 +48,6 @@ export const IMAGE_MEDIA_TYPES: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
 };
-// Max image size in bytes before auto-resize (2MB)
-export const IMAGE_MAX_BYTES = 2 * 1024 * 1024;
-
-/**
- * Resize an image to fit within maxWidth using system tools.
- * Returns base64 string of the resized image, or null on failure.
- */
-export async function resizeImageIfNeeded(bytes: Uint8Array, maxWidth: number, context?: ToolExecutionContext): Promise<{ data: string; resized: boolean }> {
-  const base64 = uint8ArrayToBase64(bytes);
-
-  if (bytes.length <= IMAGE_MAX_BYTES) {
-    return { data: base64, resized: false };
-  }
-
-  try {
-    const tmpDir = await tempDir();
-    const tmpPath = `${tmpDir}abu-resize-${Date.now()}.png`;
-    await writeBinFile(tmpPath, bytes);
-
-    if (isWindows()) {
-      // PowerShell + System.Drawing — sandboxEnabled: false because ConstrainedLanguage blocks Add-Type
-      const psPath = tmpPath.replace(/\\/g, '/').replace(/'/g, "''");
-      await invokeTaskCommand<CommandOutput>('run_shell_command', {
-        command: `Add-Type -AssemblyName System.Drawing; $img = [System.Drawing.Image]::FromFile('${psPath}'); $ratio = ${maxWidth} / $img.Width; $newH = [int]($img.Height * $ratio); $bmp = New-Object System.Drawing.Bitmap(${maxWidth}, $newH); $g = [System.Drawing.Graphics]::FromImage($bmp); $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic; $g.DrawImage($img, 0, 0, ${maxWidth}, $newH); $img.Dispose(); $bmp.Save('${psPath}'); $g.Dispose(); $bmp.Dispose()`,
-        cwd: null, background: false, timeout: 15,
-        sandboxEnabled: false,
-      }, context, { commandIdPrefix: 'resize-image' });
-    } else {
-      // macOS: sips (works fine under Seatbelt sandbox — /tmp is writable)
-      await invokeTaskCommand<CommandOutput>('run_shell_command', {
-        command: `sips --resampleWidth ${maxWidth} "${tmpPath}" --out "${tmpPath}"`,
-        cwd: null, background: false, timeout: 15,
-      }, context, { commandIdPrefix: 'resize-image' });
-    }
-
-    const resized = await readBinFile(tmpPath);
-    // Clean up temp file (fire-and-forget)
-    const rmCmd = isWindows()
-      ? `Remove-Item '${tmpPath.replace(/'/g, "''")}' -Force -ErrorAction SilentlyContinue`
-      : `rm -f "${tmpPath}"`;
-    invoke<CommandOutput>('run_shell_command', { command: rmCmd, cwd: null, background: false, timeout: 5 }).catch(() => {});
-    return { data: uint8ArrayToBase64(new Uint8Array(resized)), resized: true };
-  } catch (err) {
-    if (isTaskCommandAbortedError(err)) throw err;
-    if (err instanceof FileOperationDenied) throw err;
-    /* fall through to original */
-  }
-
-  return { data: base64, resized: false };
-}
-
 export function uint8ArrayToBase64(bytes: Uint8Array): string {
   let binary = '';
   for (let i = 0; i < bytes.length; i++) {

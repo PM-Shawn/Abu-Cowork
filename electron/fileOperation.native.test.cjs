@@ -159,6 +159,13 @@ test('image processing returns resized read bytes and rejects output permission 
   assert.equal(await fs.readFile(output, 'utf8'), 'original output');
 });
 
+test('fit-width writes a JPEG when asked, so a photograph is not turned into a larger PNG, and refuses other formats', async t => {
+  const { call, read } = await imageFixture(t, 'read');
+  const jpeg = await call('image-process', { reference: read.reference, operation: 'fit-width', params: { width: 2, format: 'jpeg', quality: 70 } });
+  assert.deepEqual(jpeg.bytes.slice(0, 2), [0xff, 0xd8]);
+  await assert.rejects(call('image-process', { reference: read.reference, operation: 'fit-width', params: { width: 2, format: 'webp' } }));
+});
+
 test('image processing refuses a released original session and preserves the output', async t => {
   const { output, call, processImage } = await imageFixture(t);
   await processImage({ operation: 'resize', params: { width: 2, height: 2 } });

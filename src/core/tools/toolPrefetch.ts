@@ -95,6 +95,10 @@ export const CORE_TOOL_NAMES: ReadonlySet<string> = new Set([
   // and it is called at the end of a turn, long after any keyword of the
   // user's message could have loaded it.
   TOOL_NAMES.PRESENT_FILES,
+  // read_skill_file is how an active skill's bundled files are read; adding it
+  // only once a skill is active changed the tool roster mid-run (use_skill),
+  // re-billing the cached prefix.
+  TOOL_NAMES.READ_SKILL_FILE,
 ]);
 
 /** Keyword → tool mapping for demand-based loading */
@@ -243,10 +247,6 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     additionalTools.push(TOOL_NAMES.COMPUTER);
   }
 
-  // Active skill exists → may need read_skill_file
-  if (ctx.activeSkills.length > 0) {
-    additionalTools.push(TOOL_NAMES.READ_SKILL_FILE);
-  }
   if (ctx.activeSkills.some((skill) => skill.name === 'Abu-Browser')) {
     additionalTools.push(...BUILTIN_BROWSER_TOOLS);
   }
@@ -270,11 +270,11 @@ export function prefetchTools(ctx: PrefetchContext): string[] {
     additionalTools.push(TOOL_NAMES.GET_SYSTEM_INFO);
   }
 
-  // Non-first turns: load memory tools
-  if (ctx.turnCount > 2) {
-    additionalTools.push(TOOL_NAMES.LOG_TASK_COMPLETION);
-    additionalTools.push(TOOL_NAMES.UPDATE_MEMORY);
-  }
+  // Memory tools are loaded from the first step: `turnCount` counts agent-loop
+  // steps, so gating on it changed the roster (tools array and deferred-tools
+  // list) on every run's 3rd request and re-billed the cached prefix.
+  additionalTools.push(TOOL_NAMES.LOG_TASK_COMPLETION);
+  additionalTools.push(TOOL_NAMES.UPDATE_MEMORY);
 
   return [...new Set(additionalTools)];
 }

@@ -870,29 +870,9 @@ ${openingAppsGuidance(isWindows())}
           text: '\n' + getSkillsGuidance(proactivity),
           cacheable: true,
         });
-
-        // One-shot <consider_sinking> nudge left over from the previous
-        // loop. Stashed by agentLoop completion when the last task was
-        // "sink-worthy" (≥N tool calls / no errors / no skill used /
-        // not already proposed — see proposalSignal.ts). Injected once
-        // and cleared so subsequent turns don't re-nudge. Sits AFTER
-        // skills-guidance so it's fresher in the LLM's attention.
-        if (conversationId) {
-          const chatMod = await import('../../stores/chatStore');
-          const conv = chatMod.useChatStore.getState().conversations[conversationId];
-          const signal = conv?.pendingProposalSignal;
-          if (signal) {
-            const { renderProposalSignalSection } = await import('./proposalSignal');
-            sections.push({
-              name: 'proposal-signal',
-              text: '\n' + renderProposalSignalSection(signal),
-              // Not cacheable — varies per-loop, ephemeral by design.
-              cacheable: false,
-            });
-            // Clear immediately: this is a one-shot.
-            chatMod.useChatStore.getState().setPendingProposalSignal(conversationId, undefined);
-          }
-        }
+        // The one-shot post-loop proposal nudge is NOT a system section: it is
+        // appended to the history at run start (proposalSignal.ts
+        // `takePendingProposalNote`), so it never rewrites the cached prefix.
       }
 
       const contextWindowSize = settingsState.contextWindowSize ?? 200000;

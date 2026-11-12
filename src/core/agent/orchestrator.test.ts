@@ -432,6 +432,29 @@ describe('buildSystemPrompt - structure', () => {
   });
 });
 
+describe('buildSystemPromptSections - proposal nudge stays out of the system prompt', () => {
+  it('leaves a pending proposal signal untouched and never renders it as a section', async () => {
+    const { useChatStore } = await import('@/stores/chatStore');
+    const signal = { computedAt: 1_700_000_000_000, toolCallCount: 6, hadErrors: false, usedSkill: false, triggerLevel: 'companion' as const };
+    useChatStore.setState((state) => ({
+      conversations: {
+        ...state.conversations,
+        nudged: { id: 'nudged', title: 'nudged', messages: [], createdAt: 0, updatedAt: 0, status: 'idle' as const, pendingProposalSignal: signal },
+      },
+    }));
+    const { skillLoader } = await import('../skill/loader');
+    vi.mocked(skillLoader.getAvailableSkills).mockReturnValueOnce([
+      { name: 'docx', description: 'Word documents', content: '', filePath: '/skills/docx/SKILL.md', skillDir: '/skills/docx' },
+    ]);
+    const sections = await buildSystemPromptSections(routeInput('hello'), 'base prompt', 'nudged');
+    expect(sections.map((section) => section.name)).toContain('skills-guidance');
+    expect(sections.map((section) => section.name)).not.toContain('proposal-signal');
+    expect(sections.map((section) => section.text).join('\n')).not.toContain('上一轮动作回顾');
+    // The run-start hook, not the prompt builder, takes and clears the signal.
+    expect(useChatStore.getState().conversations.nudged.pendingProposalSignal).toEqual(signal);
+  });
+});
+
 describe('buildSystemPromptSections - app context', () => {
   const basePrompt = 'base prompt';
   const binding = { version: 1 as const, appId: 'shop@market', pluginKey: 'shop@market', pluginVersion: '1.0.0', appName: '店铺运营', modeId: 'sourcing', promptAppend: 'Focus on margins.' };

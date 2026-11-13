@@ -31,7 +31,7 @@
  * tests use), so no store mocking is needed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readDir, readTextFile, writeTextFile, exists, stat } from '@tauri-apps/plugin-fs';
+import { readDir, readFile, readTextFile, writeTextFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './index';
 
@@ -252,6 +252,36 @@ describe('executeLocalTool — read_file PDF/PPTX/archive escalation (P1-3d-4)',
     // Confirms the escalation happens BEFORE any fs work — the real tool's
     // execute() body was never reached for these extensions.
     expect(readTextFile).not.toHaveBeenCalled();
+  });
+
+
+  it('escalates a view of part of a picture, which the bundled Python renders, and reads a whole picture locally', async () => {
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.png', region: { x0: 0, y0: 0, x1: 0.5, y1: 0.5 } }, undefined))
+      .rejects.toThrow(/run_argv_command/);
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.jpg', rotate: 90 }, undefined))
+      .rejects.toThrow(/run_argv_command/);
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.png' }, { supportsVision: false }))
+      .resolves.toContain('/tmp/scan.png');
+  });
+  // The open-source build gives read_file no file access, so the sidecar's own read has no
+  // encoder to fit a picture with: Python runs in the shell. A picture inside the limits needs none.
+  it('escalates a plain picture over the side or byte limit, and reads one inside the limits locally', async () => {
+    const png = (w: number, h: number, length = 64) => {
+      const bytes = new Uint8Array(length);
+      bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+      new DataView(bytes.buffer).setUint32(16, w);
+      new DataView(bytes.buffer).setUint32(20, h);
+      return bytes;
+    };
+    vi.mocked(readFile).mockResolvedValueOnce(png(10032, 4178));
+    await expect(executeLocalTool('read_file', { path: '/tmp/wide.png' }, { supportsVision: true })).rejects.toThrow(/run_argv_command/);
+    vi.mocked(readFile).mockResolvedValueOnce(png(1200, 800, 6 * 1024 * 1024));
+    await expect(executeLocalTool('read_file', { path: '/tmp/heavy.png' }, { supportsVision: true })).rejects.toThrow(/run_argv_command/);
+    // Inside both limits: read here, the original bytes.
+    vi.mocked(readFile).mockResolvedValue(png(1200, 800));
+    const result = await executeLocalTool('read_file', { path: '/tmp/ok.png' }, { supportsVision: true });
+    expect(JSON.stringify(result)).toContain('Image: /tmp/ok.png');
+    vi.mocked(readFile).mockReset();
   });
 
   it('does NOT escalate a .7z path — listArchiveContents has no run_argv_command branch for it, so it returns its normal "not supported" string locally (identical to what the reverse/shell path would return, no invoke call either way)', async () => {

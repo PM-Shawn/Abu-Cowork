@@ -8,6 +8,7 @@ import { Readable } from 'node:stream';
 import { setTimeout } from 'node:timers/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripScientificTests } from './pythonRuntimeStrip.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const METADATA_DIR = path.join(ROOT, 'electron', 'runtime');
@@ -348,6 +349,8 @@ function stripPythonRuntime(runtimeRoot, python) {
   }
   fs.rmSync(path.join(runtimeRoot, 'include'), { recursive: true, force: true });
   fs.rmSync(path.join(runtimeRoot, 'share'), { recursive: true, force: true });
+  // Test suites and sample data inside the large scientific wheels are never imported at run time.
+  stripScientificTests(runtimeRoot);
 }
 
 function writePythonNotices(python, runtimeRoot) {

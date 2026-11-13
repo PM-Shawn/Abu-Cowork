@@ -363,6 +363,7 @@ import { showWidgetTool, readMeTool } from '@/core/tools/definitions/widgetTools
 import { httpFetchTool, webSearchTool } from '@/core/tools/definitions/webTools';
 import {
   readFileTool,
+  readFileNeedsPictureFit,
   listDirectoryTool,
   searchFilesTool,
   findFilesTool,
@@ -373,6 +374,7 @@ import {
 import { processImageTool } from '@/core/tools/definitions/processImageTool';
 import { runCommandTool } from '@/core/tools/definitions/commandTools';
 import { getFileExtension, ARCHIVE_EXTENSIONS } from '@/core/tools/helpers/toolHelpers';
+import { readFileNeedsHostProcess } from '@/core/tools/fileRead';
 import { isWindows } from '@/utils/platform';
 import { applyOSPermissionGuideIfNeeded } from '@/core/tools/osPermissionGuide';
 
@@ -433,7 +435,8 @@ const readFileLocalTool: ToolDefinition = {
   ...readFileTool,
   execute: async (input, context) => {
     const path = typeof input.path === 'string' ? input.path : '';
-    if (readFileUnsupportedLocally(path)) {
+    // A PDF read, a view of part of a picture and the fit of a picture over the limits run Python in the shell, which the sidecar cannot start.
+    if (readFileUnsupportedLocally(path) || readFileNeedsHostProcess(path, input) || await readFileNeedsPictureFit(path, context)) {
       throw new LocalToolUnsupportedError(
         `read_file: "${path}" needs run_argv_command (pdftotext/python3/unzip/tar), which is not on the sidecar's native.invoke allowlist — falling back to the reverse tool.invoke path, where the shell can run it directly.`,
       );

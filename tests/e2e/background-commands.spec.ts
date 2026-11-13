@@ -234,8 +234,16 @@ async function startScriptedMock(steps: readonly Step[]): Promise<ScriptedMock> 
   };
 }
 
+/** The plain-language purpose the background call carries: its step reads "<purpose>（在后台）", not the command. */
+const BACKGROUND_PURPOSE = '每秒记一次时间';
+const BACKGROUND_STEP = `${BACKGROUND_PURPOSE}（在后台）`;
+
 function startInBackground(command: string): Step {
-  return () => ({ kind: 'tool-call', toolName: 'run_command', arguments: { command, background: true } });
+  return () => ({
+    kind: 'tool-call',
+    toolName: 'run_command',
+    arguments: { command, purpose: BACKGROUND_PURPOSE, background: true },
+  });
 }
 
 /** The reply after the command started: it is in the background and still running. */
@@ -315,7 +323,7 @@ test('lists, shows output and stops a background command', async () => {
   await ask(page, PROMPT, STARTED_REPLY);
   await expect(entry(page, ENTRY_RUNNING)).toBeVisible({ timeout: READY_TIMEOUT });
   await showSteps(page);
-  await expect(page.getByText(/^在后台执行 node -e/)).toBeVisible();
+  await expect(page.getByText(BACKGROUND_STEP, { exact: true })).toBeVisible();
   expect(processesWith(marker!).length).toBeGreaterThan(0);
 
   await entry(page, ENTRY_RUNNING).click();
@@ -356,9 +364,9 @@ test('lets Abu read and stop the command', async () => {
 
   await ask(page, PROMPT, STOPPED_REPLY);
   await showSteps(page);
-  await expect(page.getByText(/^在后台执行 node -e/)).toBeVisible();
-  await expect(page.getByText(/^查看后台命令的输出 node -e/)).toBeVisible();
-  await expect(page.getByText(/^停止后台命令 node -e/)).toBeVisible();
+  await expect(page.getByText(BACKGROUND_STEP, { exact: true })).toBeVisible();
+  await expect(page.getByText('查看后台任务的输出', { exact: true })).toBeVisible();
+  await expect(page.getByText('停止后台任务', { exact: true })).toBeVisible();
 
   await expect(entry(page, ENTRY_TOTAL)).toBeVisible({ timeout: READY_TIMEOUT });
   await entry(page, ENTRY_TOTAL).click();

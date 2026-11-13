@@ -644,7 +644,7 @@ describe('TaskBlock — the command of a background-command step', () => {
     executionId: 'exec-1',
     toolCallId: 'tc-output',
     type: 'tool',
-    label: 'Read background command output bg-0a1b2c3d',
+    label: 'Read the output of a background task',
     status: 'completed',
     toolName: 'background_command_output',
     toolInput: { id: 'bg-0a1b2c3d' },
@@ -659,22 +659,22 @@ describe('TaskBlock — the command of a background-command step', () => {
     fireEvent.click(screen.getAllByRole('button')[0]);
   }
 
-  it('names the command the step recorded', () => {
+  it('shows the plain sentence for the step', () => {
     renderOpen([outputStep]);
 
-    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+    expect(screen.getByText('Read the output of a background task')).toBeInTheDocument();
   });
 
-  it('names the command for a step restored from a saved snapshot', () => {
+  it('shows the plain sentence for a step restored from a saved snapshot', () => {
     const restored = snapshotToExecutionSteps(snapshotExecutionSteps([outputStep]));
     expect(restored[0].toolInput).toEqual({});
 
     renderOpen(restored);
 
-    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+    expect(screen.getByText('Read the output of a background task')).toBeInTheDocument();
   });
 
-  it('names the command for a legacy step by its tool call id', () => {
+  it('shows the plain sentence for a legacy step by its tool call id', () => {
     render(
       <TaskBlock
         steps={[{
@@ -692,15 +692,22 @@ describe('TaskBlock — the command of a background-command step', () => {
     );
     fireEvent.click(screen.getAllByRole('button')[0]);
 
-    expect(screen.getByText('Read background command output npm run dev')).toBeInTheDocument();
+    expect(screen.getByText('Read the output of a background task')).toBeInTheDocument();
   });
 });
 
 describe('convertExecutionStep label (persisted snapshots keep their label)', () => {
   const base = { id: 's', executionId: 'e', type: 'command' as const, status: 'completed' as const, source: 'agent' as const, detailBlocks: [] };
   it('keeps the stored label when the snapshot has no toolInput, recomputes when it does', () => {
-    expect(convertExecutionStep({ ...base, toolName: 'run_command', toolInput: {}, label: '执行 sleep 180' } as never, 'zh-CN').label).toBe('执行 sleep 180');
-    expect(convertExecutionStep({ ...base, toolName: 'run_command', toolInput: { command: 'ls -la' }, label: 'stale' } as never, 'zh-CN').label).not.toBe('stale');
+    expect(convertExecutionStep({ ...base, type: 'tool', toolName: 'present_files', toolInput: {}, label: '交付了 2 个文件' } as never, 'zh-CN').label).toBe('交付了 2 个文件');
+    expect(convertExecutionStep({ ...base, toolName: 'run_command', toolInput: { command: 'ls -la', purpose: '看看文件夹' }, label: 'stale' } as never, 'zh-CN').label).toBe('看看文件夹');
+  });
+
+  it('rebuilds a command or connector title that an old snapshot saved with the command or the tool id', () => {
+    expect(convertExecutionStep({ ...base, toolName: 'run_command', toolInput: {}, label: '执行 python3 - <<' } as never, 'zh-CN').label).toBe('处理文件');
+    expect(convertExecutionStep({ ...base, toolName: 'run_command', toolInput: { purpose: '合并三张表', background: true }, label: 'x' } as never, 'zh-CN').label).toBe('合并三张表（在后台）');
+    expect(convertExecutionStep({ ...base, toolName: 'gh__list', toolInput: {}, label: '[gh] list' } as never, 'en-US').label).toBe('Use gh');
+    expect(convertExecutionStep({ ...base, type: 'tool', toolName: 'manage_goal', toolInput: {}, label: '调用 manage_goal' } as never, 'zh-CN').label).toBe('更新目标');
   });
 });
 
@@ -1016,7 +1023,7 @@ describe('TaskBlock — tool views', () => {
 
   it('says the command ended under a non-zero exit', () => {
     renderOpen([commandStep({ toolInput: npmTest, toolResult: 'FAIL' })], { toolViewRecords: commandRecord({ exitCode: 1 }) });
-    expect(screen.getByText('命令已结束：npm test')).toBeInTheDocument();
+    expect(screen.getByText('这一步已结束，结果请看详情')).toBeInTheDocument();
   });
 
   it.each([

@@ -407,7 +407,7 @@ describe('SubagentTab', () => {
     render(<SubagentTab identity={identity} taskIndex={0} title="Worker A" />);
 
     expect(screen.getByText('Succeeded')).toBeInTheDocument();
-    expect(screen.getByText('[abu-browser] screenshot')).toBeInTheDocument();
+    expect(screen.getByText('Use the browser')).toBeInTheDocument();
     expect(useBatchProgressStore.getState().batches[makeBatchKey(identity)].tasks[0].steps[0].result)
       .toBe('Screenshot captured');
     expect(screen.getByText('Rich content for this step was released to keep memory bounded.')).toBeInTheDocument();

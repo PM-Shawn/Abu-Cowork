@@ -3,7 +3,6 @@ import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { normalizeSeparators, joinPath, getBaseName } from '@/utils/pathUtils';
 import { parseArgs } from '@/utils/argsParser';
 import { presentedFileNames, getToolLabel as getLocalizedToolLabel, type ToolLabelRecord } from '@/utils/toolLabels';
-import { format } from '@/i18n';
 import zhCN from '@/i18n/locales/zh-CN';
 import enUS from '@/i18n/locales/en-US';
 import { isToolResultError, mediaToolAnnouncedPath } from '@/core/media/presentedFileRecords';
@@ -105,12 +104,8 @@ function getToolLabel(toolName: string, input: Record<string, unknown>, record?:
     case TOOL_NAMES.RUN_COMMAND:
     case 'execute':
     case 'shell': {
-      const cmd = (input.command || input.cmd) as string | undefined;
-      const shortCmd = cmd ? (cmd.length > 20 ? cmd.slice(0, 20) + '...' : cmd) : undefined;
-      return {
-        label: shortCmd ? `执行 ${shortCmd}` : '执行命令',
-        detail: cmd,
-      };
+      // Same wording as the live step title: the purpose, else a generic sentence; never the command.
+      return getLocalizedToolLabel(toolName, input, 'zh-CN', record);
     }
     case 'search':
     case 'grep':
@@ -311,17 +306,14 @@ export function generateCompletionMessage(
     case 'bash':
     case 'execute':
     case 'shell': {
-      const cmd = (input.command || input.cmd) as string | undefined;
-      const shortCmd = cmd ? (cmd.length > 15 ? cmd.slice(0, 15) + '...' : cmd) : '';
+      // The step title already says what the step was for; this line says only how it ended.
       if (!isSuccess) {
-        return isZh ? `执行失败` : `Command failed`;
+        return isZh ? `这一步没有成功` : `This step did not succeed`;
       }
       if (outcome?.exitCode !== undefined && outcome.exitCode !== 0) {
-        return format((isZh ? zhCN : enUS).task.commandEnded, { command: shortCmd });
+        return (isZh ? zhCN : enUS).task.commandEnded;
       }
-      return isZh
-        ? `命令执行成功${shortCmd ? `：${shortCmd}` : ''}`
-        : `Command executed${shortCmd ? `: ${shortCmd}` : ''} successfully`;
+      return isZh ? `已完成` : `Done`;
     }
 
     case TOOL_NAMES.GET_SYSTEM_INFO:

@@ -5,6 +5,7 @@ import zhCN from '@/i18n/locales/zh-CN';
 import enUS from '@/i18n/locales/en-US';
 import type { TranslationDict } from '@/i18n/types';
 import type { BackgroundCommandRef } from '@/types';
+import { commandPurpose } from '@/utils/commandPurpose';
 
 /**
  * Shared, locale-aware tool-call label generation.
@@ -16,6 +17,8 @@ import type { BackgroundCommandRef } from '@/types';
  * into persisted data. See DetailBlockView / TaskBlock for the render-time call
  * sites, and eventRouter for the live-execution producer.
  */
+
+const BROWSER_SERVERS = new Set(['abu-browser', 'abu-browser-bridge']);
 
 /** Check if a tool is an MCP tool (format: serverName__toolName). */
 export function isMCPTool(toolName: string): boolean {
@@ -34,13 +37,14 @@ export function parseMCPToolName(
   };
 }
 
+/** A tool call whose title depends on a model-written purpose, not on any other part of its input. */
+export function isCommandToolName(toolName: string): boolean {
+  return toolName === TOOL_NAMES.RUN_COMMAND || toolName === 'execute' || toolName === 'shell' || toolName === 'bash';
+}
+
 function getFileName(path: string): string {
   const segments = path.split(/[/\\]/);
   return segments[segments.length - 1] || path;
-}
-
-function shortCommand(command: string): string {
-  return command.length > 20 ? command.slice(0, 20) + '...' : command;
 }
 
 /** A web address without its scheme, cut to 40 characters. */
@@ -51,6 +55,48 @@ export function shortUrl(url: string): string {
 
 function dictionary(isZh: boolean): TranslationDict {
   return isZh ? zhCN : enUS;
+}
+
+/** Names of steps that need no detail from their input: [Chinese, English]. */
+const PLAIN_STEP_LABELS: Record<string, [string, string]> = {
+  [TOOL_NAMES.APPLY_PATCH]: ['修改文件', 'Edit files'],
+  [TOOL_NAMES.RECALL]: ['回想以前的对话', 'Recall earlier conversations'],
+  [TOOL_NAMES.READ_MEMORY]: ['读取记忆', 'Read memory'],
+  [TOOL_NAMES.UPDATE_MEMORY]: ['更新记忆', 'Update memory'],
+  [TOOL_NAMES.READ_SKILL_FILE]: ['读取技能说明', 'Read a skill file'],
+  [TOOL_NAMES.SKILL_VIEW]: ['查看技能', 'View a skill'],
+  [TOOL_NAMES.TOOL_SEARCH]: ['查找可用的工具', 'Look for a tool'],
+  [TOOL_NAMES.GENERATE_IMAGE]: ['生成图片', 'Generate an image'],
+  [TOOL_NAMES.PROCESS_IMAGE]: ['处理图片', 'Process an image'],
+  [TOOL_NAMES.CLIPBOARD_READ]: ['读取剪贴板', 'Read the clipboard'],
+  [TOOL_NAMES.CLIPBOARD_WRITE]: ['写入剪贴板', 'Write to the clipboard'],
+  [TOOL_NAMES.SYSTEM_NOTIFY]: ['发送系统通知', 'Send a notification'],
+  [TOOL_NAMES.SEND_FILE]: ['发送文件', 'Send a file'],
+  [TOOL_NAMES.REQUEST_WORKSPACE]: ['请你选择工作区', 'Ask for a workspace'],
+  [TOOL_NAMES.ASK_USER_QUESTION]: ['向你提问', 'Ask you a question'],
+  [TOOL_NAMES.CREATE_TODO]: ['添加待办', 'Add a to-do'],
+  [TOOL_NAMES.CHECK_OPEN_DOCUMENT]: ['检查打开的文档', 'Check an open document'],
+  [TOOL_NAMES.PLUGIN_PREPARE]: ['准备插件', 'Prepare a plugin'],
+  [TOOL_NAMES.APP_PREPARE]: ['准备应用', 'Prepare an app'],
+  [TOOL_NAMES.SKILL_MANAGE]: ['整理技能', 'Manage skills'],
+  [TOOL_NAMES.MANAGE_GOAL]: ['更新目标', 'Update the goal'],
+  [TOOL_NAMES.SAVE_AGENT]: ['保存专家', 'Save an expert'],
+  [TOOL_NAMES.SAVE_TEAM]: ['保存专家团', 'Save an expert team'],
+  [TOOL_NAMES.TEST_SKILL_TRIGGER]: ['测试技能是否会被用到', 'Test when a skill is used'],
+  [TOOL_NAMES.IMPROVE_SKILL_DESCRIPTION]: ['优化技能说明', 'Improve a skill description'],
+  [TOOL_NAMES.UPDATE_SOUL]: ['更新人设', 'Update the persona'],
+  [TOOL_NAMES.MANAGE_TRIGGER]: ['管理自动触发', 'Manage automatic triggers'],
+  [TOOL_NAMES.MANAGE_FILE_WATCH]: ['管理文件监听', 'Manage file watching'],
+  [TOOL_NAMES.MANAGE_MCP_SERVER]: ['管理工具服务', 'Manage tool services'],
+  [TOOL_NAMES.COMPUTER]: ['操作电脑', 'Use the computer'],
+  [TOOL_NAMES.LOG_TASK_COMPLETION]: ['记录完成情况', 'Record the result'],
+  [TOOL_NAMES.CAPABILITY_SNAPSHOT]: ['查看可用能力', 'Check available abilities'],
+  [TOOL_NAMES.RUN_AGENT_BATCH]: ['分配给多位专家', 'Assign to several experts'],
+};
+
+/** A tool whose step title needs nothing but its name, so a saved title can always be rebuilt. */
+export function hasNameOnlyLabel(toolName: string): boolean {
+  return toolName in PLAIN_STEP_LABELS;
 }
 
 /** What a tool call recorded while it ran (`ToolCall` fields), for labels its input cannot give. */
@@ -89,9 +135,12 @@ export function getToolLabel(
   const mcpParts = parseMCPToolName(toolName);
   if (mcpParts) {
     const { serverName, actualToolName } = mcpParts;
+    const task = dictionary(isZh).task;
     return {
-      label: `[${serverName}] ${actualToolName}`,
-      detail: JSON.stringify(toolInput),
+      // Who is doing the work, in words: the built-in browser has a plain name, any other
+      // connector is named as the person named it. The tool's own id stays in the details.
+      label: BROWSER_SERVERS.has(serverName) ? task.connectorBrowser : format(task.connectorStep, { server: serverName }),
+      detail: `${actualToolName} ${JSON.stringify(toolInput)}`,
     };
   }
 
@@ -131,15 +180,20 @@ export function getToolLabel(
     case TOOL_NAMES.RUN_COMMAND:
     case 'execute':
     case 'shell': {
+      // A person who knows nothing about code reads this line, so it says what the step is for
+      // (the call's `purpose`), never the command. The command stays in `detail` and in the
+      // opened step. A call with no usable purpose (an older conversation, a model that left
+      // it out) reads as a generic sentence.
       const cmd = (toolInput.command || toolInput.cmd) as string | undefined;
-      const shortCmd = cmd ? shortCommand(cmd) : undefined;
-      if (toolName === TOOL_NAMES.RUN_COMMAND && toolInput.background === true && shortCmd) {
-        return { label: format(dictionary(isZh).task.runInBackground, { command: shortCmd }), detail: cmd };
+      const purpose = commandPurpose(toolInput);
+      const task = dictionary(isZh).task;
+      if (toolName === TOOL_NAMES.RUN_COMMAND && toolInput.background === true) {
+        return {
+          label: purpose ? format(task.runInBackground, { command: purpose }) : task.commandFallbackBackground,
+          detail: cmd,
+        };
       }
-      return {
-        label: isZh ? (shortCmd ? `执行 ${shortCmd}` : '执行命令') : (shortCmd ? `Run ${shortCmd}` : 'Run command'),
-        detail: cmd,
-      };
+      return { label: purpose ?? task.commandFallback, detail: cmd };
     }
 
     case TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT:
@@ -148,11 +202,10 @@ export function getToolLabel(
       const command = record?.backgroundCommand?.command
         ?? (typeof toolInput.id === 'string' ? toolInput.id : '');
       const task = dictionary(isZh).task;
-      const template = toolName === TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT
-        ? task.readBackgroundCommandOutput
-        : task.stopBackgroundCommand;
       return {
-        label: format(template, { command: command ? shortCommand(command) : '' }).trim(),
+        label: toolName === TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT
+          ? task.readBackgroundCommandOutput
+          : task.stopBackgroundCommand,
         detail: command || undefined,
       };
     }
@@ -234,6 +287,12 @@ export function getToolLabel(
         label: isZh ? '获取系统信息' : 'Get system info',
       };
 
+    case TOOL_NAMES.DELETE_FILE:
+      return {
+        label: isZh ? (fileName ? `删除 ${fileName}` : '删除文件') : (fileName ? `Delete ${fileName}` : 'Delete file'),
+        detail: path,
+      };
+
     // show_widget is hidden from the chat's generic tool list (rendered as
     // ShowWidgetCard instead — see MessageGroup.tsx), but its execution step
     // still surfaces in the right-side progress panel, which uses this label.
@@ -273,10 +332,12 @@ export function getToolLabel(
         detail: typeof toolInput.text === 'string' ? toolInput.text : undefined,
       };
 
-    default:
-      return {
-        label: isZh ? `调用 ${toolName}` : `Call ${toolName}`,
-      };
+    default: {
+      // Steps people meet in an ordinary conversation are named in their words. Never the
+      // tool's own id: it means nothing to the person.
+      const plain = PLAIN_STEP_LABELS[toolName];
+      return { label: plain ? (isZh ? plain[0] : plain[1]) : dictionary(isZh).task.toolFallback };
+    }
   }
 }
 

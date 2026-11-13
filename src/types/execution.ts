@@ -261,6 +261,10 @@ export interface ExecutionStepSnapshot {
   toolName: string;
   duration?: number;
   completionMessage?: string;
+  /** A command step's plain-language purpose (the only part of its input a reopened step needs for its title). */
+  purpose?: string;
+  /** A command step that ran in the background (its title says so). */
+  background?: boolean;
   // Delegate support
   agentName?: string;
   childSteps?: ExecutionStepSnapshot[];

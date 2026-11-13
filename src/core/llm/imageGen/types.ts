@@ -4,10 +4,11 @@ export type { ImageGenVendor };
 
 /**
  * Vendor-agnostic input to `buildImageRequest` — the subset of
- * `generate_image`'s tool arguments that every vendor mapper needs. Kept
- * intentionally small (P3 scope): img2img reference images and vendor-only
- * extras (watermark, seed, guidance_scale, ...) are out of scope, see design
- * doc §10.
+ * `generate_image`'s tool arguments that vendor mappers need. Kept small
+ * (P3 scope): vendor-only extras (watermark, seed, guidance_scale, ...) are
+ * out of scope, see design doc §10. Reference images (img2img) are carried
+ * here but only the Volcengine mapper puts them on the wire; the tool refuses
+ * them for every other vendor before a request is built.
  */
 export interface ImageGenRequestParams {
   model: string;
@@ -18,6 +19,12 @@ export interface ImageGenRequestParams {
   size?: string;
   /** DALL-E 3 only ('vivid' | 'natural'); ignored by other vendors. */
   style?: string;
+  /** Reference images for image-to-image, multi-image fusion and style
+   *  transfer. Each entry is already encoded for the wire: a `data:` URI or an
+   *  http(s) URL. Order matters — the backend addresses them as image 1, 2, …. */
+  referenceImages?: string[];
+  /** Volcengine only: ask the API to stamp its "AI generated" mark. Defaults to true, the API's own default. */
+  watermark?: boolean;
 }
 
 /** The JSON body a vendor mapper POSTs to `/images/generations` (or

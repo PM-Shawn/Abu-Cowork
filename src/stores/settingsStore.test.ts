@@ -1218,7 +1218,7 @@ describe('settingsStore labs flags', () => {
     it('initializes an empty imageGeneration container when there is no legacy form', () => {
       const migrate = getMigrate();
       const migrated = migrate({ providers: [] }, 40) as { imageGeneration: { backends: unknown[]; defaultId?: string } };
-      expect(migrated.imageGeneration).toEqual({ backends: [], defaultId: undefined });
+      expect(migrated.imageGeneration).toEqual({ backends: [], defaultId: undefined, watermark: true });
     });
 
     it('migrates a configured legacy auxiliaryServices.imageGen into a backend and sets it default', () => {

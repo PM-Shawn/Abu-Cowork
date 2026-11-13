@@ -2,6 +2,16 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generateImageTool } from './mediaTools';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import type { ImageGenBackend } from '../../../types/provider';
+import type { ToolExecutionContext } from '../../../types';
+
+
+// Reference images are read through fsBridge when the tool has no host file
+// access; the bytes come from here instead of the disk.
+const { mockReadFile } = vi.hoisted(() => ({ mockReadFile: vi.fn() }));
+vi.mock('../fsBridge', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../fsBridge')>()),
+  readFile: mockReadFile,
+}));
 
 // generate_image resolves its backend from the independent imageGeneration
 // config (design doc §3.1, "C-a" — getDefaultImageBackend), fully decoupled
@@ -132,6 +142,21 @@ describe('generateImageTool', () => {
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body).not.toHaveProperty('size');
   });
+
+  it('sends watermark:true to a Volcengine backend by default and false when the setting is off', async () => {
+    const sent = () => {
+      const genCall = mockFetch.mock.calls.find(([u]) => String(u).includes('/images/generations'));
+      return JSON.parse((genCall![1] as RequestInit).body as string);
+    };
+    await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+    expect(sent().watermark).toBe(true);
+
+    mockFetch.mockClear();
+    useSettingsStore.getState().setImageGenWatermark(false);
+    await generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' });
+    expect(sent().watermark).toBe(false);
+  });
+
 
   it('includes size in the request body when the caller explicitly passes one', async () => {
     await generateImageTool.execute({ prompt: 'test', size: '2048x2048', save_path: '/tmp/abu-test/out.png' });
@@ -315,5 +340,269 @@ describe('generateImageTool', () => {
       return url.startsWith('data:');
     });
     expect(dataUrlCalls).toHaveLength(0);
+  });
+
+  describe('reference images', () => {
+    const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 4, 5, 6]);
+    const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
+    const MB = 1024 * 1024;
+
+    function sentBody(): Record<string, unknown> {
+      const genCall = mockFetch.mock.calls.find(([u]) => String(u).includes('/images/generations'));
+      expect(genCall).toBeDefined();
+      return JSON.parse((genCall![1] as RequestInit).body as string);
+    }
+
+    function filesStub(readFile: (path: string) => Promise<Uint8Array>): ToolExecutionContext {
+      return {
+        files: {
+          assertCurrent: async () => {},
+          assertActive: () => {},
+          readFile,
+          ensureParentDir: async () => {},
+          writeFile: async () => {},
+        },
+      } as unknown as ToolExecutionContext;
+    }
+
+    beforeEach(() => {
+      mockReadFile.mockReset();
+    });
+
+    it('sends one local reference image as a data URI string and keeps the success text intact', async () => {
+      mockReadFile.mockResolvedValue(PNG);
+
+      const result = await generateImageTool.execute({
+        prompt: 'make it a watercolor', reference_images: ['/tmp/abu-test/in.png'], save_path: '/tmp/abu-test/out.png',
+      });
+
+      expect(mockReadFile).toHaveBeenCalledWith('/tmp/abu-test/in.png');
+      const body = sentBody();
+      expect(body.image).toBe(`data:image/png;base64,${b64(PNG)}`);
+      expect(body).not.toHaveProperty('sequential_image_generation');
+      // The preview card reads the path up to the first newline; the count rides on a later line.
+      expect(result as string).toMatch(/^Image saved to: \/tmp\/abu-test\/out\.png\n/);
+      expect(result as string).toContain('1 reference image');
+    });
+
+    it('sends several reference images as an array in the given order', async () => {
+      mockReadFile.mockImplementation(async (path: string) => (path.endsWith('b.jpg') ? JPEG : PNG));
+
+      await generateImageTool.execute({
+        prompt: 'put the product from image 1 into the scene of image 2',
+        reference_images: ['/w/a.png', '/w/b.jpg'],
+        save_path: '/tmp/abu-test/out.png',
+      });
+
+      expect(sentBody().image).toEqual([`data:image/png;base64,${b64(PNG)}`, `data:image/jpeg;base64,${b64(JPEG)}`]);
+    });
+
+    it('treats a single string as a one-item list', async () => {
+      mockReadFile.mockResolvedValue(PNG);
+
+      await generateImageTool.execute({ prompt: 'x', reference_images: '/w/a.png', save_path: '/tmp/abu-test/out.png' });
+
+      expect(sentBody().image).toBe(`data:image/png;base64,${b64(PNG)}`);
+    });
+
+    it('drops blank entries, and sends no image field when nothing is left', async () => {
+      await generateImageTool.execute({ prompt: 'x', reference_images: ['', '   '], save_path: '/tmp/abu-test/out.png' });
+
+      expect(mockReadFile).not.toHaveBeenCalled();
+      expect(sentBody()).not.toHaveProperty('image');
+    });
+
+    it('passes http(s) URLs and data URIs through without reading anything', async () => {
+      mockReadFile.mockResolvedValue(JPEG);
+
+      await generateImageTool.execute({
+        prompt: 'x',
+        reference_images: ['https://example.com/a.png', 'data:image/webp;base64,AAAA', '/w/b.jpg'],
+        save_path: '/tmp/abu-test/out.png',
+      });
+
+      expect(mockReadFile).toHaveBeenCalledTimes(1);
+      expect(sentBody().image).toEqual([
+        'https://example.com/a.png', 'data:image/webp;base64,AAAA', `data:image/jpeg;base64,${b64(JPEG)}`,
+      ]);
+    });
+
+    it.each([
+      ['png', new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0]), 'image/png'],
+      ['jpeg', new Uint8Array([0xff, 0xd8, 0xff, 0xdb, 0]), 'image/jpeg'],
+      ['webp', new Uint8Array([0x52, 0x49, 0x46, 0x46, 9, 9, 9, 9, 0x57, 0x45, 0x42, 0x50, 0]), 'image/webp'],
+      ['gif', new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0]), 'image/gif'],
+      ['bmp', new Uint8Array([0x42, 0x4d, 0, 0, 0]), 'image/bmp'],
+      ['tiff (little endian)', new Uint8Array([0x49, 0x49, 0x2a, 0x00, 0]), 'image/tiff'],
+      ['tiff (big endian)', new Uint8Array([0x4d, 0x4d, 0x00, 0x2a, 0]), 'image/tiff'],
+      ['heic (brand heic)', new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0]), 'image/heic'],
+      ['heic (brand heix)', new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x78, 0]), 'image/heic'],
+      ['heif (brand mif1)', new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x6d, 0x69, 0x66, 0x31, 0]), 'image/heif'],
+      ['heif (brand heif)', new Uint8Array([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x66, 0]), 'image/heif'],
+    ])('detects %s from its magic bytes, whatever the file is called', async (_name, bytes, mime) => {
+      mockReadFile.mockResolvedValue(bytes);
+
+      await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/misnamed.dat'], save_path: '/tmp/abu-test/out.png' });
+
+      expect(sentBody().image).toBe(`data:${mime};base64,${b64(bytes)}`);
+    });
+
+    it.each([
+      '/w/photo.JPG', '/w/shot.heic', '/w/scan.tif', '/w/PHOTO.PNG',
+    ])('refuses %s when its bytes are not a recognised image, whatever the name says', async (path) => {
+      mockReadFile.mockResolvedValue(new Uint8Array([1, 2, 3, 4]));
+
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: [path], save_path: '/tmp/abu-test/out.png' });
+
+      expect(result as string).toContain(path);
+      expect(result as string).toContain('not a supported format');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses text content named like an image and uploads nothing', async () => {
+      mockReadFile.mockResolvedValue(new TextEncoder().encode('api_key=not-a-picture'));
+
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/looks-like.png'], save_path: '/tmp/abu-test/out.png' });
+
+      expect(result as string).toContain('not a supported format');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('writes the format in the data URI in lowercase, as Ark requires', async () => {
+      mockReadFile.mockResolvedValue(PNG);
+
+      await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/PHOTO.PNG'], save_path: '/tmp/abu-test/out.png' });
+
+      expect(String(sentBody().image)).toMatch(/^data:image\/png;base64,/);
+    });
+
+    function useBackendModel(model: string) {
+      useSettingsStore.setState({
+        imageGeneration: { backends: [imageGenBackend({ model })], defaultId: 'volc' },
+      });
+    }
+
+    const urls = (count: number) => Array.from({ length: count }, (_, i) => `https://example.com/${i}.png`);
+
+    it('rejects more than 14 reference images on Seedream 4.5 without reading or calling anything', async () => {
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: urls(15), save_path: '/tmp/abu-test/out.png' });
+
+      expect(result as string).toContain('at most 14');
+      expect(mockReadFile).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('accepts 14 reference images on Seedream 4.5 and on 5.0 lite', async () => {
+      await generateImageTool.execute({ prompt: 'x', reference_images: urls(14), save_path: '/tmp/abu-test/out.png' });
+      expect(sentBody().image).toEqual(urls(14));
+
+      mockFetch.mockClear();
+      useBackendModel('doubao-seedream-5-0-lite-260128');
+      await generateImageTool.execute({ prompt: 'x', reference_images: urls(14), save_path: '/tmp/abu-test/out.png' });
+      expect(sentBody().image).toEqual(urls(14));
+    });
+
+    it.each(['doubao-seedream-5-0-pro-260628', 'doubao-seedream-5-0-flash-260628'])(
+      'caps %s at 10 reference images, before calling the API',
+      async (model) => {
+        useBackendModel(model);
+
+        const result = await generateImageTool.execute({ prompt: 'x', reference_images: urls(11), save_path: '/tmp/abu-test/out.png' });
+
+        expect(result as string).toContain('at most 10');
+        expect(result as string).toContain('11 were given');
+        expect(mockFetch).not.toHaveBeenCalled();
+
+        await generateImageTool.execute({ prompt: 'x', reference_images: urls(10), save_path: '/tmp/abu-test/out.png' });
+        expect(sentBody().image).toEqual(urls(10));
+      },
+    );
+
+    it('rejects a file over 20 MB and points at process_image', async () => {
+      mockReadFile.mockResolvedValue(new Uint8Array(20 * MB + 1));
+
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/huge.png'], save_path: '/tmp/abu-test/out.png' });
+
+      expect(result as string).toContain('/w/huge.png');
+      expect(result as string).toContain('20.0 MB');
+      expect(result as string).toContain('process_image');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('accepts a file of exactly 20 MB', async () => {
+      const exactly = new Uint8Array(20 * MB);
+      exactly.set(PNG);
+      mockReadFile.mockResolvedValue(exactly);
+
+      await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/edge.png'], save_path: '/tmp/abu-test/out.png' });
+
+      expect(String(sentBody().image)).toMatch(/^data:image\/png;base64,/);
+    });
+
+    it('maps size through the Seedream 5.0 contract: tiers pass through, nothing is pushed up to 3,686,400px', async () => {
+      useBackendModel('doubao-seedream-5-0-pro-260628');
+
+      await generateImageTool.execute({ prompt: 'x', size: '2K', save_path: '/tmp/abu-test/out.png' });
+      expect(sentBody().size).toBe('2K');
+
+      mockFetch.mockClear();
+      await generateImageTool.execute({ prompt: 'x', size: '1024x1024', save_path: '/tmp/abu-test/out.png' });
+      expect(sentBody().size).toBe('1024x1024');
+    });
+
+    it('reports a file that cannot be read, naming the path, and calls nothing', async () => {
+      mockReadFile.mockRejectedValue(new Error('ENOENT: no such file'));
+
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/gone.png'], save_path: '/tmp/abu-test/out.png' });
+
+      expect(result as string).toContain('/w/gone.png');
+      expect(result as string).toContain('ENOENT');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses reference images on a non-Volcengine backend, without reading files or calling the API', async () => {
+      useSettingsStore.setState({
+        imageGeneration: {
+          backends: [imageGenBackend({ id: 'oai', vendor: 'openai', baseUrl: 'https://api.openai.com', model: 'dall-e-3' })],
+          defaultId: 'oai',
+        },
+      });
+
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/a.png'], save_path: '/tmp/abu-test/out.png' });
+
+      expect(result as string).toMatch(/^Error: /);
+      expect(result as string).toContain('openai');
+      expect(result as string).toContain('Volcengine Seedream');
+      expect(mockReadFile).not.toHaveBeenCalled();
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('still generates on a non-Volcengine backend when no reference image is given', async () => {
+      useSettingsStore.setState({
+        imageGeneration: {
+          backends: [imageGenBackend({ id: 'oai', vendor: 'openai', baseUrl: 'https://api.openai.com', model: 'dall-e-3' })],
+          defaultId: 'oai',
+        },
+      });
+
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: [], save_path: '/tmp/abu-test/out.png' });
+
+      expect(result as string).toContain('/tmp/abu-test/out.png');
+      expect(sentBody()).not.toHaveProperty('image');
+    });
+
+    it('reads through the operation\'s file access when the host provides it', async () => {
+      const readFile = vi.fn().mockResolvedValue(PNG);
+
+      await generateImageTool.execute(
+        { prompt: 'x', reference_images: ['/w/a.png'], save_path: '/tmp/abu-test/out.png' },
+        filesStub(readFile),
+      );
+
+      expect(readFile).toHaveBeenCalledWith('/w/a.png');
+      expect(mockReadFile).not.toHaveBeenCalled();
+      expect(sentBody().image).toBe(`data:image/png;base64,${b64(PNG)}`);
+    });
   });
 });

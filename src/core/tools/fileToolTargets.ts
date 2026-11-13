@@ -9,6 +9,7 @@ import { parsePatchOperations, type ResolvedPatchOperation } from '@/core/tools/
 import { freezeToolInput, requiresHostFileOperations } from '@/core/tools/operationAuthorization';
 import type { FileAccessPurpose, FileOperationPlan, FileOperationTarget } from '@/core/tools/fileOperation';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
+import { parseReferenceImages, isRemoteReference } from '@/core/tools/referenceImages';
 
 const singlePurposes: Readonly<Record<string, FileAccessPurpose>> = {
   [TOOL_NAMES.READ_FILE]: 'read',
@@ -82,6 +83,12 @@ export async function planToolFiles(
     const output = typeof input.save_path === 'string' && input.save_path.trim()
       ? input.save_path : joinPath(workspacePath || await downloadDir(), generatedName);
     input.save_path = target(output, 'write');
+    // A local reference image is read and uploaded: it is a read target like
+    // read_file's, and the tool reads the pinned path, not the model's text.
+    if (input.reference_images !== undefined) {
+      input.reference_images = parseReferenceImages(input.reference_images)
+        .map(entry => isRemoteReference(entry) ? entry : target(entry, 'read') ?? entry);
+    }
   } else if (upload) {
     const paths = decodeUploadFiles(input);
     if (paths) {
@@ -133,6 +140,10 @@ export function resolveToolFileInput(
     resolved.output_path = resolve(input.output_path);
   } else if (name === TOOL_NAMES.GENERATE_IMAGE) {
     resolved.save_path = resolve(input.save_path);
+    if (input.reference_images !== undefined) {
+      resolved.reference_images = parseReferenceImages(input.reference_images)
+        .map(entry => isRemoteReference(entry) ? entry : resolve(entry));
+    }
   } else if (name === TOOL_NAMES.APPLY_PATCH) {
     if (Array.isArray(input.operations)) {
       resolved.operations = (input.operations as ResolvedPatchOperation[]).map((op) => ({

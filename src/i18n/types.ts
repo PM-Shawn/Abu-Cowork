@@ -1462,6 +1462,8 @@ export interface TranslationDict {
     imageGenEditBackend: string;
     imageGenNoBackends: string;
     imageGenNoBackendsHint: string;
+    imageGenWatermark: string;
+    imageGenWatermarkDesc: string;
     imageGenSetDefault: string;
     imageGenDefaultBadge: string;
     imageGenDeleteConfirmTitle: string;
@@ -5306,6 +5308,12 @@ export interface TranslationDict {
        *  endpoint — the exact shape the V41 migration produced from a legacy
        *  chat-endpoint config, which 404s with an empty body. {url} */
       hintVolcChatEndpoint: string;
+      errRefNotSupported: string;
+      errTooManyRefs: string;
+      errRefTooLarge: string;
+      errRefUnsupportedType: string;
+      errRefRead: string;
+      refsUsed: string;
       /** Generic hint appended to 404/401 errors: check baseUrl, image model
        *  (doubao-seedream series for Volcengine), and API key. */
       hintCheckImageBackend: string;

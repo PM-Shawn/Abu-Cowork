@@ -21,8 +21,8 @@ const skillsDir = path.join(repoRoot, 'builtin-skills');
 const skillNames = readdirSync(skillsDir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
 
 describe('built-in skills', () => {
-  it('ship 31 skills', () => {
-    expect(skillNames).toHaveLength(31);
+  it('ship 32 skills', () => {
+    expect(skillNames).toHaveLength(32);
   });
 
   it.each(skillNames)('%s has a one-line display description in zh-CN and en-US', (name) => {

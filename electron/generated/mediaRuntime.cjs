@@ -49966,6 +49966,8 @@ var zhCN = {
     imageGenAddBackend: "添加后端",
     imageGenEditBackend: "编辑后端",
     imageGenNoBackends: "尚未配置图片生成后端",
+    imageGenWatermark: "生成图片时添加 AI 水印",
+    imageGenWatermarkDesc: "火山 Seedream 会在图片上加「AI 生成」标识。按 AI 生成内容标识的规定，除非确定用途不需要，建议保持开启。",
     imageGenNoBackendsHint: "添加一个后端（如火山 Seedream、DALL·E），供 AI 生成图片时使用",
     imageGenSetDefault: "设为默认",
     imageGenDefaultBadge: "默认",
@@ -53070,6 +53072,12 @@ var zhCN = {
       errProcessImage: "Error: 图片处理失败：{error}",
       imageProcessed: "图片处理完成：{path}",
       hintVolcChatEndpoint: "提示：当前生图后端的 baseUrl 指向的是火山方舟的聊天端点（/api/coding/），不是图片生成端点。请在 设置 → 图片生成 中把 baseUrl 改为 {url}，并将模型设置为生图模型（doubao-seedream 系列）。",
+      errRefNotSupported: "Error: 当前生图后台（{vendor}）不支持参考图。请在 设置 → 模型 → 图片生成 中添加或切换到火山引擎 Seedream 后台。",
+      errTooManyRefs: "Error: 参考图最多 {max} 张，当前传入了 {count} 张。",
+      errRefTooLarge: "Error: 参考图 {path} 大小为 {sizeMb} MB，超过 {maxMb} MB 的上限。请先用 process_image 压缩或缩小后再试。",
+      errRefUnsupportedType: "Error: 参考图 {path} 的格式不受支持，支持 jpeg、png、webp、bmp、tiff、gif、heic、heif。",
+      errRefRead: "Error: 无法读取参考图 {path}：{error}",
+      refsUsed: "\n（使用了 {count} 张参考图）",
       hintCheckImageBackend: "提示：请在 设置 → 图片生成 中检查 baseUrl 是否为图片生成端点、模型是否为生图模型（火山引擎需使用 doubao-seedream 系列而非聊天模型），并确认 API Key 有效。"
     },
     todo: {
@@ -54534,6 +54542,8 @@ var enUS = {
     imageGenAddBackend: "Add Backend",
     imageGenEditBackend: "Edit Backend",
     imageGenNoBackends: "No image-generation backends configured yet",
+    imageGenWatermark: "Add AI watermark to generated images",
+    imageGenWatermarkDesc: 'Volcengine Seedream stamps an "AI generated" mark into each picture. Keep it on unless you are sure your use does not need the label required for AI-generated content.',
     imageGenNoBackendsHint: "Add a backend (e.g. Volcano Seedream, DALL·E) for the AI to use when generating images",
     imageGenSetDefault: "Set as default",
     imageGenDefaultBadge: "Default",
@@ -57639,6 +57649,12 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
       errProcessImage: "Error processing image: {error}",
       imageProcessed: "Image processed successfully: {path}",
       hintVolcChatEndpoint: "Hint: this backend's baseUrl points at Volcengine Ark's chat endpoint (/api/coding/), not the image-generation endpoint. In Settings → Image Generation, change the baseUrl to {url} and set the model to an image-generation model (doubao-seedream series).",
+      errRefNotSupported: "Error: the current image backend ({vendor}) does not support reference images. In Settings → Models → Image generation, add or switch to a Volcengine Seedream backend.",
+      errTooManyRefs: "Error: at most {max} reference images are allowed, but {count} were given.",
+      errRefTooLarge: "Error: reference image {path} is {sizeMb} MB, over the {maxMb} MB limit. Compress or shrink it with process_image first, then try again.",
+      errRefUnsupportedType: "Error: reference image {path} is not a supported format (jpeg, png, webp, bmp, tiff, gif, heic, heif).",
+      errRefRead: "Error: could not read reference image {path}: {error}",
+      refsUsed: "\n(Used {count} reference image(s))",
       hintCheckImageBackend: "Hint: in Settings → Image Generation, check that the baseUrl is an image-generation endpoint and the model is an image-generation model (for Volcengine use the doubao-seedream series, not a chat model), and confirm the API key is valid."
     },
     todo: {

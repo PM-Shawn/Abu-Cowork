@@ -171,6 +171,9 @@ export interface ImageGenerationSettings {
   /** Which backend `generate_image` uses by default. Falls back to
    *  `backends[0]` when unset or when it points at a removed backend. */
   defaultId?: string;
+  /** Stamp the vendor's "AI generated" mark into pictures (Volcengine Seedream).
+   *  On unless explicitly false; see the labelling rules for AI-generated content. */
+  watermark?: boolean;
 }
 
 /** Provider usage guide */

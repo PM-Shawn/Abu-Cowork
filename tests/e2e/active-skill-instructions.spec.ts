@@ -11,8 +11,9 @@
  *  - a skill that is already active when the run starts (a project's default
  *    skills) is rendered into the entry system prompt.
  *
- * Either way the sidecar loop also has to learn which skills are active, to
- * expose `read_skill_file` for them.
+ * `read_skill_file` is a core tool: it is in the tool list of every request,
+ * from the first, so activating a skill never changes the tool list (a change
+ * would re-bill the cached prefix).
  *
  * The provider is a loopback-only OpenAI-compatible SSE server: no real
  * credential, network endpoint, or user file is involved.
@@ -83,6 +84,11 @@ function toolNames(body: unknown): string[] {
   return ((body as OpenAiRequestBody | null)?.tools ?? []).map((tool) => String(tool.function?.name));
 }
 
+/** The tool definitions of a request, whole and in the order they were sent. */
+function toolDefinitions(body: unknown): unknown[] {
+  return (body as OpenAiRequestBody | null)?.tools ?? [];
+}
+
 /** The only tool result in the request. The adapter assigns its own tool-call ids, so it is found by role. */
 function singleToolResult(body: unknown): string {
   const toolResults = requestMessages(body).filter((message) => message.role === 'tool');
@@ -151,7 +157,7 @@ test.describe('Electron active skill instructions E2E', () => {
     }
   });
 
-  test('use_skill returns the skill instructions and its arguments, and the loop exposes read_skill_file', async () => {
+  test('use_skill returns the skill instructions and its arguments, and read_skill_file is there from the first request, with the tool list unchanged', async () => {
     const response = `abu-e2e-use-skill-complete-${randomUUID()}`;
     const skillContext = `abu-e2e-skill-context-${randomUUID()}`;
     mock = await startOpenAiMock([
@@ -171,8 +177,10 @@ test.describe('Electron active skill instructions E2E', () => {
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(2);
     const [firstRequest, secondRequest] = taskRequests(mock);
 
-    // Before the tool call no skill is active.
-    expect(toolNames(firstRequest.body)).not.toContain('read_skill_file');
+    // read_skill_file is offered from the first request, before any skill is active ...
+    expect(toolNames(firstRequest.body)).toContain('read_skill_file');
+    // ... and activating the skill leaves the tool definitions, and their order, as they were.
+    expect(toolDefinitions(secondRequest.body)).toEqual(toolDefinitions(firstRequest.body));
 
     const toolResult = singleToolResult(secondRequest.body);
     expect(toolResult).toContain('已加载技能 "mermaid-diagram"');
@@ -184,7 +192,6 @@ test.describe('Electron active skill instructions E2E', () => {
     expect(systemText(secondRequest.body)).not.toContain(ACTIVE_SKILLS_HEADING);
     expect(systemText(secondRequest.body)).not.toContain('### mermaid-diagram');
 
-    // The sidecar loop learned the skill is active.
     expect(toolNames(secondRequest.body)).toContain('read_skill_file');
 
     await expect(page.getByText(response, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });

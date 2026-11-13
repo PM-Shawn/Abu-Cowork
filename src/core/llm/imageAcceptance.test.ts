@@ -3,6 +3,7 @@ import type { Message } from '../../types';
 import { formatNote, judgeImage, notPictureNote, oversizeNote, oversizeBytesNote } from './imageAcceptance';
 import { normalizeMessages, type PreparedToolCall } from './messageNormalizer';
 
+const NOT_BASE64 = 'data that is not valid Base64';
 const b64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
 
 function png(w: number, h: number): string {
@@ -68,9 +69,14 @@ describe('judgeImage', () => {
     // A few bytes say nothing about being text.
     expect(judgeImage('image/png', 'AQID', 2000)).toEqual({ kind: 'send', mediaType: 'image/png' });
     expect(judgeImage('image/jpeg', btoa('P17'), 2000)).toEqual({ kind: 'send', mediaType: 'image/jpeg' });
-    // Data that is not base64 has no header to read: judged by its label.
-    expect(judgeImage('image/png', 'BASE64PNG', 2000)).toEqual({ kind: 'send', mediaType: 'image/png' });
-    expect(judgeImage('image/jpg', 'not base64 at all!', 2000)).toEqual({ kind: 'send', mediaType: 'image/jpeg' });
+  });
+
+  it('leaves out data that is not valid Base64, whatever its label says: it cannot be a picture the provider accepts', () => {
+    const note = notPictureNote(NOT_BASE64);
+    for (const data of ['!!!invalid!!!', 'BASE64PNG', 'not base64 at all!']) {
+      expect(judgeImage('image/png', data, 3000, 5 * 1024 * 1024)).toEqual({ kind: 'leave-out', note, notPicture: NOT_BASE64 });
+      expect(judgeImage('image/jpg', data, 2000)).toEqual({ kind: 'leave-out', note, notPicture: NOT_BASE64 });
+    }
   });
 
   const text = (value: string) => b64(new TextEncoder().encode(value));
@@ -162,6 +168,27 @@ describe('normalizeMessages with a route limit', () => {
     expect(turn.kind === 'user' && turn.content).toEqual([
       { type: 'text', text: notPictureNote('text') },
       { type: 'text', text: '这张图是什么' },
+    ]);
+  });
+
+  it('leaves out a history tool picture whose data is not Base64, with the note in the result, keeping the other pictures', () => {
+    const call = callOf(withTool('!!!invalid!!!'), 3000);
+    expect(call.resultImages.map((i) => i.data)).toEqual([png(640, 480)]);
+    expect(call.result).toBe(`Captured.\n\n${notPictureNote(NOT_BASE64)}`);
+  });
+
+  it('replaces a user attachment whose data is not Base64 with its note', () => {
+    const messages: Message[] = [{
+      id: 'u', role: 'user', timestamp: TS,
+      content: [
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: '!!!invalid!!!' } },
+        { type: 'text', text: 'what is this' },
+      ],
+    } as Message];
+    const [turn] = normalizeMessages(messages, { supportsVision: true, maxImageDimension: 3000, maxImageBytes: 5 * 1024 * 1024 });
+    expect(turn.kind === 'user' && turn.content).toEqual([
+      { type: 'text', text: notPictureNote(NOT_BASE64) },
+      { type: 'text', text: 'what is this' },
     ]);
   });
 

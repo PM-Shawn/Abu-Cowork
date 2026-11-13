@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Message, ToolDefinition } from '../../types';
+import type { ProviderInstance } from '../../types/provider';
 import type { ChatOptions } from './adapter';
 
 // The global setup mocks the Anthropic SDK with inert stubs; this file needs the
@@ -28,6 +29,11 @@ vi.mock('./tauriFetch', () => ({
 import { OpenAICompatibleAdapter } from './openai-compatible';
 import { ClaudeAdapter } from './claude';
 import { recordCapabilityRejection, resetRejectionMemory } from './rejectionMemory';
+import { computeReasoningParams, resolveCapabilities } from './modelCapabilities';
+import { resolveThinkingPick } from './modelProfile';
+import type { AdapterKind } from './adapter';
+import type { DeclaredCapabilities } from '../../types/provider';
+import { resolveModelDeclared } from './resolveModelDeclared';
 
 const FIXED_TIMESTAMP = 1_700_000_000_000;
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
@@ -128,6 +134,22 @@ async function recordClaude(messages: Message[], options: ChatOptions): Promise<
   return JSON.stringify({ url: String(url), body: JSON.parse(init.body) }, null, 2) + '\n';
 }
 
+/**
+ * What the agent loop hands an adapter for a model: the capabilities' reasoning params computed
+ * with the user's pick, the pick being kept only where the model's control carries it.
+ */
+function agentOptions(
+  modelId: string,
+  adapter: AdapterKind,
+  declared: DeclaredCapabilities | undefined,
+  baseUrl?: string,
+): Pick<ChatOptions, 'maxTokens' | 'enableThinking' | 'thinkingBudget' | 'reasoningEffort' | 'declaredCapabilities'> {
+  const caps = resolveCapabilities(modelId);
+  const pick = resolveThinkingPick({ modelId, declared, adapter, baseUrl });
+  const params = computeReasoningParams(caps, 32768, 200000, pick);
+  return { ...params, declaredCapabilities: declared };
+}
+
 const fixture = (name: string) => `./__contractFixtures__/requestShapes/${name}.json`;
 
 describe('request shapes by model family', () => {
@@ -154,6 +176,30 @@ describe('request shapes by model family', () => {
       await expect(body).toMatchFileSnapshot(fixture('gpt-5.5-no-tools-official'));
     });
 
+    describe('with the user\'s thinking effort (agent turns carry tools)', () => {
+      const gptBody = (model: string, effort: 'off' | 'low' | 'high' | 'max', withTools: boolean) => recordOpenAI([user('m1', 'hi')], {
+        model, apiKey: 'k', baseUrl: 'https://api.openai.com/v1',
+        ...(withTools ? { tools: [readFileTool] } : {}), systemPrompt: 'You are Abu.',
+        ...agentOptions(model, 'openai-compatible', { supportsReasoning: true, thinkingEffort: effort }, 'https://api.openai.com/v1'),
+      });
+
+      it('gpt-5.1, off: reasoning_effort none (the model has it; low would still think)', async () => {
+        await expect(await gptBody('gpt-5.1', 'off', true)).toMatchFileSnapshot(fixture('gpt-5.1-effort-off-tools'));
+      });
+      it('gpt-5.2, max: reasoning_effort xhigh', async () => {
+        await expect(await gptBody('gpt-5.2', 'max', true)).toMatchFileSnapshot(fixture('gpt-5.2-effort-max-tools'));
+      });
+      it('gpt-5.1, max is not offered (no xhigh): the stored pick is dropped, the default medium stays', async () => {
+        const body = await gptBody('gpt-5.1', 'max', true);
+        expect(JSON.parse(body).body.reasoning_effort).toBe('medium');
+      });
+      it('gpt-5.5 with tools: the endpoint takes no reasoning_effort next to tools, so no level is offered and none is sent', async () => {
+        const body = JSON.parse(await gptBody('gpt-5.5', 'max', true)).body;
+        expect(body.reasoning_effort).toBeUndefined();
+        expect(resolveThinkingPick({ modelId: 'gpt-5.5', adapter: 'openai-compatible', declared: { thinkingEffort: 'max' } })).toBeUndefined();
+      });
+    });
+
     it('gpt-4o replays a tool turn with an image result', async () => {
       const body = await recordOpenAI(toolHistory(), {
         model: 'gpt-4o', apiKey: 'k', baseUrl: 'https://api.openai.com/v1',
@@ -171,6 +217,80 @@ describe('request shapes by model family', () => {
         tools: [readFileTool], maxTokens: 8192, reasoningEffort: 'high', supportsVision: false,
       });
       await expect(body).toMatchFileSnapshot(fixture('deepseek-reasoner-thinking-history'));
+    });
+  });
+
+  describe('deepseek with the user\'s thinking effort', () => {
+    const effortOptions = (thinkingEffort: 'off' | 'low' | 'high' | 'max'): ChatOptions => ({
+      model: 'deepseek-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com/v1',
+      tools: [readFileTool], supportsVision: false,
+      // What the agent loop hands the adapter: the reasoning params computed with the pick.
+      ...computeReasoningParams(
+        resolveCapabilities('deepseek-flash'), 8192, undefined,
+        resolveThinkingPick({ modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', adapter: 'openai-compatible', declared: { supportsReasoning: true, thinkingEffort } }),
+      ),
+      maxTokens: 8192,
+      declaredCapabilities: { supportsTools: true, supportsReasoning: true, thinkingEffort },
+    });
+
+    it('max: thinking enabled, reasoning_effort max, the earlier turn\'s reasoning handed back', async () => {
+      const body = await recordOpenAI(toolHistory(), effortOptions('max'));
+      await expect(body).toMatchFileSnapshot(fixture('deepseek-flash-effort-max'));
+    });
+
+    it('off: thinking disabled, no reasoning_effort, no reasoning_content on the replayed turn', async () => {
+      const body = await recordOpenAI(toolHistory(), effortOptions('off'));
+      await expect(body).toMatchFileSnapshot(fixture('deepseek-flash-effort-off'));
+    });
+
+    // The curated built-in DeepSeek preset has no provider-level declarations and no advanced
+    // section: the pick sits on the model alone and reaches the wire through
+    // resolveModelDeclared, the way the agent loop hands it to the adapter.
+    describe('on the built-in DeepSeek provider', () => {
+      const builtinDeepseek = (thinkingEffort?: 'off' | 'max'): ProviderInstance => ({
+        id: 'deepseek', source: 'builtin', name: 'DeepSeek', enabled: true, apiFormat: 'openai-compatible',
+        baseUrl: 'https://api.deepseek.com', apiKey: 'k', status: 'unchecked', sortOrder: 0,
+        models: [{
+          id: 'deepseek-flash',
+          label: 'DeepSeek V4.1 Flash',
+          ...(thinkingEffort ? { declaredCapabilities: { thinkingEffort } } : {}),
+        }],
+      });
+      const builtinOptions = (provider: ProviderInstance): ChatOptions => {
+        const declared = resolveModelDeclared(provider, 'deepseek-flash');
+        return {
+          model: 'deepseek-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com/v1',
+          tools: [readFileTool], supportsVision: false,
+          ...computeReasoningParams(
+            resolveCapabilities('deepseek-flash'), 8192, undefined,
+            resolveThinkingPick({ modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', adapter: 'openai-compatible', declared }),
+          ),
+          maxTokens: 8192,
+          declaredCapabilities: declared,
+        };
+      };
+
+      it('max on the model sends the same request as the same pick on a custom endpoint', async () => {
+        const body = await recordOpenAI(toolHistory(), builtinOptions(builtinDeepseek('max')));
+        await expect(body).toMatchFileSnapshot(fixture('deepseek-flash-effort-max'));
+      });
+
+      it('off on the model sends the same request as the same pick on a custom endpoint', async () => {
+        const body = await recordOpenAI(toolHistory(), builtinOptions(builtinDeepseek('off')));
+        await expect(body).toMatchFileSnapshot(fixture('deepseek-flash-effort-off'));
+      });
+
+      it('no pick leaves the request as it was before the setting existed', async () => {
+        const withoutProvider = await recordOpenAI(toolHistory(), {
+          model: 'deepseek-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com/v1',
+          tools: [readFileTool], supportsVision: false,
+          ...computeReasoningParams(resolveCapabilities('deepseek-flash'), 8192),
+          maxTokens: 8192,
+        });
+        mockFetch.mockClear();
+        const withBuiltin = await recordOpenAI(toolHistory(), builtinOptions(builtinDeepseek()));
+        expect(withBuiltin).toBe(withoutProvider);
+      });
     });
   });
 
@@ -301,6 +421,41 @@ describe('request shapes by model family', () => {
         volatileContextTail: '[context] todo: none', supportsVision: true,
       });
       await expect(body).toMatchFileSnapshot(fixture('claude-sections-tools-thinking-history'));
+    });
+
+    describe('thinking effort, by how the model is steered', () => {
+      const claudeBody = (model: string, effort: 'off' | 'low' | 'high' | 'max' | undefined, withTools = true) => recordClaude([user('m1', 'hi')], {
+        model, apiKey: 'k', systemPrompt: 'You are Abu.',
+        ...(withTools ? { tools: [readFileTool] } : {}),
+        ...agentOptions(model, 'claude', effort ? { supportsReasoning: true, thinkingEffort: effort } : undefined),
+      });
+
+      it('budget model (sonnet 4.5), low: a 4096-token budget', async () => {
+        await expect(await claudeBody('claude-sonnet-4-5', 'low')).toMatchFileSnapshot(fixture('claude-sonnet-4-5-effort-low'));
+      });
+      it('budget model, off: no thinking block and no forced temperature', async () => {
+        await expect(await claudeBody('claude-sonnet-4-5', 'off')).toMatchFileSnapshot(fixture('claude-sonnet-4-5-effort-off'));
+      });
+      it('always-on adaptive model (fable 5), low: adaptive thinking with the depth in output_config.effort, no budget', async () => {
+        await expect(await claudeBody('claude-fable-5', 'low')).toMatchFileSnapshot(fixture('claude-fable-5-effort-low'));
+      });
+      it('fable 5, max', async () => {
+        await expect(await claudeBody('claude-fable-5', 'max')).toMatchFileSnapshot(fixture('claude-fable-5-effort-max'));
+      });
+      it('fable 5, off is not offered: the stored pick is dropped and the request is the default one', async () => {
+        const dropped = await claudeBody('claude-fable-5', 'off');
+        mockFetch.mockClear();
+        expect(dropped).toBe(await claudeBody('claude-fable-5', undefined));
+      });
+      it('default-on adaptive model (opus 5), off: thinking disabled', async () => {
+        await expect(await claudeBody('claude-opus-5', 'off')).toMatchFileSnapshot(fixture('claude-opus-5-effort-off'));
+      });
+      it('opus 5, high: adaptive with effort high', async () => {
+        await expect(await claudeBody('claude-opus-5', 'high')).toMatchFileSnapshot(fixture('claude-opus-5-effort-high'));
+      });
+      it('opus 4.8 (thinks only when asked), off: no thinking field at all', async () => {
+        await expect(await claudeBody('claude-opus-4-8', 'off')).toMatchFileSnapshot(fixture('claude-opus-4-8-effort-off'));
+      });
     });
 
     it('plain system prompt with temperature', async () => {

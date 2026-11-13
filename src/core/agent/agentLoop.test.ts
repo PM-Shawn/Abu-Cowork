@@ -1749,8 +1749,8 @@ describe('服务说内容太长后按真实上限恢复', () => {
       caps: { thinking: 'anthropic' as const, maxOutputTokens: 64000, contextWindow: 200000 },
       probed: 200000,
       learned: 32768,
-      // Claude 的回答预算最少 16384（思考预算 10000 计入其中）
-      expectedMaxTokens: Math.max(32768 / 4, 16384),
+      // 回答预算同样不超过学到窗口的四分之一；思考预算（默认 10000）让位于它
+      expectedMaxTokens: 32768 / 4,
       expectedEnableThinking: true,
     },
   ])('$label：重试请求的思考预算按学到的窗口重新计算', async ({ caps, probed, learned, expectedMaxTokens, expectedEnableThinking }) => {

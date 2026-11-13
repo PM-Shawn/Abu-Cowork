@@ -49,10 +49,47 @@ describe('resolveRequestBudget', () => {
     expect(result.reasoningParams.thinkingBudget).toBeLessThan(result.reasoningParams.maxTokens);
   });
 
+  it('carries the thinking effort picked for the model into the reasoning params', () => {
+    const claudeProvider = (declaredCapabilities?: { thinkingEffort: 'off' | 'low' }): ProviderInstance => ({
+      ...provider,
+      apiFormat: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      models: [{ id: 'claude-sonnet-4-5', label: 'Model', declaredCapabilities }],
+    });
+    const claude: ModelCapabilities = { ...caps, thinking: 'anthropic', maxOutputTokens: 32_768 };
+    const settings = { contextWindowSize: 200_000, maxOutputTokens: 4096 };
+
+    expect(resolveRequestBudget('claude-sonnet-4-5', claude, claudeProvider(), settings).reasoningParams)
+      .toMatchObject({ enableThinking: true, thinkingBudget: 10000 });
+    expect(resolveRequestBudget('claude-sonnet-4-5', claude, claudeProvider({ thinkingEffort: 'off' }), settings).reasoningParams.enableThinking).toBe(false);
+    const low = resolveRequestBudget('claude-sonnet-4-5', claude, claudeProvider({ thinkingEffort: 'low' }), settings);
+    expect(low.reasoningParams).toMatchObject({ enableThinking: true, thinkingBudget: 4096, maxTokens: 32_768 });
+    expect(low.thinkingPick).toEqual({ effort: 'low', control: { kind: 'anthropic-budget' } });
+  });
+
+  it('drops a pick the model does not carry instead of sending something else', () => {
+    const picked: ProviderInstance = {
+      ...provider,
+      models: [{ id: 'gpt-4o', label: 'Model', contextWindow: 128_000, declaredCapabilities: { thinkingEffort: 'off' } }],
+    };
+    const result = resolveRequestBudget('gpt-4o', { ...caps, thinking: 'anthropic' }, picked, { contextWindowSize: 200_000, maxOutputTokens: 4096 });
+    expect(result.thinkingPick).toBeUndefined();
+    expect(result.reasoningParams.enableThinking).toBe(true);
+  });
+
   it('discards a learned input window after the service reports a changed window', () => {
     const result = resolveRequestBudget('gpt-4o', caps, provider, { contextWindowSize: 200_000, maxOutputTokens: 4096 }, {
       contextWindow: 8192, contextWindowProbe: 32_768, source: 'error-derived', updatedAt: 1,
     }, 64_000);
     expect(result.contextWindowSize).toBe(64_000);
+  });
+
+  it('gives a declared max output the same weight for every caller', () => {
+    const declared: ProviderInstance = {
+      ...provider,
+      models: [{ id: 'gpt-4o', label: 'Model', contextWindow: 128_000, declaredCapabilities: { maxOutputTokens: 3000 } }],
+    };
+    const result = resolveRequestBudget('gpt-4o', caps, declared, { contextWindowSize: 200_000, maxOutputTokens: 12_000 });
+    expect(result.requestedMaxOutputTokens).toBe(3000);
   });
 });

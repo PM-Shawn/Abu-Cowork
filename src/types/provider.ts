@@ -22,6 +22,13 @@ export type ProviderStatus = 'unchecked' | 'checking' | 'verified' | 'failed';
 export type ModelCapability = 'vision' | 'tool_use' | 'web_search' | 'image_gen' | 'thinking' | 'long_context';
 
 /**
+ * How hard a model should think, chosen per model by the user (设置 → 思考强度).
+ * Unset keeps Abu's built-in behaviour for the model. `off` switches thinking off
+ * where the endpoint allows it, `max` is the deepest level the endpoint offers.
+ */
+export type ThinkingEffort = 'off' | 'low' | 'high' | 'max';
+
+/**
  * Per-model subset of DeclaredCapabilities — the fields that genuinely vary per model
  * on the same endpoint. Endpoint/protocol-level fields (useRawUrl / thinkingFormat /
  * maxTokensField / requiresToolResultName) stay on ProviderInstance.declaredCapabilities.
@@ -31,6 +38,8 @@ export interface ModelDeclaredCapabilities {
   supportsImages?: boolean;
   supportsReasoning?: boolean;
   supportedEfforts?: Array<'low' | 'medium' | 'high'>;
+  /** The user's thinking-effort pick for this model; unset = Abu's default. */
+  thinkingEffort?: ThinkingEffort;
   maxInputTokens?: number;
   maxOutputTokens?: number;
   parallelToolCalls?: boolean;
@@ -55,6 +64,8 @@ export interface DeclaredCapabilities {
   supportsImages?: boolean;
   supportsReasoning?: boolean;
   supportedEfforts?: Array<'low' | 'medium' | 'high'>;
+  /** The user's thinking-effort pick; unset = Abu's default. */
+  thinkingEffort?: ThinkingEffort;
   /** 自定义协议：接口地址原样使用，跳过 /chat/completions 归一化 */
   useRawUrl?: boolean;
   /** Max input/context tokens for this endpoint; blank → provider default. */

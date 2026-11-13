@@ -109,6 +109,7 @@ import { runSubagentLoop, SubagentResult } from './subagentLoop';
 import { clearLogs, getRecentLogs } from '../logging/logger';
 import { agentRegistry } from './registry';
 import { getI18n } from '@/i18n';
+import { rejectedCapabilities, resetRejectionMemory } from '../llm/rejectionMemory';
 
 /** Build a fake adapter.chat that synchronously emits the given stream events. */
 function emits(events: StreamEvent[]) {
@@ -485,7 +486,7 @@ describe('subagent max_tokens recovery (integration)', () => {
     expect(mockClaudeChat).not.toHaveBeenCalled();
   });
 
-  it('fails closed for an unknown custom model unless image support is explicitly declared', async () => {
+  it('reads an unknown custom model like the main loop: images go unless the user ticked the box off', async () => {
     mockResolveAgentModel.mockReturnValue('unlisted-proxy-model');
     mockGetActiveProvider.mockReturnValue({
       id: 'custom-p1', source: 'custom', name: 'Custom proxy', enabled: true,
@@ -497,10 +498,17 @@ describe('subagent max_tokens recovery (integration)', () => {
       content: [{ type: 'image', attachment: { id: 'attachment_unknown', sha256: 'a'.repeat(64), mediaType: 'image/png', bytes: 12 } }],
     } as never;
 
+    // Nothing declared: the same answer the main loop gives (see resolveModelDeclared.test.ts).
+    mockReadDelegatedMedia.mockResolvedValue(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4]));
+    mockClaudeChat.mockImplementationOnce(emits([
+      { type: 'text', text: 'ok' } as StreamEvent,
+      { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+    ]));
     const unspecified = await runSubagentLoop({ agent, task: 'Describe it.', delegatedUserTurn, ...trustedDelegatedOrigin });
-    expect(unspecified.stopReason).toBe('error');
-    expect(mockReadDelegatedMedia).not.toHaveBeenCalled();
-    expect(mockClaudeChat).not.toHaveBeenCalled();
+    expect(unspecified.stopReason).not.toBe('error');
+    expect(mockClaudeChat).toHaveBeenCalledOnce();
+    mockClaudeChat.mockClear();
+    mockReadDelegatedMedia.mockClear();
 
     mockGetActiveProvider.mockReturnValue({
       id: 'custom-p1', source: 'custom', name: 'Custom proxy', enabled: true,
@@ -1880,6 +1888,40 @@ describe('subagent max_tokens recovery (integration)', () => {
       const systemPrompt = await systemPromptFor('qwen3-max');
       expect(systemPrompt).not.toContain('## Working notes for this model');
       expect(systemPrompt.indexOf('sys')).toBeLessThan(systemPrompt.indexOf('## Safety Rules'));
+    });
+  });
+
+  describe('capability rejection', () => {
+    it('switches the rejected capability off, resends once and remembers it for the next turn', async () => {
+      resetRejectionMemory();
+      mockClaudeChat.mockRejectedValueOnce(new LLMError(
+        "Unsupported parameter: 'reasoning_effort'", 'invalid_request',
+        { statusCode: 400, capabilityRejection: 'reasoning_effort' },
+      ));
+      mockClaudeChat.mockImplementation(emits([
+        { type: 'text', text: 'ok' } as StreamEvent,
+        { type: 'done', stopReason: 'end_turn' } as StreamEvent,
+      ]));
+      try {
+        const result = await runSubagentLoop({ agent, task: 'task' });
+        expect(result.text).toContain('ok');
+        expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+        const overrides = (call: number) => (mockClaudeChat.mock.calls[call][1] as { capabilityOverrides?: string[] }).capabilityOverrides ?? [];
+        expect(overrides(0)).toEqual([]);
+        expect(overrides(1)).toEqual(['reasoning_effort']);
+        expect([...rejectedCapabilities('p1', 'claude-opus-4-8')]).toEqual(['reasoning_effort']);
+      } finally { resetRejectionMemory(); }
+    });
+
+    it('reports a second rejection of the same capability as an ordinary error', async () => {
+      resetRejectionMemory();
+      const rejection = () => new LLMError('bad', 'invalid_request', { statusCode: 400, capabilityRejection: 'reasoning_effort' });
+      mockClaudeChat.mockRejectedValue(rejection());
+      try {
+        const result = await runSubagentLoop({ agent, task: 'task' });
+        expect(mockClaudeChat).toHaveBeenCalledTimes(2);
+        expect(result.text).toMatch(/^Error:/);
+      } finally { resetRejectionMemory(); }
     });
   });
 });

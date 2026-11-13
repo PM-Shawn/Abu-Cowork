@@ -17,29 +17,33 @@ describe('getToolLabel', () => {
     });
 
     it('run_command follows locale', () => {
-      expect(getToolLabel('run_command', { command: 'ls' }, 'en-US').label).toBe('Run ls');
-      expect(getToolLabel('run_command', { command: 'ls' }, 'zh-CN').label).toBe('执行 ls');
+      expect(getToolLabel('run_command', { command: 'ls', purpose: 'List the folder' }, 'en-US').label).toBe('List the folder');
+      expect(getToolLabel('run_command', { command: 'ls', purpose: '看看文件夹里有什么' }, 'zh-CN').label).toBe('看看文件夹里有什么');
+      // No purpose: a generic sentence, never the command.
+      expect(getToolLabel('run_command', { command: 'ls' }, 'en-US').label).toBe('Work on files');
+      expect(getToolLabel('run_command', { command: 'ls' }, 'zh-CN').label).toBe('处理文件');
     });
 
     it('run_command in background mode says so', () => {
-      expect(getToolLabel('run_command', { command: 'npm run dev', background: true }, 'zh-CN').label).toBe('在后台执行 npm run dev');
-      expect(getToolLabel('run_command', { command: 'npm run dev', background: true }, 'en-US').label).toBe('Run npm run dev in background');
-      expect(getToolLabel('run_command', { command: 'npm run dev', background: false }, 'zh-CN').label).toBe('执行 npm run dev');
+      expect(getToolLabel('run_command', { command: 'npm run dev', purpose: '启动预览', background: true }, 'zh-CN').label).toBe('启动预览（在后台）');
+      expect(getToolLabel('run_command', { command: 'npm run dev', purpose: 'Start the preview', background: true }, 'en-US').label).toBe('Start the preview (in the background)');
+      expect(getToolLabel('run_command', { command: 'npm run dev', background: true }, 'en-US').label).toBe('Work on files in the background');
+      expect(getToolLabel('run_command', { command: 'npm run dev', purpose: '启动预览', background: false }, 'zh-CN').label).toBe('启动预览');
     });
 
-    it('background_command_output names the command from the step record, else its id', () => {
+    it('background_command_output and stop_background_command are plain sentences; the command stays in the detail', () => {
       const record = { backgroundCommand: { command: 'npm run dev' } };
-      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'zh-CN', record).label).toBe('查看后台命令的输出 npm run dev');
-      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'en-US', record).label).toBe('Read background command output npm run dev');
-      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'zh-CN').label).toBe('查看后台命令的输出 bg-0a1b2c3d');
-      expect(getToolLabel('background_command_output', {}, 'en-US').label).toBe('Read background command output');
-    });
-
-    it('stop_background_command names the command from the step record, else its id', () => {
-      const record = { backgroundCommand: { command: 'npm run dev' } };
-      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'zh-CN', record).label).toBe('停止后台命令 npm run dev');
-      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'en-US', record).label).toBe('Stop background command npm run dev');
-      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'en-US').label).toBe('Stop background command bg-0a1b2c3d');
+      const out = getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'en-US', record);
+      expect(out.label).toBe('Read the output of a background task');
+      expect(out.detail).toBe('npm run dev');
+      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'zh-CN', record).label).toBe('查看后台任务的输出');
+      const stop = getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'en-US', record);
+      expect(stop.label).toBe('Stop a background task');
+      expect(stop.detail).toBe('npm run dev');
+      expect(getToolLabel('stop_background_command', { id: 'bg-0a1b2c3d' }, 'zh-CN').label).toBe('停止后台任务');
+      // without the step record the detail falls back to the id; no label carries a command or an id
+      expect(getToolLabel('background_command_output', { id: 'bg-0a1b2c3d' }, 'en-US').label).not.toContain('bg-0a1b2c3d');
+      expect(getToolLabel('background_command_output', {}, 'en-US').detail).toBeUndefined();
     });
 
     it('use_skill follows locale', () => {
@@ -78,9 +82,9 @@ describe('getToolLabel', () => {
       expect(getToolLabel('http_fetch', {}, 'zh-CN').label).toBe('读取网页');
     });
 
-    it('unknown tool falls back to Call/调用 in the right locale', () => {
-      expect(getToolLabel('some_tool', {}, 'en-US').label).toBe('Call some_tool');
-      expect(getToolLabel('some_tool', {}, 'zh-CN').label).toBe('调用 some_tool');
+    it('an unknown tool reads as a generic sentence in the right locale, never by its id', () => {
+      expect(getToolLabel('some_tool', {}, 'en-US').label).toBe('Use a tool');
+      expect(getToolLabel('some_tool', {}, 'zh-CN').label).toBe('使用工具');
     });
   });
 
@@ -97,9 +101,9 @@ describe('getToolLabel', () => {
       expect(parseMCPToolName('server__do')).toEqual({ serverName: 'server', actualToolName: 'do' });
     });
 
-    it('MCP label is locale-independent (server + tool name)', () => {
-      expect(getToolLabel('gh__list', { a: 1 }, 'en-US').label).toBe('[gh] list');
-      expect(getToolLabel('gh__list', { a: 1 }, 'zh-CN').label).toBe('[gh] list');
+    it('MCP label names the connector in the locale; the tool and its input stay in the detail', () => {
+      expect(getToolLabel('gh__list', { a: 1 }, 'en-US')).toEqual({ label: 'Use gh', detail: 'list {"a":1}' });
+      expect(getToolLabel('gh__list', { a: 1 }, 'zh-CN').label).toBe('使用 gh');
     });
   });
 });

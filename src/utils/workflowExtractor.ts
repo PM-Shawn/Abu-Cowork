@@ -2,8 +2,7 @@ import type { Message, ToolCall, AgentStatus } from '@/types';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { normalizeSeparators, joinPath, getBaseName } from '@/utils/pathUtils';
 import { parseArgs } from '@/utils/argsParser';
-import { presentedFileNames, getToolLabel as getLocalizedToolLabel, type ToolLabelRecord } from '@/utils/toolLabels';
-import { format } from '@/i18n';
+import { getToolLabel, COMMAND_TOOL_NAMES } from '@/utils/toolLabels';
 import zhCN from '@/i18n/locales/zh-CN';
 import enUS from '@/i18n/locales/en-US';
 import { isToolResultError, mediaToolAnnouncedPath } from '@/core/media/presentedFileRecords';
@@ -45,14 +44,13 @@ export interface WorkflowStep {
 const FILE_READ_TOOLS: string[] = [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'];
 export const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, TOOL_NAMES.EDIT_FILE, 'write', 'edit'];
 export const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
-const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
 const SKILL_TOOLS: string[] = [TOOL_NAMES.USE_SKILL];
 
 function getStepTypeFromTool(toolName: string): StepType {
   if (FILE_READ_TOOLS.includes(toolName)) return 'file-read';
   if (FILE_WRITE_TOOLS.includes(toolName)) return 'file-write';
   if (FILE_CREATE_TOOLS.includes(toolName)) return 'file-create';
-  if (COMMAND_TOOLS.includes(toolName)) return 'command';
+  if (COMMAND_TOOL_NAMES.includes(toolName)) return 'command';
   if (SKILL_TOOLS.includes(toolName)) return 'skill';
   return 'tool';
 }
@@ -61,86 +59,6 @@ function getStepTypeFromTool(toolName: string): StepType {
 function getFileName(path: string): string {
   const segments = path.split(/[/\\]/);
   return segments[segments.length - 1] || path;
-}
-
-// Get display label for tool call
-function getToolLabel(toolName: string, input: Record<string, unknown>, record?: ToolLabelRecord): { label: string; detail?: string } {
-  if (
-    (toolName === TOOL_NAMES.RUN_COMMAND && input.background === true)
-    || toolName === TOOL_NAMES.BACKGROUND_COMMAND_OUTPUT
-    || toolName === TOOL_NAMES.STOP_BACKGROUND_COMMAND
-  ) {
-    return getLocalizedToolLabel(toolName, input, 'zh-CN', record);
-  }
-  const path = (input.path || input.file_path || input.filePath) as string | undefined;
-  const fileName = path ? getFileName(path) : undefined;
-
-  switch (toolName) {
-    case TOOL_NAMES.READ_FILE:
-    case 'read':
-    case 'get_file_contents':
-      return {
-        label: fileName ? `读取 ${fileName}` : '读取文件',
-        detail: path,
-      };
-    case TOOL_NAMES.WRITE_FILE:
-    case 'write':
-      return {
-        label: fileName ? `写入 ${fileName}` : '写入文件',
-        detail: path,
-      };
-    case TOOL_NAMES.EDIT_FILE:
-    case 'edit':
-      return {
-        label: fileName ? `修改 ${fileName}` : '修改文件',
-        detail: path,
-      };
-    case 'create_file':
-    case 'create':
-      return {
-        label: fileName ? `创建 ${fileName}` : '创建文件',
-        detail: path,
-      };
-    case 'bash':
-    case TOOL_NAMES.RUN_COMMAND:
-    case 'execute':
-    case 'shell': {
-      const cmd = (input.command || input.cmd) as string | undefined;
-      const shortCmd = cmd ? (cmd.length > 20 ? cmd.slice(0, 20) + '...' : cmd) : undefined;
-      return {
-        label: shortCmd ? `执行 ${shortCmd}` : '执行命令',
-        detail: cmd,
-      };
-    }
-    case 'search':
-    case 'grep':
-    case 'find': {
-      const query = (input.query || input.pattern) as string | undefined;
-      return {
-        label: query ? `搜索 "${query.slice(0, 15)}${query.length > 15 ? '...' : ''}"` : '搜索',
-        detail: query,
-      };
-    }
-    case TOOL_NAMES.USE_SKILL: {
-      const skillName = input.skill_name as string | undefined;
-      return {
-        label: skillName ? `使用技能 ${skillName}` : '使用技能',
-        detail: input.context as string | undefined,
-      };
-    }
-    case TOOL_NAMES.PRESENT_FILES: {
-      const names = presentedFileNames(input);
-      return {
-        label: `交付了 ${names.length} 个文件`,
-        detail: names.length > 0 ? names.join('、') : undefined,
-      };
-    }
-    default:
-      return {
-        label: `调用 ${toolName}`,
-        detail: undefined,
-      };
-  }
 }
 
 /**
@@ -211,7 +129,7 @@ export function extractWorkflowSteps(
     }
 
     const stepType = getStepTypeFromTool(tc.name);
-    const { label, detail } = getToolLabel(tc.name, tc.input, tc);
+    const { label, detail } = getToolLabel(tc.name, tc.input, 'zh-CN', tc);
 
     let status: WorkflowStep['status'];
     if (tc.isExecuting) {
@@ -311,17 +229,14 @@ export function generateCompletionMessage(
     case 'bash':
     case 'execute':
     case 'shell': {
-      const cmd = (input.command || input.cmd) as string | undefined;
-      const shortCmd = cmd ? (cmd.length > 15 ? cmd.slice(0, 15) + '...' : cmd) : '';
+      // The step title already says what the step was for; this line says only how it ended.
       if (!isSuccess) {
-        return isZh ? `执行失败` : `Command failed`;
+        return isZh ? `这一步没有成功` : `This step did not succeed`;
       }
       if (outcome?.exitCode !== undefined && outcome.exitCode !== 0) {
-        return format((isZh ? zhCN : enUS).task.commandEnded, { command: shortCmd });
+        return (isZh ? zhCN : enUS).task.commandEnded;
       }
-      return isZh
-        ? `命令执行成功${shortCmd ? `：${shortCmd}` : ''}`
-        : `Command executed${shortCmd ? `: ${shortCmd}` : ''} successfully`;
+      return isZh ? `已完成` : `Done`;
     }
 
     case TOOL_NAMES.GET_SYSTEM_INFO:
@@ -794,7 +709,7 @@ export function extractFileOutputs(
     }
 
     // 6. Command tools — parse stdout + command string for file paths
-    if (COMMAND_TOOLS.includes(tc.name)) {
+    if (COMMAND_TOOL_NAMES.includes(tc.name)) {
       // Skip failed commands — don't extract paths from cp/mv that got sandbox-blocked
       if (tc.result && isCommandFailed(tc.result)) {
         continue;
@@ -919,7 +834,7 @@ export function extractFileOutputs(
 
     const allCommands: string[] = [];
     for (const tc of toolCalls) {
-      if (COMMAND_TOOLS.includes(tc.name) && tc.result !== undefined) {
+      if (COMMAND_TOOL_NAMES.includes(tc.name) && tc.result !== undefined) {
         const cmd = String((tc.input as Record<string, unknown>).command || (tc.input as Record<string, unknown>).cmd || '');
         if (cmd) allCommands.push(cmd);
       }

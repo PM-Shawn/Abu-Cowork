@@ -29,7 +29,7 @@ import {
 } from './scratchpadClassify';
 import { parseSearchResults } from '../../utils/searchParser';
 import { isToolResultError } from '../../utils/workflowExtractor';
-import { getToolLabel } from '../../utils/toolLabels';
+import { getToolLabel, COMMAND_TOOL_NAMES } from '../../utils/toolLabels';
 import { TOOL_NAMES } from '../tools/toolNames';
 import { firstImageContent } from '../tools/toolResultContent';
 import {
@@ -48,7 +48,6 @@ function generateId(): string {
 const FILE_READ_TOOLS: string[] = [TOOL_NAMES.READ_FILE, 'read', 'get_file_contents'];
 const FILE_WRITE_TOOLS: string[] = [TOOL_NAMES.WRITE_FILE, 'write', TOOL_NAMES.EDIT_FILE, 'edit', TOOL_NAMES.APPLY_PATCH];
 const FILE_CREATE_TOOLS: string[] = ['create_file', 'create'];
-const COMMAND_TOOLS: string[] = [TOOL_NAMES.RUN_COMMAND, 'bash', 'execute', 'shell'];
 const SEARCH_TOOLS: string[] = ['search', 'grep', 'find', TOOL_NAMES.WEB_SEARCH, TOOL_NAMES.SEARCH_FILES, TOOL_NAMES.FIND_FILES];
 const SKILL_TOOLS: string[] = [TOOL_NAMES.USE_SKILL];
 const DELEGATE_TOOLS: string[] = [TOOL_NAMES.DELEGATE_TO_AGENT, TOOL_NAMES.RUN_AGENT_BATCH];
@@ -96,7 +95,7 @@ function inferStepType(toolName: string): StepType {
   if (FILE_READ_TOOLS.includes(actualName)) return 'file-read';
   if (FILE_WRITE_TOOLS.includes(actualName)) return 'file-write';
   if (FILE_CREATE_TOOLS.includes(actualName)) return 'file-create';
-  if (COMMAND_TOOLS.includes(actualName)) return 'command';
+  if (COMMAND_TOOL_NAMES.includes(actualName)) return 'command';
   if (SEARCH_TOOLS.includes(actualName)) return 'search';
   if (SKILL_TOOLS.includes(actualName)) return 'skill';
   if (DELEGATE_TOOLS.includes(actualName)) return 'delegate';
@@ -111,7 +110,7 @@ function createScriptBlock(stepId: string, toolName: string, toolInput: Record<s
   const isZh = locale.startsWith('zh');
 
   // Command tools - show command
-  if (COMMAND_TOOLS.includes(toolName)) {
+  if (COMMAND_TOOL_NAMES.includes(toolName)) {
     const command = (toolInput.command || toolInput.cmd) as string | undefined;
     if (!command) return null;
 

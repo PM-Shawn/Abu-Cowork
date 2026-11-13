@@ -112,6 +112,13 @@ describe('runCommandTool', () => {
     expect(p.extraWritablePaths).toEqual(['/ws', '/auth/one']);
   });
 
+  it('offers a plain-language purpose field that a call may leave out', () => {
+    const schema = runCommandTool.inputSchema as { properties: Record<string, { description?: string }>; required?: string[] };
+    expect(schema.properties.purpose.description).toMatch(/plain sentence/);
+    // Optional: a missing required field makes the registry reject the call, and a missing purpose only costs a generic title.
+    expect(schema.required).not.toContain('purpose');
+  });
+
   it('does not add commandId to the locked Tauri run_shell_command payload when Electron markers are absent', async () => {
     delete (globalThis as typeof globalThis & {
       __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };

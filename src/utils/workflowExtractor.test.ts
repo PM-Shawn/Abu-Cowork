@@ -8,6 +8,7 @@ import {
   parsePlanSteps,
 } from './workflowExtractor';
 import type { ToolCall } from '@/types';
+import { getToolLabel } from './toolLabels';
 
 describe('workflowExtractor', () => {
   // ── extractWorkflowSteps ──
@@ -17,17 +18,39 @@ describe('workflowExtractor', () => {
       expect(steps).toHaveLength(0);
     });
 
-    it('labels background commands by the command, from the input or the recorded call', () => {
+    it('labels a background command by its purpose, the others by a plain sentence', () => {
       const steps = extractWorkflowSteps([
-        { id: 'tc1', name: 'run_command', input: { command: 'npm run dev', background: true }, result: 'exit code: 0' },
+        { id: 'tc1', name: 'run_command', input: { command: 'npm run dev', background: true, purpose: '启动预览' }, result: 'exit code: 0' },
         { id: 'tc2', name: 'background_command_output', input: { id: 'bg-0a1b2c3d' }, result: 'status: running', backgroundCommand: { command: 'npm run dev' } },
         { id: 'tc3', name: 'stop_background_command', input: { id: 'bg-0a1b2c3d' }, result: 'Stop requested' },
       ]);
       expect(steps.map((step) => step.label)).toEqual([
-        '在后台执行 npm run dev',
-        '查看后台命令的输出 npm run dev',
-        '停止后台命令 bg-0a1b2c3d',
+        '启动预览（在后台）',
+        '查看后台任务的输出',
+        '停止后台任务',
       ]);
+    });
+
+    it('titles every tool call the way the live step title does (one label source)', () => {
+      const inputs: Array<[string, Record<string, unknown>]> = [
+        ['read_file', { path: '/a/b.txt' }],
+        ['delete_file', { path: '/a/old.txt' }],
+        ['list_directory', { path: '/a/docs' }],
+        ['web_search', { query: 'quarterly results' }],
+        ['http_fetch', { url: 'https://example.com/a' }],
+        ['apply_patch', {}],
+        ['delegate_to_agent', { agent_name: 'Reviewer' }],
+        ['custom_tool', {}],
+      ];
+      const steps = extractWorkflowSteps(inputs.map(([name, input], i) => ({ id: `tc${i}`, name, input, result: 'ok' })));
+      expect(steps.map((step) => step.label)).toEqual(
+        inputs.map(([name, input]) => getToolLabel(name, input, 'zh-CN').label),
+      );
+    });
+
+    it('never shows a tool id as a step title', () => {
+      const steps = extractWorkflowSteps([{ id: 'tc1', name: 'custom_tool', input: {}, result: 'ok' }]);
+      expect(steps[0].label).not.toContain('custom_tool');
     });
 
     it('thinking content without duration → running (still in flight)', () => {
@@ -99,17 +122,18 @@ describe('workflowExtractor', () => {
       }];
       const steps = extractWorkflowSteps(toolCalls);
       expect(steps[0].type).toBe('command');
-      expect(steps[0].label).toContain('执行');
+      expect(steps[0].label).toBe('处理文件');
     });
 
-    it('truncates long command labels to 20 chars', () => {
+    it('labels a command step by its purpose and keeps the command as detail', () => {
       const toolCalls: ToolCall[] = [{
         id: 'tc1', name: 'run_command',
-        input: { command: 'npm install --save-dev @types/node typescript vitest' },
+        input: { command: 'npm install --save-dev @types/node typescript vitest', purpose: '安装需要的组件' },
         result: 'ok',
       }];
       const steps = extractWorkflowSteps(toolCalls);
-      expect(steps[0].label).toContain('...');
+      expect(steps[0].label).toBe('安装需要的组件');
+      expect(steps[0].detail).toBe('npm install --save-dev @types/node typescript vitest');
     });
 
     it('maps executing tool as running', () => {
@@ -187,7 +211,6 @@ describe('workflowExtractor', () => {
       }];
       const steps = extractWorkflowSteps(toolCalls);
       expect(steps[0].type).toBe('tool');
-      expect(steps[0].label).toContain('custom_tool');
     });
 
     it('maps search tools correctly', () => {
@@ -229,33 +252,36 @@ describe('workflowExtractor', () => {
 
     it('generates message for run_command', () => {
       const msg = generateCompletionMessage('run_command', { command: 'npm install' }, 'ok', 'zh');
-      expect(msg).toContain('npm install');
-    });
-
-    it('truncates long command in completion message', () => {
-      const msg = generateCompletionMessage('run_command', { command: 'npm install --save-dev typescript' }, 'ok', 'zh');
-      expect(msg).toContain('...');
+      expect(msg).toBe('已完成');
     });
 
     it('says the command ended when the exit code is not zero', () => {
       const result = 'stdout:\nx\n\nexit code: 1';
       expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, 'zh', undefined, { exitCode: 1 }))
-        .toBe('命令已结束：npm test');
+        .toBe('这一步已结束，结果请看详情');
       expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, 'en', undefined, { exitCode: 1 }))
-        .toBe('Command ended: npm test');
+        .toBe('Finished; see the details for the result');
     });
 
     it('keeps the success wording for exit code zero and without a record', () => {
       const result = 'stdout:\nx\n\nexit code: 0';
       expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, 'zh', undefined, { exitCode: 0 }))
-        .toBe('命令执行成功：npm test');
+        .toBe('已完成');
       expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, 'zh'))
-        .toBe('命令执行成功：npm test');
+        .toBe('已完成');
     });
 
-    it('says the command failed when it never ran', () => {
+    it('never repeats the command in how a command step ended', () => {
+      const result = 'stdout:\nx\n\nexit code: 0';
+      for (const locale of ['zh', 'en']) {
+        expect(generateCompletionMessage('run_command', { command: 'npm test' }, result, locale)).not.toContain('npm');
+        expect(generateCompletionMessage('run_command', { command: 'npm test' }, 'Error executing command: x', locale)).not.toContain('npm');
+      }
+    });
+
+    it('says the step did not succeed when the command never ran', () => {
       expect(generateCompletionMessage('run_command', { command: 'npm test' }, 'Error executing command: spawn failed', 'zh'))
-        .toBe('执行失败');
+        .toBe('这一步没有成功');
     });
 
     it('generates search completion with match count', () => {

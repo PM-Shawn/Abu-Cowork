@@ -50,8 +50,16 @@ test.afterEach(async () => {
   dataRoot = undefined;
 });
 
+/** The plain-language purpose each command carries; a step is titled by it, not by the command. */
+const PURPOSES: Record<string, string> = {
+  'seq 1 60': '数到六十',
+  'echo hi': '打一声招呼',
+  "head -c 3000 /dev/zero | tr '\\0' a": '写出一整行字母',
+  'seq 1 5000': '数到五千',
+};
+
 function commandCall(id: string, command: string): MockReplyPlan {
-  return { kind: 'tool-call', toolCallId: id, toolName: 'run_command', arguments: { command } };
+  return { kind: 'tool-call', toolCallId: id, toolName: 'run_command', arguments: { command, purpose: PURPOSES[command] } };
 }
 
 function finalReply(): MockReplyPlan {
@@ -204,7 +212,7 @@ test('a long result folds to its first and last lines and shows all of it, a sho
   await runTurn(page);
   await showSteps(page);
 
-  const long = await openBlock(stepRow(page, '执行 seq 1 60'), '结果');
+  const long = await openBlock(stepRow(page, PURPOSES['seq 1 60']), '结果');
   const showAll = long.getByRole('button', { name: '显示全部 60 行', exact: true });
   await expect(showAll).toBeVisible();
   expect(await shownLines(long)).not.toContain('30');
@@ -214,13 +222,13 @@ test('a long result folds to its first and last lines and shows all of it, a sho
   await expect(showAll).toHaveCount(0);
   await shot(page, '02-all');
 
-  const short = await openBlock(stepRow(page, '执行 echo hi'), '结果');
+  const short = await openBlock(stepRow(page, PURPOSES['echo hi']), '结果');
   await expect(short).toContainText('hi');
   await expect(short.getByRole('button', { name: /^显示全部/ })).toHaveCount(0);
 
   const reopened = await reopenConversation();
   await showSteps(reopened);
-  const afterRestart = await openBlock(stepRow(reopened, '执行 seq 1 60'), '结果');
+  const afterRestart = await openBlock(stepRow(reopened, PURPOSES['seq 1 60']), '结果');
   await afterRestart.getByRole('button', { name: '显示全部 60 行', exact: true }).click();
   expect(await shownLines(afterRestart)).toContain('30');
   await shot(reopened, '03-all-after-restart');
@@ -235,7 +243,7 @@ test('one long line folds by characters and shows all of it', async () => {
   await runTurn(page);
   await showSteps(page);
 
-  const area = await openBlock(stepRow(page, "执行 head -c 3000 /dev/ze..."), '结果');
+  const area = await openBlock(stepRow(page, PURPOSES["head -c 3000 /dev/zero | tr '\\0' a"]), '结果');
   const showAll = area.getByRole('button', { name: /^显示全部 \d+ 个字符$/ });
   await expect(showAll).toBeVisible();
   await shot(page, '04-chars-folded');
@@ -252,7 +260,7 @@ test('where Abu read only the start and end of a long output, the result says ho
   await runTurn(page);
   await showSteps(page);
 
-  const area = await openBlock(stepRow(page, '执行 seq 1 5000'), '结果');
+  const area = await openBlock(stepRow(page, PURPOSES['seq 1 5000']), '结果');
   await area.getByRole('button', { name: '显示全部 180 行', exact: true }).click();
   // The output section holds the 5000 numbers; Abu kept 150 + 30.
   await expect(area.getByText('内容过长，阿布没有读取中间的 4820 行', { exact: true })).toBeVisible();
@@ -292,7 +300,7 @@ test('a finished step shows all of its result while the turn is still running', 
   await expect(page.getByText('正在整理结果')).toBeVisible({ timeout: REPLY_TIMEOUT });
   await openGroup(page);
 
-  const area = await openBlock(stepRow(page, '执行 seq 1 60'), '结果');
+  const area = await openBlock(stepRow(page, PURPOSES['seq 1 60']), '结果');
   await area.getByRole('button', { name: '显示全部 60 行', exact: true }).click();
   expect(await shownLines(area)).toContain('30');
   await shot(page, '07-all-while-running');

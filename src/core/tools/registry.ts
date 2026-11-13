@@ -1,4 +1,5 @@
 import { browserPermissionResourceFor, resolveBrowserPermissionConfig, type BrowserPermissionTarget } from '@/core/permissions/browserPermissionConfig';
+import { commandPurpose } from '@/utils/commandPurpose';
 import { evaluateBrowserPermissionGate } from '@/core/permissions/browserPermissionGate';
 import { evaluatePlanGate, getPlanMode } from '../agent/planMode';
 import { buildTeamConfirmationIdentity } from '../agent/teamConfirmationIdentity';
@@ -1375,6 +1376,7 @@ export async function checkToolApproval(
           command,
           level: analysis.level,
           reason: reviewReason || analysis.reason,
+          purpose: commandPurpose(input),
           agentName: toolContext?.agentName,
         }, toolContext?.loopId);
         if (!confirmed) {

@@ -1,3 +1,4 @@
+import { commandPurpose } from '@/utils/commandPurpose';
 import type { Message, ToolCall } from '../../types';
 import type { DetailBlock, ExecutionStep } from '../../types/execution';
 import type { ExecutionStepSnapshot } from '../../types/execution';
@@ -33,6 +34,10 @@ function snapshotStep(step: ExecutionStep): ExecutionStepSnapshot {
     status: step.status === 'error' ? 'error' : 'completed',
     toolName: step.toolName,
   };
+
+  const purpose = commandPurpose(step.toolInput);
+  if (purpose !== undefined) snapshot.purpose = purpose;
+  if (step.toolInput?.background === true) snapshot.background = true;
 
   if (step.duration != null) {
     snapshot.duration = step.duration;
@@ -85,7 +90,10 @@ export function snapshotToExecutionSteps(snapshots: ExecutionStepSnapshot[]): Ex
     label: s.label,
     status: s.status,
     toolName: s.toolName,
-    toolInput: {},
+    toolInput: {
+      ...(s.purpose ? { purpose: s.purpose } : {}),
+      ...(s.background ? { background: true } : {}),
+    },
     source: 'agent',
     detailBlocks: s.detailBlocks?.filter((b) => b.content).map((b) => ({
       id: b.id,

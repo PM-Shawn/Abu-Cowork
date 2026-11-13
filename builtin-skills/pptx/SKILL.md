@@ -1,10 +1,12 @@
 ---
 name: pptx
-description: "Use this skill any time a .pptx file is involved in any way — as input, output, or both. This includes: creating slide decks, pitch decks, or presentations; reading, parsing, or extracting text from any .pptx file (even if the extracted content will be used elsewhere, like in an email or summary); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates, layouts, speaker notes, or comments. Trigger whenever the user mentions \"deck,\" \"slides,\" \"presentation,\" or references a .pptx filename, regardless of what they plan to do with the content afterward. If a .pptx file needs to be opened, created, or touched, use this skill."
+display-name:
+  zh-CN: PPT 演示文稿
+description: "Work with PowerPoint files (.pptx, .potx): build a slide deck or presentation, read or pull text out of an existing one, edit or update slides, merge or split decks, and handle templates, layouts, speaker notes and comments. Use it whenever a PowerPoint file is opened, created or changed, or when the user asks for slides or a deck as a .pptx, whatever they plan to do with the result."
 display-description:
   zh-CN: 创建、读取和编辑演示文稿（.pptx）
   en-US: Create, read and edit slide decks (.pptx)
-license: Proprietary. LICENSE.txt has complete terms
+license: Apache-2.0
 trigger: 用户要求创建、读取、编辑演示文稿（PPT/PPTX/.pptx），提到PPT、幻灯片、演示文稿、演示、presentation、deck、slides、slide，或需要处理任何 .pptx 文件
 do-not-trigger: 用户只是讨论演示技巧但不涉及 .pptx 文件操作
 blocked-tools:
@@ -14,8 +16,6 @@ blocked-tools:
   - delegate_to_agent
   - update_memory
   - todo_write
-  - generate_image
-  - process_image
   - clipboard_read
   - clipboard_write
   - system_notify
@@ -25,178 +25,45 @@ blocked-tools:
   - computer
 ---
 
-# PPTX Skill
+# PowerPoint decks (.pptx)
 
-## Quick Reference
+Bundled Python only: python-pptx, Pillow, matplotlib, lxml. Do not use pptxgenjs, markitdown, LibreOffice or `pip install`; none of them exist on the user's machine. Scripts are in `${ABU_SKILL_DIR}/scripts/`.
 
-| Task | Guide |
-|------|-------|
-| Read/analyze content | `python -m markitdown presentation.pptx` |
-| Edit or create from template | Read [editing.md](editing.md) |
-| Create from scratch | Read [pptxgenjs.md](pptxgenjs.md) or [python-pptx.md](python-pptx.md) |
+Workflow: build, run `check_pptx.py`, fix, run again, deliver.
 
----
+## Read
 
-## Reading Content
-
-```bash
-# Text extraction
-python -m markitdown presentation.pptx
-
-# Visual overview
-python scripts/thumbnail.py presentation.pptx
-
-# Raw XML
-python scripts/office/unpack.py presentation.pptx unpacked/
+```python
+from pptx import Presentation
+prs = Presentation(path)
+for i, s in enumerate(prs.slides, 1):
+    for sh in s.shapes:
+        if sh.has_text_frame: print(i, sh.name, sh.text_frame.text)
+        if getattr(sh, "has_table", False) and sh.has_table: print([[c.text for c in r.cells] for r in sh.table.rows])
+    if s.has_notes_slide: print(s.notes_slide.notes_text_frame.text)
 ```
 
----
+## Create
 
-## Editing Workflow
+- Size first: `prs.slide_width, prs.slide_height = Inches(13.333), Inches(7.5)` (16:9). The default template is 4:3 (10 x 7.5 in). Shapes placed outside the page are saved but not visible.
+- Use the layouts: `prs.slide_layouts[0]` title, `[1]` title and content, `[5]` title only, `[6]` blank. Fill `slide.shapes.title` and the body placeholder rather than free text boxes, so the outline view works; delete placeholders you do not use (`sp = ph._element; sp.getparent().remove(sp)`), empty ones show "单击此处添加" when edited.
+- Plan the deck before coding: one message per slide, the title says the point ("华东区收入同比增长 18%", not "收入"), 3 to 5 bullets of at most ~20 Chinese characters each, 18 pt or larger for body text, 28 to 40 pt for titles. Split content rather than shrinking it. Use the last slide for the conclusion or next steps, not "谢谢".
+- Chinese fonts: set the East Asian font on every run, or PowerPoint picks one you did not choose:
+  build the deck, then run `check_pptx.py deck.pptx --fix-fonts 微软雅黑`, which sets it on the theme and every run lacking one (a Chinese font the template or theme already names is kept).
+- Charts: native (editable) with `pptx.chart.data.CategoryChartData` and `slide.shapes.add_chart(XL_CHART_TYPE.COLUMN_CLUSTERED, x, y, cx, cy, data)`; or a matplotlib PNG for other types (call `office_env.setup_matplotlib_cjk()` first, see the xlsx skill).
+- Pictures: `slide.shapes.add_picture(path, left, top, width=...)` giving width or height, not both, so it is not stretched. Check the file exists first.
+- Tables: `shapes.add_table(rows, cols, x, y, cx, cy)`; keep to about 6 rows x 5 columns per slide, 14 pt or larger.
+- Colors: pick 2 or 3 and reuse them; dark text on a light background, check contrast. Keep the same margins (about 0.6 in) and alignment on every slide.
+- Speaker notes: `slide.notes_slide.notes_text_frame.text = "..."` when the user will present.
 
-**Read [editing.md](editing.md) for full details.**
+## Edit an existing deck or template
 
-1. Analyze template with `thumbnail.py`
-2. Unpack → manipulate slides → edit content → clean → pack
+Open it, find shapes by name or placeholder, change text run by run to keep the formatting (`para.runs[0].text = new`, clear the other runs). To reuse a slide's layout, add a slide from that layout (`prs.slides.add_slide(layout)`) and fill the placeholders; python-pptx cannot duplicate or reorder slides directly (reorder with `prs.slides._sldIdLst`; delete by removing the `sldId` and dropping its relationship). Save under a new name.
 
----
+## Check before delivering
 
-## Creating from Scratch
-
-**Read [pptxgenjs.md](pptxgenjs.md) for full details.** Alternatively, read [python-pptx.md](python-pptx.md) if Python is available.
-
-Use when no template or reference presentation is available.
-
-### Writing large scripts
-
-生成脚本通常几百行。**不要用 write_file 写大脚本**（会导致 JSON 截断），改用 run_command + heredoc：
-
-```bash
-cat << 'SCRIPT_EOF' > /tmp/build_ppt.js
-const pptxgen = require("pptxgenjs");
-// ... your script here ...
-SCRIPT_EOF
 ```
-
-如果脚本超过 200 行，用 `>>` 追加模式分批写入。
-
-### Output rules
-
-- **只输出 .pptx 文件**，不要生成 HTML 预览、临时 PDF、截图等中间文件
-- 脚本文件（.js/.py）写到 /tmp，用完即弃，不要放在输出目录
-
----
-
-## Design Ideas
-
-**Don't create boring slides.** Plain bullets on a white background won't impress anyone. Consider ideas from this list for each slide.
-
-### Before Starting
-
-- **Pick a bold, content-informed color palette**: The palette should feel designed for THIS topic. If swapping your colors into a completely different presentation would still "work," you haven't made specific enough choices.
-- **Dominance over equality**: One color should dominate (60-70% visual weight), with 1-2 supporting tones and one sharp accent. Never give all colors equal weight.
-- **Dark/light contrast**: Dark backgrounds for title + conclusion slides, light for content ("sandwich" structure). Or commit to dark throughout for a premium feel.
-- **Commit to a visual motif**: Pick ONE distinctive element and repeat it — rounded image frames, icons in colored circles, thick single-side borders. Carry it across every slide.
-
-### Color Palettes
-
-Choose colors that match your topic — don't default to generic blue. Use these palettes as inspiration:
-
-| Theme | Primary | Secondary | Accent |
-|-------|---------|-----------|--------|
-| **Midnight Executive** | `1E2761` (navy) | `CADCFC` (ice blue) | `FFFFFF` (white) |
-| **Forest & Moss** | `2C5F2D` (forest) | `97BC62` (moss) | `F5F5F5` (cream) |
-| **Coral Energy** | `F96167` (coral) | `F9E795` (gold) | `2F3C7E` (navy) |
-| **Warm Terracotta** | `B85042` (terracotta) | `E7E8D1` (sand) | `A7BEAE` (sage) |
-| **Ocean Gradient** | `065A82` (deep blue) | `1C7293` (teal) | `21295C` (midnight) |
-| **Charcoal Minimal** | `36454F` (charcoal) | `F2F2F2` (off-white) | `212121` (black) |
-| **Teal Trust** | `028090` (teal) | `00A896` (seafoam) | `02C39A` (mint) |
-| **Berry & Cream** | `6D2E46` (berry) | `A26769` (dusty rose) | `ECE2D0` (cream) |
-| **Sage Calm** | `84B59F` (sage) | `69A297` (eucalyptus) | `50808E` (slate) |
-| **Cherry Bold** | `990011` (cherry) | `FCF6F5` (off-white) | `2F3C7E` (navy) |
-
-### For Each Slide
-
-**Every slide needs a visual element** — image, chart, icon, or shape. Text-only slides are forgettable.
-
-**Layout options:**
-- Two-column (text left, illustration on right)
-- Icon + text rows (icon in colored circle, bold header, description below)
-- 2x2 or 2x3 grid (image on one side, grid of content blocks on other)
-- Half-bleed image (full left or right side) with content overlay
-
-**Data display:**
-- Large stat callouts (big numbers 60-72pt with small labels below)
-- Comparison columns (before/after, pros/cons, side-by-side options)
-- Timeline or process flow (numbered steps, arrows)
-
-**Visual polish:**
-- Icons in small colored circles next to section headers
-- Italic accent text for key stats or taglines
-
-### Typography
-
-**Choose an interesting font pairing** — don't default to Arial. Pick a header font with personality and pair it with a clean body font.
-
-| Header Font | Body Font |
-|-------------|-----------|
-| Georgia | Calibri |
-| Arial Black | Arial |
-| Calibri | Calibri Light |
-| Cambria | Calibri |
-| Trebuchet MS | Calibri |
-| Impact | Arial |
-| Palatino | Garamond |
-| Consolas | Calibri |
-
-| Element | Size |
-|---------|------|
-| Slide title | 36-44pt bold |
-| Section header | 20-24pt bold |
-| Body text | 14-16pt |
-| Captions | 10-12pt muted |
-
-### Spacing
-
-- 0.5" minimum margins
-- 0.3-0.5" between content blocks
-- Leave breathing room—don't fill every inch
-
-### Avoid (Common Mistakes)
-
-- **Don't repeat the same layout** — vary columns, cards, and callouts across slides
-- **Don't center body text** — left-align paragraphs and lists; center only titles
-- **Don't skimp on size contrast** — titles need 36pt+ to stand out from 14-16pt body
-- **Don't default to blue** — pick colors that reflect the specific topic
-- **Don't mix spacing randomly** — choose 0.3" or 0.5" gaps and use consistently
-- **Don't style one slide and leave the rest plain** — commit fully or keep it simple throughout
-- **Don't create text-only slides** — add images, icons, charts, or visual elements; avoid plain title + bullets
-- **Don't forget text box padding** — when aligning lines or shapes with text edges, set `margin: 0` on the text box or offset the shape to account for padding
-- **Don't use low-contrast elements** — icons AND text need strong contrast against the background; avoid light text on light backgrounds or dark text on dark backgrounds
-- **NEVER use accent lines under titles** — these are a hallmark of AI-generated slides; use whitespace or background color instead
-
----
-
-## QA (Quick Check)
-
-After generating, do a quick content check:
-
-```bash
-python -m markitdown output.pptx
+python "${ABU_SKILL_DIR}/scripts/check_pptx.py" deck.pptx
+python "${ABU_SKILL_DIR}/scripts/check_pptx.py" deck.pptx --fix-fonts 微软雅黑
 ```
-
-Verify: all content is present, no typos, correct order. If using templates, check for leftover placeholders:
-
-```bash
-python -m markitdown output.pptx | grep -iE "xxxx|lorem|ipsum|placeholder"
-```
-
-Fix any issues found, then deliver the result. Do NOT convert to images or delegate to subagents for visual inspection — deliver promptly and let the user request adjustments if needed.
-
----
-
-## Dependencies
-
-- `npm install pptxgenjs` - creating from scratch (JS approach)
-- `python-pptx` - creating from scratch (Python approach, may be pre-installed)
-- `pip install "markitdown[pptx]"` - text extraction (for QA)
+It reports, per slide: shapes outside the page, overlapping text boxes, empty placeholders, leftover placeholder text, stretched or missing pictures, text under 12 pt, more than 6 paragraphs in a box, tables running past the bottom, slides with no title, Chinese text without a Chinese font, fonts not installed here. "可能溢出" (text may not fit) is an estimate from box size, font size and character count: shorten the text or enlarge the box and run again; the check cannot see the slide, so tell the user the layout was checked structurally and not seen.

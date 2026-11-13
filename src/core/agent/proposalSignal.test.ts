@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { computeProposalSignal, renderProposalSignalSection } from './proposalSignal';
-import type { Message, ToolCall } from '../../types';
+import { describe, it, expect, vi } from 'vitest';
+import { computeProposalSignal, renderProposalSignalSection, takePendingProposalNote, type ProposalSignal } from './proposalSignal';
+import type { Conversation, Message, ToolCall } from '../../types';
 
 // Filler timestamp (TESTING.md §3) — not asserted on below.
 const FIXED_TIMESTAMP = 1_700_000_000_000;
@@ -165,5 +165,43 @@ describe('renderProposalSignalSection', () => {
       triggerLevel: 'butler',
     });
     expect(rendered).toMatch(/用过已有 skill/);
+  });
+});
+
+describe('takePendingProposalNote', () => {
+  const signal: ProposalSignal = {
+    computedAt: FIXED_TIMESTAMP,
+    toolCallCount: 6,
+    hadErrors: false,
+    usedSkill: false,
+    triggerLevel: 'companion',
+  };
+
+  function setup(pending: ProposalSignal | undefined) {
+    const setPending = vi.fn();
+    const deps = {
+      isForkContext: false,
+      chatDelta: { setPendingProposalSignal: setPending },
+      conversationReader: { getConversation: () => ({ pendingProposalSignal: pending }) as unknown as Conversation },
+    };
+    return { setPending, deps };
+  }
+
+  it('returns the rendered text and clears the signal', () => {
+    const { setPending, deps } = setup(signal);
+    expect(takePendingProposalNote('c1', deps)).toBe(renderProposalSignalSection(signal));
+    expect(setPending).toHaveBeenCalledExactlyOnceWith('c1', undefined);
+  });
+
+  it('does nothing when no signal is pending', () => {
+    const { setPending, deps } = setup(undefined);
+    expect(takePendingProposalNote('c1', deps)).toBeUndefined();
+    expect(setPending).not.toHaveBeenCalled();
+  });
+
+  it('does nothing in a fork context and keeps the signal for the main run', () => {
+    const { setPending, deps } = setup(signal);
+    expect(takePendingProposalNote('c1', { ...deps, isForkContext: true })).toBeUndefined();
+    expect(setPending).not.toHaveBeenCalled();
   });
 });

@@ -12,8 +12,11 @@
  *      already-proposed, and decides if this was a "sink-worthy" task.
  *   2. If yes, stash the signal on the conversation (ephemeral, not
  *      persisted). If no, do nothing.
- *   3. Next turn's system prompt builder reads the signal, injects a
- *      one-shot <consider_sinking> section, then clears it.
+ *   3. The next run's start (`takePendingProposalNote`) takes the signal once,
+ *      clears it, and the loop carries the rendered text in the ephemeral
+ *      volatile context tail (a `<harness-note>` block after the history). It
+ *      is neither system-prompt bytes nor a persisted message, so delivering it
+ *      never rewrites the cached prefix and no "last user row" lookup sees it.
  *
  * Thresholds differ by proactivity preset:
  *   - shy      → never fire (agent shouldn't self-propose)
@@ -26,6 +29,8 @@
  */
 
 import type { Message } from '../../types';
+import type { ChatDelta } from './ports/chatDelta';
+import type { ConversationReader } from './ports/conversationReader';
 import type { ProactivityLevel } from './prompts/skillsGuidance';
 import { isDisplayHiddenStepBackedTool } from '../tools/toolNames';
 
@@ -108,8 +113,7 @@ export function computeProposalSignal(
 }
 
 /**
- * Render the signal as a system prompt section. Caller is responsible for
- * clearing the signal from the conversation after injection (single-shot).
+ * Render the signal as the nudge text (see `takePendingProposalNote`).
  */
 export function renderProposalSignalSection(signal: ProposalSignal): string {
   const skillNote = signal.usedSkill
@@ -130,4 +134,25 @@ export function renderProposalSignalSection(signal: ProposalSignal): string {
     '',
     '只有明确判断"值得"才调；不确定就别调，让用户主动提出。',
   ].join('\n');
+}
+
+/**
+ * Run-start hook: if the previous main run left a pending signal, clear it
+ * (single-shot) and return the rendered nudge text for the loop to carry in the
+ * volatile context tail. Returns undefined when nothing is pending; fork
+ * contexts leave the signal untouched for the next main run.
+ */
+export function takePendingProposalNote(
+  conversationId: string,
+  deps: {
+    isForkContext: boolean;
+    chatDelta: Pick<ChatDelta, 'setPendingProposalSignal'>;
+    conversationReader: Pick<ConversationReader, 'getConversation'>;
+  },
+): string | undefined {
+  if (deps.isForkContext) return undefined;
+  const signal = deps.conversationReader.getConversation(conversationId)?.pendingProposalSignal;
+  if (!signal) return undefined;
+  deps.chatDelta.setPendingProposalSignal(conversationId, undefined);
+  return renderProposalSignalSection(signal);
 }

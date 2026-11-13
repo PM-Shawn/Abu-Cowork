@@ -13,13 +13,17 @@ function makeCtx(overrides: Partial<PrefetchContext> = {}): PrefetchContext {
 
 describe('toolPrefetch', () => {
   describe('CORE_TOOL_NAMES', () => {
-    it('should contain 19 core tools', () => {
-      expect(CORE_TOOL_NAMES.size).toBe(19);
+    it('should contain 20 core tools', () => {
+      expect(CORE_TOOL_NAMES.size).toBe(20);
     });
 
     it('offers apply_patch as core, beside edit_file, so the profile can keep either', () => {
       expect(CORE_TOOL_NAMES.has('apply_patch')).toBe(true);
       expect(CORE_TOOL_NAMES.has('edit_file')).toBe(true);
+    });
+
+    it('offers read_skill_file on every turn, so activating a skill does not change the roster mid-run', () => {
+      expect(CORE_TOOL_NAMES.has('read_skill_file')).toBe(true);
     });
 
     it('offers present_files on every turn, since it is called when a turn ends', () => {
@@ -147,11 +151,11 @@ describe('toolPrefetch', () => {
       expect(result).toContain('computer');
     });
 
-    it('should load read_skill_file when active skills exist', () => {
+    it('should not add read_skill_file by skill state (it is core, so the roster stays stable)', () => {
       const result = prefetchTools(makeCtx({
         activeSkills: [{ name: 'test', description: 'test', content: '' } as import('../../types').Skill],
       }));
-      expect(result).toContain('read_skill_file');
+      expect(result).not.toContain('read_skill_file');
     });
 
     it('should load app_prepare while the app builder skill is active', () => {
@@ -181,10 +185,12 @@ describe('toolPrefetch', () => {
       expect(chrome).not.toContain('abu-browser__query_js');
     });
 
-    it('should load log_task_completion after turn 2', () => {
-      expect(prefetchTools(makeCtx({ turnCount: 1 }))).not.toContain('log_task_completion');
-      expect(prefetchTools(makeCtx({ turnCount: 2 }))).not.toContain('log_task_completion');
-      expect(prefetchTools(makeCtx({ turnCount: 3 }))).toContain('log_task_completion');
+    it('should load the memory tools from the first step, so the roster does not change on step 3', () => {
+      for (const turnCount of [1, 2, 3, 10]) {
+        const result = prefetchTools(makeCtx({ turnCount }));
+        expect(result).toContain('log_task_completion');
+        expect(result).toContain('update_memory');
+      }
     });
 
     it('should deduplicate results', () => {

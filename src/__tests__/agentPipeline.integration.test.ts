@@ -87,6 +87,8 @@ vi.mock('../core/agent/eventRouter', () => ({
 // Mock skill loader
 vi.mock('../core/skill/loader', () => ({
   skillLoader: {
+    // precomputeOrchestration waits for the catalog before it reads it.
+    ready: vi.fn().mockResolvedValue(undefined),
     getSkill: vi.fn().mockReturnValue(null),
     refreshSkill: vi.fn().mockResolvedValue(null),
     listSupportingFiles: vi.fn().mockResolvedValue([]),

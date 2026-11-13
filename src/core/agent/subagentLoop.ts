@@ -1095,7 +1095,8 @@ ${options.ownsUserTurn === true ? `${USER_FACING_RULES}\n\n${ASK_BEFORE_GUESSING
         const marker = await compactHistory({
           history: messages,
           inputBudget,
-          retainTokens: Math.floor(inputBudget * RETAINED_TAIL_RATIO),
+          fixedTokens: estimateTokens(systemPrompt) + toolSchemaTokens,
+          retainShare: RETAINED_TAIL_RATIO,
           source: 'auto',
           fitSummaryInput: (summaryMessages) => enforceContextBudget(
             summaryMessages, systemPrompt, contextWindowSize, maxOutputTokens, toolSchemaTokens,

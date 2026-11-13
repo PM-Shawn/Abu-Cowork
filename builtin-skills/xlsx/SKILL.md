@@ -1,10 +1,12 @@
 ---
 name: xlsx
-description: "Use this skill any time a spreadsheet file is the primary input or output. This means any task where the user wants to: open, read, edit, or fix an existing .xlsx, .xlsm, .csv, or .tsv file (e.g., adding columns, computing formulas, formatting, charting, cleaning messy data); create a new spreadsheet from scratch or from other data sources; or convert between tabular file formats. Trigger especially when the user references a spreadsheet file by name or path — even casually (like \"the xlsx in my downloads\") — and wants something done to it or produced from it. Also trigger for cleaning or restructuring messy tabular data files (malformed rows, misplaced headers, junk data) into proper spreadsheets. The deliverable must be a spreadsheet file. Do NOT trigger when the primary deliverable is a Word document, HTML report, standalone Python script, database pipeline, or Google Sheets API integration, even if tabular data is involved."
+display-name:
+  zh-CN: Excel 表格
+description: "Work with spreadsheet files (.xlsx, .xlsm, .xltx, .csv, .tsv): open, read, correct or extend an existing one, build a new one from scratch or from other data, add formulas, formatting or charts, tidy messy tables, or convert between tabular formats. Use it whenever a spreadsheet is the input or the thing to deliver, including when the user only names a file casually. Not for Word or HTML reports, database pipelines, or Google Sheets API work."
 display-description:
   zh-CN: 创建、读取、编辑和整理表格文件（.xlsx、.csv）
   en-US: Create, read, edit and clean up spreadsheets (.xlsx, .csv)
-license: Proprietary. LICENSE.txt has complete terms
+license: Apache-2.0
 trigger: 用户要求打开、读取、编辑 Excel/CSV/TSV 文件，创建电子表格，清理表格数据，或处理任何 .xlsx/.xlsm/.csv/.tsv 文件
 do-not-trigger: 用户要求生成 Word 文档、HTML 报告、独立 Python 脚本，或 Google Sheets API 集成
 blocked-tools:
@@ -14,8 +16,6 @@ blocked-tools:
   - delegate_to_agent
   - update_memory
   - todo_write
-  - generate_image
-  - process_image
   - clipboard_read
   - clipboard_write
   - system_notify
@@ -25,289 +25,46 @@ blocked-tools:
   - computer
 ---
 
-# Requirements for Outputs
+# Excel workbooks (.xlsx) and CSV
 
-## All Excel files
+Bundled Python only: openpyxl (read/write, formulas, styles, charts), xlsxwriter (new files with native charts), pandas (tables, grouping, CSV), matplotlib (PNG charts). No spreadsheet program is assumed: files you write have formulas but no real stored values (openpyxl stores none, xlsxwriter stores a 0 placeholder), and nothing here can compute them for real. Scripts are in `${ABU_SKILL_DIR}/scripts/`.
 
-### Professional Font
-- Use a consistent, professional font (e.g., Arial, Times New Roman) for all deliverables unless otherwise instructed by the user
+Workflow: build the file, run `check_xlsx.py`, fix, run again, tell the user the path and anything unverified.
 
-### Zero Formula Errors
-- Every Excel model MUST be delivered with ZERO formula errors (#REF!, #DIV/0!, #VALUE!, #N/A, #NAME?)
-
-### Preserve Existing Templates (when updating templates)
-- Study and EXACTLY match existing format, style, and conventions when modifying files
-- Never impose standardized formatting on files with established patterns
-- Existing template conventions ALWAYS override these guidelines
-
-## Financial models
-
-### Color Coding Standards
-Unless otherwise stated by the user or existing template
-
-#### Industry-Standard Color Conventions
-- **Blue text (RGB: 0,0,255)**: Hardcoded inputs, and numbers users will change for scenarios
-- **Black text (RGB: 0,0,0)**: ALL formulas and calculations
-- **Green text (RGB: 0,128,0)**: Links pulling from other worksheets within same workbook
-- **Red text (RGB: 255,0,0)**: External links to other files
-- **Yellow background (RGB: 255,255,0)**: Key assumptions needing attention or cells that need to be updated
-
-### Number Formatting Standards
-
-#### Required Format Rules
-- **Years**: Format as text strings (e.g., "2024" not "2,024")
-- **Currency**: Use $#,##0 format; ALWAYS specify units in headers ("Revenue ($mm)")
-- **Zeros**: Use number formatting to make all zeros "-", including percentages (e.g., "$#,##0;($#,##0);-")
-- **Percentages**: Default to 0.0% format (one decimal)
-- **Multiples**: Format as 0.0x for valuation multiples (EV/EBITDA, P/E)
-- **Negative numbers**: Use parentheses (123) not minus -123
-
-### Formula Construction Rules
-
-#### Assumptions Placement
-- Place ALL assumptions (growth rates, margins, multiples, etc.) in separate assumption cells
-- Use cell references instead of hardcoded values in formulas
-- Example: Use =B5*(1+$B$6) instead of =B5*1.05
-
-#### Formula Error Prevention
-- Verify all cell references are correct
-- Check for off-by-one errors in ranges
-- Ensure consistent formulas across all projection periods
-- Test with edge cases (zero values, negative numbers)
-- Verify no unintended circular references
-
-#### Documentation Requirements for Hardcodes
-- Comment or in cells beside (if end of table). Format: "Source: [System/Document], [Date], [Specific Reference], [URL if applicable]"
-- Examples:
-  - "Source: Company 10-K, FY2024, Page 45, Revenue Note, [SEC EDGAR URL]"
-  - "Source: Company 10-Q, Q2 2025, Exhibit 99.1, [SEC EDGAR URL]"
-  - "Source: Bloomberg Terminal, 8/15/2025, AAPL US Equity"
-  - "Source: FactSet, 8/20/2025, Consensus Estimates Screen"
-
-# XLSX creation, editing, and analysis
-
-## Overview
-
-A user may ask you to create, edit, or analyze the contents of an .xlsx file. You have different tools and workflows available for different tasks.
-
-## Important Requirements
-
-**LibreOffice Required for Formula Recalculation**: You can assume LibreOffice is installed for recalculating formula values using the `scripts/recalc.py` script. The script automatically configures LibreOffice on first run, including in sandboxed environments where Unix sockets are restricted (handled by `scripts/office/soffice.py`)
-
-## Reading and analyzing data
-
-### Data analysis with pandas
-For data analysis, visualization, and basic operations, use **pandas** which provides powerful data manipulation capabilities:
+## Read and analyse
 
 ```python
 import pandas as pd
-
-# Read Excel
-df = pd.read_excel('file.xlsx')  # Default: first sheet
-all_sheets = pd.read_excel('file.xlsx', sheet_name=None)  # All sheets as dict
-
-# Analyze
-df.head()      # Preview data
-df.info()      # Column info
-df.describe()  # Statistics
-
-# Write Excel
-df.to_excel('output.xlsx', index=False)
+df = pd.read_excel(path, sheet_name=None)      # dict of sheets; header row guessed, check df.head()
+df = pd.read_csv(path, encoding="utf-8-sig")   # Chinese CSV from Excel is often gbk: retry with encoding="gbk"
 ```
+`openpyxl.load_workbook(path)` shows formulas; `data_only=True` shows the values Excel last saved. A file written by openpyxl has no saved values (`data_only=True` gives None) and one written by xlsxwriter has a 0 in every formula cell, so the preview panel shows empty cells or zeros until Excel/WPS has calculated them.
 
-## Excel File Workflows
+## Create
 
-## CRITICAL: Use Formulas, Not Hardcoded Values
+- Put inputs (rates, assumptions) in labelled cells and refer to them; do not bury numbers in formulas. Use formulas for anything derived (totals, ratios) so the user can change inputs, never a Python-computed number typed in.
+- Formulas are English function names with commas, in the file: `ws["D2"] = "=B2*C2"`, `"=SUM(D2:D20)"`, cross-sheet `"='Sheet 2'!B5"`.
+- Format: header row bold with fill and `freeze_panes`, number formats (`#,##0.00`, `0.0%`, `yyyy-mm-dd`), column widths from the longest content (Chinese characters count double), no merged cells inside data ranges.
+- Font: Chinese-capable, `Font(name="Microsoft YaHei")` (it also displays on macOS Excel through substitution) or leave the default.
+- Native chart (editable in Excel/WPS): `openpyxl.chart.BarChart / LineChart / PieChart`, `Reference` to the data cells, `ws.add_chart(chart, "H2")`, set a title and axis titles. Chinese text in native charts uses the viewer's font, nothing to configure.
+- Picture chart (matplotlib): call `office_env.setup_matplotlib_cjk()` before drawing, otherwise Chinese labels become empty squares.
+  ```python
+  import sys; sys.path.insert(0, r"${ABU_SKILL_DIR}/scripts"); import office_env
+  office_env.setup_matplotlib_cjk(); import matplotlib.pyplot as plt
+  ```
+  Save with `plt.savefig(p, dpi=150, bbox_inches="tight")`, insert with `openpyxl.drawing.image.Image`. It prefers a native chart when the user wants to edit it; use a picture for chart types Excel cannot draw.
+- Writing a DataFrame: `df.to_excel(writer, sheet_name=..., index=False)` then style through `writer.book`.
 
-**Always use Excel formulas instead of calculating values in Python and hardcoding them.** This ensures the spreadsheet remains dynamic and updateable.
+## Edit an existing workbook
 
-### ❌ WRONG - Hardcoding Calculated Values
-```python
-# Bad: Calculating in Python and hardcoding result
-total = df['Sales'].sum()
-sheet['B10'] = total  # Hardcodes 5000
+`load_workbook(path)` (not `data_only=True`, or the formulas are lost on save). openpyxl drops pivot tables, slicers and some charts/images it cannot read: if the file has them, say so and edit a copy, or make the change another way. Save under a new name.
 
-# Bad: Computing growth rate in Python
-growth = (df.iloc[-1]['Revenue'] - df.iloc[0]['Revenue']) / df.iloc[0]['Revenue']
-sheet['C5'] = growth  # Hardcodes 0.15
+## Check before delivering
 
-# Bad: Python calculation for average
-avg = sum(values) / len(values)
-sheet['D20'] = avg  # Hardcodes 42.5
 ```
-
-### ✅ CORRECT - Using Excel Formulas
-```python
-# Good: Let Excel calculate the sum
-sheet['B10'] = '=SUM(B2:B9)'
-
-# Good: Growth rate as Excel formula
-sheet['C5'] = '=(C4-C2)/C2'
-
-# Good: Average using Excel function
-sheet['D20'] = '=AVERAGE(D2:D19)'
+python "${ABU_SKILL_DIR}/scripts/check_xlsx.py" out.xlsx            # problems + summary
+python "${ABU_SKILL_DIR}/scripts/check_xlsx.py" out.xlsx --values   # also the values it estimates, to compare with your source data
 ```
+It looks at structure and never changes the file. It finds errors saved in the file (#DIV/0!, #REF!), formulas pointing at missing sheets or cells, totals that stop short of the data, numbers stored as text, too-narrow columns, chart series pointing at empty cells, and pivot tables or slicers (openpyxl drops them when saving: edit a copy and tell the user). Its other findings are hints: a formula that differs from its neighbours, a typed number among formulas, an estimated error. Judge each hint yourself, a subtotal row or a year header is often right as it is; do not change the file only because a hint says so. The values it estimates are a rough cross-check for plain SUM/IF/SUMIF/VLOOKUP formulas against your source data, not Excel's result: never tell the user the formulas are "verified".
 
-This applies to ALL calculations - totals, percentages, ratios, differences, etc. The spreadsheet should be able to recalculate when source data changes.
-
-## Common Workflow
-1. **Choose tool**: pandas for data, openpyxl for formulas/formatting
-2. **Create/Load**: Create new workbook or load existing file
-3. **Modify**: Add/edit data, formulas, and formatting
-4. **Save**: Write to file
-5. **Recalculate formulas (MANDATORY IF USING FORMULAS)**: Use the scripts/recalc.py script
-   ```bash
-   python scripts/recalc.py output.xlsx
-   ```
-6. **Verify and fix any errors**: 
-   - The script returns JSON with error details
-   - If `status` is `errors_found`, check `error_summary` for specific error types and locations
-   - Fix the identified errors and recalculate again
-   - Common errors to fix:
-     - `#REF!`: Invalid cell references
-     - `#DIV/0!`: Division by zero
-     - `#VALUE!`: Wrong data type in formula
-     - `#NAME?`: Unrecognized formula name
-
-### Creating new Excel files
-
-```python
-# Using openpyxl for formulas and formatting
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment
-
-wb = Workbook()
-sheet = wb.active
-
-# Add data
-sheet['A1'] = 'Hello'
-sheet['B1'] = 'World'
-sheet.append(['Row', 'of', 'data'])
-
-# Add formula
-sheet['B2'] = '=SUM(A1:A10)'
-
-# Formatting
-sheet['A1'].font = Font(bold=True, color='FF0000')
-sheet['A1'].fill = PatternFill('solid', start_color='FFFF00')
-sheet['A1'].alignment = Alignment(horizontal='center')
-
-# Column width
-sheet.column_dimensions['A'].width = 20
-
-wb.save('output.xlsx')
-```
-
-### Editing existing Excel files
-
-```python
-# Using openpyxl to preserve formulas and formatting
-from openpyxl import load_workbook
-
-# Load existing file
-wb = load_workbook('existing.xlsx')
-sheet = wb.active  # or wb['SheetName'] for specific sheet
-
-# Working with multiple sheets
-for sheet_name in wb.sheetnames:
-    sheet = wb[sheet_name]
-    print(f"Sheet: {sheet_name}")
-
-# Modify cells
-sheet['A1'] = 'New Value'
-sheet.insert_rows(2)  # Insert row at position 2
-sheet.delete_cols(3)  # Delete column 3
-
-# Add new sheet
-new_sheet = wb.create_sheet('NewSheet')
-new_sheet['A1'] = 'Data'
-
-wb.save('modified.xlsx')
-```
-
-## Recalculating formulas
-
-Excel files created or modified by openpyxl contain formulas as strings but not calculated values. Use the provided `scripts/recalc.py` script to recalculate formulas:
-
-```bash
-python scripts/recalc.py <excel_file> [timeout_seconds]
-```
-
-Example:
-```bash
-python scripts/recalc.py output.xlsx 30
-```
-
-The script:
-- Automatically sets up LibreOffice macro on first run
-- Recalculates all formulas in all sheets
-- Scans ALL cells for Excel errors (#REF!, #DIV/0!, etc.)
-- Returns JSON with detailed error locations and counts
-- Works on both Linux and macOS
-
-## Formula Verification Checklist
-
-Quick checks to ensure formulas work correctly:
-
-### Essential Verification
-- [ ] **Test 2-3 sample references**: Verify they pull correct values before building full model
-- [ ] **Column mapping**: Confirm Excel columns match (e.g., column 64 = BL, not BK)
-- [ ] **Row offset**: Remember Excel rows are 1-indexed (DataFrame row 5 = Excel row 6)
-
-### Common Pitfalls
-- [ ] **NaN handling**: Check for null values with `pd.notna()`
-- [ ] **Far-right columns**: FY data often in columns 50+ 
-- [ ] **Multiple matches**: Search all occurrences, not just first
-- [ ] **Division by zero**: Check denominators before using `/` in formulas (#DIV/0!)
-- [ ] **Wrong references**: Verify all cell references point to intended cells (#REF!)
-- [ ] **Cross-sheet references**: Use correct format (Sheet1!A1) for linking sheets
-
-### Formula Testing Strategy
-- [ ] **Start small**: Test formulas on 2-3 cells before applying broadly
-- [ ] **Verify dependencies**: Check all cells referenced in formulas exist
-- [ ] **Test edge cases**: Include zero, negative, and very large values
-
-### Interpreting scripts/recalc.py Output
-The script returns JSON with error details:
-```json
-{
-  "status": "success",           // or "errors_found"
-  "total_errors": 0,              // Total error count
-  "total_formulas": 42,           // Number of formulas in file
-  "error_summary": {              // Only present if errors found
-    "#REF!": {
-      "count": 2,
-      "locations": ["Sheet1!B5", "Sheet1!C10"]
-    }
-  }
-}
-```
-
-## Best Practices
-
-### Library Selection
-- **pandas**: Best for data analysis, bulk operations, and simple data export
-- **openpyxl**: Best for complex formatting, formulas, and Excel-specific features
-
-### Working with openpyxl
-- Cell indices are 1-based (row=1, column=1 refers to cell A1)
-- Use `data_only=True` to read calculated values: `load_workbook('file.xlsx', data_only=True)`
-- **Warning**: If opened with `data_only=True` and saved, formulas are replaced with values and permanently lost
-- For large files: Use `read_only=True` for reading or `write_only=True` for writing
-- Formulas are preserved but not evaluated - use scripts/recalc.py to update values
-
-### Working with pandas
-- Specify data types to avoid inference issues: `pd.read_excel('file.xlsx', dtype={'id': str})`
-- For large files, read specific columns: `pd.read_excel('file.xlsx', usecols=['A', 'C', 'E'])`
-- Handle dates properly: `pd.read_excel('file.xlsx', parse_dates=['date_column'])`
-
-## Code Style Guidelines
-**IMPORTANT**: When generating Python code for Excel operations:
-- Write minimal, concise Python code without unnecessary comments
-- Avoid verbose variable names and redundant operations
-- Avoid unnecessary print statements
-
-**For Excel files themselves**:
-- Add comments to cells with complex formulas or important assumptions
-- Document data sources for hardcoded values
-- Include notes for key calculations and model sections
+Values: a file written by openpyxl has none stored and one written by xlsxwriter has 0 in every formula cell, so the preview panel and `read_file` show empty cells or zeros and Excel/WPS compute them when the file is opened. Nothing here can calculate them, so deliver the file and say plainly: "the numbers appear when you open the file in Excel or WPS; I checked the structure but could not calculate the values here". Do not write values into the formula cells yourself, and do not write your own renderer or preview of the sheet.

@@ -87,7 +87,7 @@ const APPS: Array<{ appId: string } & Record<Locale, { name: string; description
 const SKILL_SAMPLES: Array<{ name: string } & Record<Locale, string>> = [
   { name: 'alert-sop', 'zh-CN': '自动分析告警信息，按 SOP 排查问题并生成处理报告', 'en-US': 'Analyze an alert, investigate it by the SOP and write a handling report' },
   { name: 'docx', 'zh-CN': '创建、读取和编辑 Word 文档（.docx）', 'en-US': 'Create, read and edit Word documents (.docx)' },
-  { name: 'pdf', 'zh-CN': '读取、合并、分割 PDF，提取内容、填写表单和识别文字', 'en-US': 'Read, merge, split, fill in and OCR PDF files' },
+  { name: 'pdf', 'zh-CN': '读取、合并、分割 PDF，提取内容、填写表单和渲染预览', 'en-US': 'Read, merge, split, create, fill in and preview PDF files' },
   { name: 'trigger', 'zh-CN': '创建和管理监听：事件发生或文件变化时自动执行任务', 'en-US': 'Create and manage listeners that run a task when an event fires' },
 ];
 

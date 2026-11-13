@@ -118,7 +118,7 @@ describe('pet settings persistence', () => {
     const reopenedMain = await loadWindow('/index.html');
     await queue;
     expect(reopenedMain.useSettingsStore.getState().theme).toBe('system');
-    expect(storedSettings().version).toBe(55);
+    expect(storedSettings().version).toBe(56);
     expect(storedSettings().state.theme).toBe('system');
     expect(storedSettings().state.activeModel).toEqual(MODEL_A);
   });
@@ -143,7 +143,7 @@ describe('pet settings persistence', () => {
 
     const upgradedMain = await loadWindow('/index.html');
     await queue;
-    expect(storedSettings().version).toBe(55);
+    expect(storedSettings().version).toBe(56);
     expect(storedSettings().state.providers.find((entry: { id: string }) => entry.id === 'ollama').models
       .map((model: { declaredCapabilities: { supportsImages: boolean } }) => model.declaredCapabilities.supportsImages))
       .toEqual([false, true]);

@@ -15,7 +15,7 @@ import type { DocumentReadParams } from './readParams';
 const jsonUtf8ByteLength = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
 
 const params = (fields: Partial<DocumentReadParams> = {}): DocumentReadParams =>
-  ({ pages: null, region: null, rotate: 0, imageIndex: null, ...fields });
+  ({ pages: null, region: null, rotate: 0, imageIndex: null, textOffset: 0, ...fields });
 const textOf = (result: string | ToolResultContent[]): string =>
   typeof result === 'string' ? result : (result[0] as { text: string }).text;
 

@@ -449,6 +449,18 @@ describe('tabs a task opened itself', () => {
     expect(store.openedBy(5)).toBeNull();
   });
 
+  it('keeps the opener and the current holder apart once another conversation claims the tab', () => {
+    const store = createTabClaimStore();
+    const ownerA = makeOwner('conversation-A');
+    const ownerB = makeOwner('conversation-B');
+    store.claim(42, ownerA, 1000);
+    store.markOpened(42, ownerA);
+    store.releaseOwner(ownerA.conversationId);
+    store.claim(42, ownerB, 2000);
+    expect(store.holderOf(42)?.conversationId).toBe('conversation-B');
+    expect(store.openedBy(42)?.conversationId).toBe('conversation-A');
+  });
+
   it('never marks a tab for a caller without an owner, and forgets everything when the bridge goes away', () => {
     const store = createTabClaimStore();
     store.markOpened(3, makeOwner(undefined));

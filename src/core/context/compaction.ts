@@ -16,14 +16,15 @@ import type { Message, RestoredFile, ToolExecutionContext, ToolResultContent } f
 /** Compact once the next request would use this share of the input budget (Codex: 90 %). */
 export const COMPACTION_TRIGGER_RATIO = 0.9;
 
-/** Share of the input budget kept verbatim as the newest steps (DSH: 16 %). */
+/** Share of the room left for the conversation kept verbatim as the newest steps (DSH: 16 %). */
 export const RETAINED_TAIL_RATIO = 0.15;
 
 /**
  * Upper bounds of what a compaction keeps besides the summary: the user's own
  * messages (Codex keeps 20 000 tokens of them) and the re-read files (Claude
  * Code keeps 5 files of at most 5 000 tokens each). Each is held to a tenth of
- * the input budget, so a small window keeps room for the task itself.
+ * the room left for the conversation (see `compactHistory`), so a small window
+ * keeps room for the task itself.
  */
 const USER_MESSAGE_BUDGET_TOKENS = 20_000;
 const RESTORED_FILES_BUDGET_TOKENS = 25_000;
@@ -62,17 +63,17 @@ function textOnly(messages: Message[]): Message[] {
   }));
 }
 
-function keptBudget(inputBudget: number, cap: number): number {
-  return Math.min(cap, Math.floor(inputBudget * KEPT_SHARE_OF_BUDGET));
+function keptBudget(room: number, cap: number): number {
+  return Math.min(cap, Math.floor(room * KEPT_SHARE_OF_BUDGET));
 }
 
 async function restoreFiles(
   paths: string[],
   readFile: RestoredFileReader,
-  inputBudget: number,
+  room: number,
   signal?: AbortSignal,
 ): Promise<RestoredFile[]> {
-  const totalBudget = keptBudget(inputBudget, RESTORED_FILES_BUDGET_TOKENS);
+  const totalBudget = keptBudget(room, RESTORED_FILES_BUDGET_TOKENS);
   const fileBudget = Math.min(RESTORED_FILE_MAX_TOKENS, totalBudget);
   const restored: RestoredFile[] = [];
   let used = 0;
@@ -94,15 +95,21 @@ async function restoreFiles(
 }
 
 /**
- * Compact one history: summarize everything before the newest `retainTokens`
- * of steps and return the marker that records it. The caller adds the marker.
+ * Compact one history: summarize everything before the newest steps worth
+ * `retainShare` of the room and return the marker that records it. The room is
+ * what the conversation may use: the input budget minus `fixedTokens` (the
+ * system prompt and the tool definitions). What compaction keeps (the newest
+ * steps, the user's messages, the re-read files) is sized from it, so a long
+ * fixed part cannot leave a floor that fills the budget before the run's next
+ * step is added. The caller adds the marker.
  * Returns null when there is nothing to summarize; throws when the summary
  * request fails (after its retries).
  */
 export async function compactHistory(params: {
   history: Message[];
   inputBudget: number;
-  retainTokens: number;
+  fixedTokens: number;
+  retainShare: number;
   source: 'auto' | 'manual';
   loopId?: string;
   summary: SummaryRequest;
@@ -115,16 +122,17 @@ export async function compactHistory(params: {
   readFile: RestoredFileReader;
   now: () => number;
 }): Promise<Message | null> {
+  const room = Math.max(0, params.inputBudget - params.fixedTokens);
   const plan = planStepCompaction(params.history, {
-    retainTokens: params.retainTokens,
-    userMessageBudget: keptBudget(params.inputBudget, USER_MESSAGE_BUDGET_TOKENS),
+    retainTokens: Math.floor(room * params.retainShare),
+    userMessageBudget: keptBudget(room, USER_MESSAGE_BUDGET_TOKENS),
     estimateTokens: estimateMessageTokens,
   });
   if (!plan) return null;
   const summarize = textOnly(plan.summarize);
   const summaryText = await writeCompactionSummary(summarize, params.summary, params.fitSummaryInput);
   params.summary.signal?.throwIfAborted();
-  const restoredFiles = await restoreFiles(plan.readFilePaths, params.readFile, params.inputBudget, params.summary.signal);
+  const restoredFiles = await restoreFiles(plan.readFilePaths, params.readFile, room, params.summary.signal);
   params.summary.signal?.throwIfAborted();
   return createCompactBoundaryMarker({
     summaryText,

@@ -21,7 +21,7 @@ vi.mock('./usageSink', () => ({
 }));
 
 import { OllamaNativeAdapter, toOllamaMessages } from './ollama-native';
-import { TOOL_RESULT_IMAGES_NOTE } from './openai-compatible';
+import { TOOL_RESULT_IMAGES_INTRO, TOOL_RESULT_SCREENSHOTS_NOTE } from './toolResultImageCaptions';
 
 const FIXED_TIMESTAMP = 1_700_000_000_000;
 const userMessage: Message = { id: 'm1', role: 'user', content: '读一下 a.txt', timestamp: FIXED_TIMESTAMP };
@@ -378,6 +378,26 @@ describe('OllamaNativeAdapter errors', () => {
 });
 
 describe('toOllamaMessages', () => {
+  it('introduces labeled tool-result images by their call and label, in the order of the image list', () => {
+    const turns: PreparedTurn[] = [{
+      kind: 'assistant',
+      text: '',
+      toolCalls: [{
+        id: 'c1', name: 'read_file', input: {}, result: 'manifest', isError: false,
+        resultImages: [{ mediaType: 'image/jpeg', data: 'P1', label: 'Page 1 of a.pdf, whole page' }, { mediaType: 'image/jpeg', data: 'P2', label: 'Page 2 of a.pdf, whole page' }],
+      }],
+    }];
+    expect(toOllamaMessages(turns).at(-1)).toEqual({
+      role: 'user',
+      content: [
+        TOOL_RESULT_IMAGES_INTRO,
+        '[Image 1 of 2, from read_file (call c1): Page 1 of a.pdf, whole page]',
+        '[Image 2 of 2, from read_file (call c1): Page 2 of a.pdf, whole page]',
+      ].join('\n'),
+      images: ['P1', 'P2'],
+    });
+  });
+
   it('separates the text blocks of one user turn with a line break', () => {
     const turns: PreparedTurn[] = [
       { kind: 'user', content: [{ type: 'text', text: '看图' }, { type: 'text', text: '<image_resize_notice>resized</image_resize_notice>' }] },
@@ -405,7 +425,7 @@ describe('toOllamaMessages', () => {
       { role: 'user', content: '看图', images: ['AAAA'] },
       { role: 'assistant', content: '', thinking: 't', tool_calls: [{ id: 'c1', function: { name: 'read_file', arguments: { path: 'a' } } }] },
       { role: 'tool', content: 'file body', tool_name: 'read_file', tool_call_id: 'c1' },
-      { role: 'user', content: TOOL_RESULT_IMAGES_NOTE, images: ['BBBB'] },
+      { role: 'user', content: `${TOOL_RESULT_SCREENSHOTS_NOTE}\n[Image 1 of 1, from read_file (call c1)]`, images: ['BBBB'] },
       { role: 'user', content: 'tail' },
     ]);
   });

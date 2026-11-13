@@ -17,7 +17,7 @@ import { initLanguage } from '@/i18n';
 import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { useImageLightboxStore } from '@/stores/imageLightboxStore';
 import type { ToolCall, ToolResultContent } from '@/types';
-import ToolCallsGroup, { ToolResultImagePreview } from './ToolCallsGroup';
+import ToolCallsGroup, { InlineToolResultImages, ToolResultImagePreview } from './ToolCallsGroup';
 
 const mockResolveOutputRefSource = vi.hoisted(() => vi.fn());
 const mockLoadLocalImage = vi.hoisted(() => vi.fn());
@@ -332,5 +332,30 @@ describe('ToolResultImagePreview', () => {
       workspacePath: undefined,
     }]);
     expect(viewer.returnFocus).toBe(thumbnail);
+  });
+});
+
+describe('InlineToolResultImages — read_file page views', () => {
+  const imageResult: ToolResultContent[] = [
+    { type: 'text', text: '[Page 1 of report.pdf, whole page, 100×140 px]' },
+    { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: 'AAAA' } },
+  ];
+  const call = (path: string): ToolCall => ({
+    id: 'tc-1', name: TOOL_NAMES.READ_FILE, input: { path }, status: 'completed', resultContent: imageResult,
+  } as ToolCall);
+
+  beforeEach(() => {
+    mockLoadLocalImage.mockResolvedValue('blob:page');
+  });
+
+  it('shows no thumbnail for the page renders of a PDF the model read', () => {
+    const { container } = render(<InlineToolResultImages toolCalls={[call('/work/report.pdf')]} />);
+    expect(container.querySelector('img')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('still shows a picture read_file returned from an image file', () => {
+    const { container } = render(<InlineToolResultImages toolCalls={[call('/work/qr.png')]} />);
+    expect(container.firstChild).not.toBeNull();
   });
 });

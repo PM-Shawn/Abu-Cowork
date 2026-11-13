@@ -9,7 +9,7 @@
  * would happily read, 8192 earns a 400 from Anthropic.
  *
  * Before this module those thresholds were unrelated magic numbers
- * (`SCREENSHOT_MAX_WIDTH`, `resizeImageIfNeeded`'s 1280, `getMaxScreenshots`),
+ * (`SCREENSHOT_MAX_WIDTH`, read_file's 1280, `getMaxScreenshots`),
  * none of which knew which route the turn was going to. This is the one table
  * they resolve from.
  *
@@ -39,6 +39,23 @@ export interface ImagePolicy {
    */
   maxDimension: number;
   /**
+   * What the provider REJECTS: a picture with a side above this earns a 400 and
+   * the run ends. It is not `maxDimension`: that is the size pictures are FITTED
+   * to at entry (composer, read_file), picked small and the same for every route
+   * because the route is not known then. The send-time judge (imageAcceptance.ts)
+   * uses this one, so a picture the route takes is never dropped for being above
+   * the entry size. `Infinity` for a route that scales instead of rejecting.
+   * Sources are named on each policy below.
+   */
+  rejectDimension: number;
+  /**
+   * What the provider rejects per picture, in base64 characters (the unit of the
+   * request body). The entry fit and the send-time judge both use the strictest
+   * route's value (`admissionMaxImageBytes`), because a picture stored in
+   * history is re-sent on every later turn, on whichever route is then selected.
+   */
+  maxImageBytes: number;
+  /**
    * Ceiling on accumulated base64 image payload in a single request. Images are
    * dropped oldest-first once the total would exceed it.
    *
@@ -58,6 +75,13 @@ const MIB = 1024 * 1024;
  */
 const ANTHROPIC_POLICY: ImagePolicy = {
   maxDimension: 2000,
+  // Vision docs (platform.claude.com/docs/en/build-with-claude/vision): 8000x8000 px for a
+  // single image, 3000 px once a request holds more than 20 image blocks (not modelled here:
+  // pictures fitted at entry are 2000 px, and only a tool picture of 3001-8000 px in a request of
+  // 20+ pictures could still be refused). Per image: 10 MB base64 on the Claude API, 5 MB on
+  // Amazon Bedrock; the same model id can be served by either, so the 5 MB is used.
+  rejectDimension: 8000,
+  maxImageBytes: 5 * MIB,
   maxRequestImageBytes: 20 * MIB,
 };
 
@@ -68,6 +92,10 @@ const ANTHROPIC_POLICY: ImagePolicy = {
  */
 const DEEPSEEK_POLICY: ImagePolicy = {
   maxDimension: 4096,
+  // 8192 px per the docs above, and observed: a 10032x4178 PNG earned 400 "unsupported
+  // image". No per-image byte limit is documented; the request budget below bounds the body.
+  rejectDimension: 8192,
+  maxImageBytes: 20 * MIB,
   maxRequestImageBytes: 32 * MIB,
 };
 
@@ -76,6 +104,13 @@ const DEEPSEEK_POLICY: ImagePolicy = {
  */
 const OPENAI_POLICY: ImagePolicy = {
   maxDimension: 2048,
+  // developers.openai.com/api/docs/guides/images-vision: high detail scales a picture to fit
+  // 2048 px (newer models: a patch budget), so a larger side is not refused; only a picture
+  // that stays above 30,000 patches after scaling is, which a side limit cannot express. The
+  // docs give a 512 MB request payload and no per-image figure; 20 MiB is the long-standing
+  // per-image file limit.
+  rejectDimension: Infinity,
+  maxImageBytes: 20 * MIB,
   maxRequestImageBytes: 20 * MIB,
 };
 
@@ -88,6 +123,10 @@ const OPENAI_POLICY: ImagePolicy = {
  */
 const FALLBACK_POLICY: ImagePolicy = {
   maxDimension: 2000,
+  // An unknown gateway may front any of the above: the strictest documented rejection,
+  // Claude's many-image 3000 px, and the strictest per-image bytes.
+  rejectDimension: 3000,
+  maxImageBytes: 5 * MIB,
   maxRequestImageBytes: 20 * MIB,
 };
 
@@ -131,4 +170,22 @@ const ALL_POLICIES = [ANTHROPIC_POLICY, DEEPSEEK_POLICY, OPENAI_POLICY, FALLBACK
  */
 export function admissionMaxDimension(): number {
   return Math.min(...ALL_POLICIES.map((policy) => policy.maxDimension));
+}
+
+/**
+ * The per-image byte ceiling for a picture being ADMITTED (composer, read_file, any fit
+ * step): the strictest `maxImageBytes` of any route, for the reason `admissionMaxDimension`
+ * gives.
+ */
+export function admissionMaxImageBytes(): number {
+  return Math.min(...ALL_POLICIES.map((policy) => policy.maxImageBytes));
+}
+
+/**
+ * The limits the send-time judge enforces for a route, under the option names
+ * `normalizeMessages` reads. Adapters spread this into their options.
+ */
+export function imageAcceptanceLimits(modelId: string): { maxImageDimension: number; maxImageBytes: number } {
+  const policy = resolveImagePolicy(modelId);
+  return { maxImageDimension: policy.rejectDimension, maxImageBytes: policy.maxImageBytes };
 }

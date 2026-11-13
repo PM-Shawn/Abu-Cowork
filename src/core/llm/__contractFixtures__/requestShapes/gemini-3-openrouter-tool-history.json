@@ -40,6 +40,10 @@
             "text": "[SCREENSHOT] Tool results produced these screenshot(s). You MUST describe what you actually see in the image before deciding next action. If you cannot see the image, say \"I cannot see the screenshot\" — do NOT guess or fabricate what is on screen."
           },
           {
+            "type": "text",
+            "text": "[Image 1 of 1, from read_file (call toolu_1_0)]"
+          },
+          {
             "type": "image_url",
             "image_url": {
               "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="

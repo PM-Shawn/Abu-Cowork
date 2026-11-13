@@ -1,15 +1,14 @@
 import { readTextFile, readFile as readBinFile, writeTextFile, readDir, exists, stat } from '../fsBridge';
 import { invoke } from '@tauri-apps/api/core';
-import type { ToolDefinition, ToolResultContent } from '../../../types';
+import type { ToolDefinition, ToolExecutionContext, ToolResultContent } from '../../../types';
 import { isWindows } from '../../../utils/platform';
-import { ensureParentDir, normalizeSeparators } from '../../../utils/pathUtils';
+import { ensureParentDir, getBaseName, normalizeSeparators } from '../../../utils/pathUtils';
 import { isSandboxEnabled, isNetworkIsolationEnabled } from '../../sandbox/config';
 import { isCatastrophicDeleteTarget } from '../pathSafety';
 import {
   getFileExtension,
   IMAGE_EXTENSIONS,
   IMAGE_MEDIA_TYPES,
-  resizeImageIfNeeded,
   uint8ArrayToBase64,
   OFFICE_EXTENSIONS,
   ARCHIVE_EXTENSIONS,
@@ -19,6 +18,12 @@ import {
   type CommandOutput,
 } from '../helpers/toolHelpers';
 import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedCommand';
+import { withDocumentReading } from '../fileRead';
+import { admissionRawBytes, planImageFit } from '@/core/llm/imageFit';
+import { pictureCaption } from '../fileRead/imageCaption';
+import { imageLabelBlock } from '../../llm/toolResultImageCaptions';
+import { base64ImageHeaderSize, imageHeaderSize } from '@/utils/imageHeaderSize';
+import { fitPictureWithPython } from '../helpers/pictureFitPython';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
@@ -26,7 +31,7 @@ import { captureTurnFileBefore, snapshotBeforeAiEdit } from '@/utils/aiEditSnaps
 import { formatFileSize } from '@/utils/formatFileSize';
 import { fuzzyFindAndReplace } from '../../skill/fuzzyPatch';
 import { computeFileChange, MAX_COMPARABLE_TEXT_BYTES, type FileChange } from '@/core/files/fileChange';
-import type { ToolFileAccess } from '@/core/tools/fileOperation';
+import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
 import { Minimatch } from 'minimatch';
 import { isToolResultError } from '@/core/agent/toolResultErrors';
 import { recordFileVersion, recordedFileVersion } from '@/core/tools/fileReadRecords';
@@ -101,7 +106,76 @@ pdf = pdfplumber.open(sys.argv[1])
 print(chr(10).join((p.extract_text() or '') for p in pdf.pages))
 pdf.close()`;
 
-export const readFileTool: ToolDefinition = {
+/**
+ * The picture fitted by the one fitting rule (`planImageFit`: the long side at the
+ * admission limit and the encoded size under the per-picture byte limit, a photo
+ * kept a JPEG), as encoded bytes with their media type; null when it is inside both
+ * limits, its size is unknown (svg, a damaged header), the encoder failed, or no
+ * step brought it under the byte limit. In those cases the picture goes as it is and
+ * the send-time check judges it against the route. The size comes from the header,
+ * so a picture is fitted by its dimensions whatever its byte size.
+ *
+ * The plan and the walk over its steps are here, once. Only the encoder of a step
+ * depends on the build: the native `fit-width` operation where the host gives the
+ * tool file access, the bundled Python (`pictureFitPython.ts`) where it does not,
+ * which is the open-source build.
+ */
+async function fitToAdmissionLimit(
+  path: string,
+  bytes: Uint8Array,
+  mediaType: string,
+  context?: ToolExecutionContext,
+): Promise<{ bytes: Uint8Array; mediaType: string } | null> {
+  const size = imageHeaderSize(bytes);
+  if (!size) return null;
+  const steps = planImageFit({ width: size.w, height: size.h, byteLength: bytes.length, mediaType });
+  const limit = admissionRawBytes();
+  for (const step of steps) {
+    // The encoders write PNG unless asked for a JPEG; a JPEG source stays one.
+    const jpeg = step.format === 'jpeg' || (step.format === 'same' && mediaType === 'image/jpeg');
+    let fitted: Uint8Array | null;
+    try {
+      if (context?.files) {
+        const native = await context.files.processImage(path, null, 'fit-width',
+          jpeg ? { width: step.width, format: 'jpeg', quality: step.quality } : { width: step.width });
+        fitted = native instanceof Uint8Array && native.length <= limit ? native : null;
+      } else {
+        const python = await fitPictureWithPython(path, step, limit, context);
+        if (python.status === 'failed') return null;
+        fitted = python.status === 'ok' ? python.bytes : null;
+      }
+    } catch (err) {
+      if (isTaskCommandAbortedError(err) || err instanceof FileOperationDenied) throw err;
+      return null;
+    }
+    if (fitted) {
+      return { bytes: fitted, mediaType: jpeg ? 'image/jpeg' : 'image/png' };
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether reading this picture needs a fit that only the shell can run: no file
+ * access for the tool (so the encoder is the bundled Python, started through
+ * `run_argv_command`) and a plan with steps. The sidecar, which cannot start a
+ * process, hands such a read to the shell before it does any work.
+ */
+export async function readFileNeedsPictureFit(path: string, context?: ToolExecutionContext): Promise<boolean> {
+  const ext = getFileExtension(path);
+  if (context?.files || context?.supportsVision === false || !IMAGE_EXTENSIONS.has(ext) || ext === '.svg') return false;
+  try {
+    const bytes = new Uint8Array(await readBinFile(path));
+    const size = imageHeaderSize(bytes);
+    return Boolean(size) && planImageFit({ width: size!.w, height: size!.h, byteLength: bytes.length, mediaType: IMAGE_MEDIA_TYPES[ext] ?? 'image/png' }).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// PDFs and views of part of a picture are read by fileRead/, which also sets the
+// description and adds pages/region/rotate.
+export const readFileTool: ToolDefinition = withDocumentReading({
   name: TOOL_NAMES.READ_FILE,
   description: 'Read file contents. Supports text files, images (png/jpg/gif/webp — returns visual content), PDFs (text extraction), Office documents (.docx/.xlsx/.pptx — text extraction), and archives (.zip/.tar.gz — lists contents). Text files support offset (start line) and limit (line count) parameters for paginated reading.',
   inputSchema: {
@@ -156,20 +230,22 @@ export const readFileTool: ToolDefinition = {
           return format(getI18n().toolResult.file.imageSkipNoVision, { path: filePath, mediaType });
         }
         const bytes = new Uint8Array(await io.readFile(filePath));
-        const needsNativeResize = Boolean(context?.files && bytes.length > 2 * 1024 * 1024);
-        const resizedBytes = needsNativeResize
-          ? await context!.files!.processImage(filePath, null, 'fit-width', { width: 1280 }) : null;
-        if (needsNativeResize && !(resizedBytes instanceof Uint8Array)) throw new Error('Image processing returned no bytes');
-        const { data, resized } = resizedBytes instanceof Uint8Array
-          ? { data: uint8ArrayToBase64(resizedBytes), resized: true }
-          : await resizeImageIfNeeded(bytes, 1280, context);
-        const sizeKB = Math.round(bytes.length / 1024);
-        const resizeNote = resized ? ' (auto-resized to 1280px width)' : '';
+        const fitted = await fitToAdmissionLimit(filePath, bytes, mediaType, context);
+        const data = uint8ArrayToBase64(fitted?.bytes ?? bytes);
         await recordFileVersion(filePath, await sha256Hex(bytes), context);
 
+        // The caption is the picture's label: the file's own size and the size
+        // shown (smaller when the picture was resized above) tell the model what
+        // detail it may have lost.
+        const caption = pictureCaption({
+          fileName: getBaseName(filePath),
+          original: imageHeaderSize(bytes),
+          shown: fitted ? base64ImageHeaderSize(data) : imageHeaderSize(bytes),
+          zoomNote: true,
+        });
         return [
-          { type: 'text', text: `Image: ${filePath} (${sizeKB}KB, ${mediaType})${resizeNote}` },
-          { type: 'image', source: { type: 'base64', media_type: resizedBytes ? 'image/png' : mediaType, data } },
+          imageLabelBlock(caption),
+          { type: 'image', source: { type: 'base64', media_type: fitted?.mediaType ?? mediaType, data } },
         ] as ToolResultContent[];
       }
 
@@ -282,7 +358,7 @@ export const readFileTool: ToolDefinition = {
     }
   },
   isConcurrencySafe: true,
-};
+});
 
 /**
  * Ensure an HTML document declares UTF-8 so browsers/webviews don't fall back to a

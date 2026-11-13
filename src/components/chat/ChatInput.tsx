@@ -75,6 +75,7 @@ import type { ImageAttachment } from '@/types';
 import { generateAttachmentId, SUPPORTED_IMAGE_TYPES, sniffImageMediaType, IMAGE_MAGIC_PREFIX_BYTES } from '@/utils/imageUtils';
 import { fitImageToDimension } from '@/utils/imageCompress';
 import { admissionMaxDimension } from '@/core/llm/imagePolicy';
+import { admissionRawBytes } from '@/core/llm/imageFit';
 import PermissionDialog from '@/components/common/PermissionDialog';
 import FolderSelector from '@/components/common/FolderSelector';
 import PromoteToProjectHint from '@/components/chat/PromoteToProjectHint';
@@ -301,7 +302,7 @@ async function admitImage(
   bytes: Uint8Array,
   mediaType: ImageAttachment['mediaType'],
 ): Promise<ImageAttachment> {
-  const fitted = await fitImageToDimension({ bytes, mediaType }, admissionMaxDimension());
+  const fitted = await fitImageToDimension({ bytes, mediaType }, admissionMaxDimension(), admissionRawBytes());
   return {
     id: generateAttachmentId(),
     data: uint8ArrayToBase64(fitted.bytes),

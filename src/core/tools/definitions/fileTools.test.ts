@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { invoke } from '@tauri-apps/api/core';
-import { writeTextFile, readTextFile, exists, stat } from '@tauri-apps/plugin-fs';
+import { writeTextFile, readTextFile, readFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { readFileTool, writeFileTool, deleteFileTool, editFileTool, searchFilesTool, findFilesTool, checkOpenDocumentTool } from './fileTools';
 import { registerBuiltinTools } from '../builtins';
 import { toolRegistry } from '../registry';
@@ -8,6 +8,7 @@ import { platform } from '@tauri-apps/plugin-os';
 import { initPlatform } from '../../../utils/platform';
 import { TOOL_NAMES } from '../toolNames';
 import { recordFileVersion } from '../fileReadRecords';
+import { PICTURE_ZOOM_NOTE } from '../fileRead/imageCaption';
 import { sha256Hex } from '@/core/session/turnUndoRecord';
 import type { ToolExecutionContext } from '@/types';
 
@@ -60,6 +61,21 @@ afterEach(() => {
   }).__ABU_SHELL__;
 });
 
+/** A probe answer as the command host returns it. */
+function probeOutput(value: Record<string, unknown>) {
+  return { code: 0, stdout: JSON.stringify(value), stderr: '' };
+}
+
+/** A pdf-read answer for one page with an intact text layer. */
+function onePagePdf(text = 'page text') {
+  return probeOutput({
+    ok: true, pages: 1, unexamined_from: null, text_cut_at: null, seconds: 0.1,
+    list: [{ n: 1, w: 595, h: 842, chars: 900, garbled: false, ocr: false, images: 0, image_share: 0, paths: 2, text }],
+  });
+}
+
+const PYTHON_MISSING = { code: 127, stdout: '', stderr: 'python3: command not found' };
+
 describe('readFileTool — PDF shell injection regression', () => {
   beforeEach(() => {
     vi.mocked(invoke).mockReset();
@@ -70,27 +86,29 @@ describe('readFileTool — PDF shell injection regression', () => {
     vi.mocked(exists).mockResolvedValue(false);
   });
 
-  it('pdftotext strategy: dispatches run_argv_command with filePath as a raw argv element', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({
-      code: 0,
-      stdout: 'extracted text',
-      stderr: '',
-    });
+  it('document probe: dispatches run_argv_command with the file path as the last raw argv element', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(onePagePdf('extracted text'));
 
     const result = await readFileTool.execute({ path: EVIL_PDF_QUOTE });
 
-    expect(result).toBe('extracted text');
+    expect(String(result)).toContain('[PDF: 1 page]');
+    expect(String(result)).toContain('--- Page 1 ---\nextracted text');
     expect(invoke).toHaveBeenCalledTimes(1);
 
     const [cmdName, payload] = firstCall();
     expect(cmdName).toBe('run_argv_command');
-    expect(payload.program).toBe('pdftotext');
-    // Critical: the evil path is the first argv element, unescaped, untouched.
-    expect(payload.args).toEqual([EVIL_PDF_QUOTE, '-']);
+    expect(payload.program).toBe('python3');
+    expect(payload.args[0]).toBe('-c');
+    // The program text never carries the path; the operation and its options
+    // are separate elements; the path is the last element, unescaped.
+    expect(payload.args[1]).not.toContain(EVIL_PDF_QUOTE);
+    expect(payload.args[2]).toBe('pdf-read');
+    expect(JSON.parse(payload.args[3])).toMatchObject({ render: true });
+    expect(payload.args[4]).toBe(EVIL_PDF_QUOTE);
     expect(payload).not.toHaveProperty('commandId');
   });
 
-  it('routes task aborts to abort_command for the active PDF extractor process in Electron', async () => {
+  it('routes task aborts to abort_command for the active PDF reader process in Electron', async () => {
     const runtime = globalThis as typeof globalThis & {
       __ABU_SHELL__?: { mainSupervisesSidecar?: boolean };
     };
@@ -115,7 +133,7 @@ describe('readFileTool — PDF shell injection regression', () => {
     await vi.waitFor(() => {
       expect(invoke).toHaveBeenCalledWith(
         'run_argv_command',
-        expect.objectContaining({ program: 'pdftotext', commandId: expect.stringMatching(/^read-pdf-/) }),
+        expect.objectContaining({ program: 'python3', commandId: expect.stringMatching(/^read-pdf-/) }),
       );
     });
     const [, payload] = firstCall() as unknown as [string, InvokePayload & { commandId: string }];
@@ -128,41 +146,40 @@ describe('readFileTool — PDF shell injection regression', () => {
     resolveCommand({ code: -1, stdout: '', stderr: '[Command aborted]' });
     const result = await running;
     expect(String(result)).toContain('PDF extraction was aborted');
+    // An aborted read starts no fallback extractor.
+    expect(vi.mocked(invoke).mock.calls.filter(([cmd]) => cmd === 'run_argv_command')).toHaveLength(1);
   });
 
-  it('falls back to pdfplumber when pdftotext fails — still argv, still verbatim', async () => {
-    // Strategy 1 (pdftotext) returns empty stdout → strategy 2 (pdfplumber) fires
+  it('falls back to pdftotext, then pdfplumber, only when Python cannot run — still argv, still verbatim', async () => {
     vi.mocked(invoke)
+      .mockResolvedValueOnce(PYTHON_MISSING)
       .mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'pdftotext not installed' })
       .mockResolvedValueOnce({ code: 0, stdout: 'plumber text', stderr: '' });
 
-    const result = await readFileTool.execute({ path: EVIL_PDF_DOLLAR });
+    const result = String(await readFileTool.execute({ path: EVIL_PDF_DOLLAR }));
 
-    expect(result).toBe('plumber text');
-    expect(invoke).toHaveBeenCalledTimes(2);
+    // The fallback says what was not examined.
+    expect(result).toMatch(/^\[Text only: the document reader \(the bundled Python\) could not run/);
+    expect(result.endsWith('plumber text')).toBe(true);
+    expect(invoke).toHaveBeenCalledTimes(3);
 
-    // First call: pdftotext with argv
-    const [cmd1, payload1] = firstCall();
+    const [cmd1, payload1] = nthCall(1);
     expect(cmd1).toBe('run_argv_command');
     expect(payload1.program).toBe('pdftotext');
     expect(payload1.args).toEqual([EVIL_PDF_DOLLAR, '-']);
 
-    // Second call: python3 with pdfplumber, file path is sys.argv[1]
-    const [cmd2, payload2] = nthCall(1);
+    const [cmd2, payload2] = nthCall(2);
     expect(cmd2).toBe('run_argv_command');
     expect(payload2.program).toBe('python3');
     expect(payload2.args[0]).toBe('-c');
-    // The Python source is the second element — it must NOT contain the
-    // file path (that would mean string interpolation is back)
     expect(payload2.args[1]).not.toContain(EVIL_PDF_DOLLAR);
     expect(payload2.args[1]).not.toContain('$(');
     expect(payload2.args[1]).toContain('sys.argv[1]');
-    // File path must be passed as a separate argv element
     expect(payload2.args[2]).toBe(EVIL_PDF_DOLLAR);
   });
 
   it('never dispatches run_shell_command when reading a PDF', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'x', stderr: '' });
+    vi.mocked(invoke).mockResolvedValueOnce(onePagePdf());
     await readFileTool.execute({ path: EVIL_PDF_BACKTICK });
 
     const shellCalls = vi
@@ -172,21 +189,58 @@ describe('readFileTool — PDF shell injection regression', () => {
   });
 
   it('PDFPLUMBER_SCRIPT does not contain any shell metacharacter interpolation', async () => {
-    // Observe the script by triggering the fallback branch
+    // Observe the script by triggering the last fallback
     vi.mocked(invoke)
+      .mockResolvedValueOnce(PYTHON_MISSING)
       .mockResolvedValueOnce({ code: 1, stdout: '', stderr: '' })
       .mockResolvedValueOnce({ code: 0, stdout: 'ok', stderr: '' });
 
     await readFileTool.execute({ path: '/tmp/benign.pdf' });
 
-    const [, payload] = nthCall(1);
+    const [, payload] = nthCall(2);
     const script = payload.args[1];
-    // Defensive: script must not contain template-literal escape holes
     expect(script).not.toContain('${');
     expect(script).not.toContain('$(');
     expect(script).not.toMatch(/`[^`]*`/);
-    // Script must actually read from argv
     expect(script).toContain('sys.argv[1]');
+  });
+
+  it('gives the install hint only when Python could not run', async () => {
+    vi.mocked(invoke).mockResolvedValue({ code: 127, stdout: '', stderr: 'python3: command not found' });
+    const missing = String(await readFileTool.execute({ path: '/tmp/a.pdf' }));
+    expect(missing).toMatch(/Install|install/);
+
+    vi.mocked(invoke).mockReset()
+      .mockResolvedValueOnce({ code: 1, stdout: '', stderr: 'Segmentation fault' })
+      .mockResolvedValue({ code: 1, stdout: '', stderr: '' });
+    const crashed = String(await readFileTool.execute({ path: '/tmp/a.pdf' }));
+    expect(crashed).toMatch(/^Error: The PDF reader stopped before finishing \(Segmentation fault\)/);
+    expect(crashed).not.toMatch(/install/i);
+  });
+
+  it('reports a password-protected PDF as such, without a fallback', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(probeOutput({ ok: false, error: 'RuntimeError', message: 'password-protected' }));
+    const result = String(await readFileTool.execute({ path: '/tmp/locked.pdf' }));
+    expect(result).toMatch(/^Error: This PDF is password-protected/);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes pages as ranges and refuses a malformed one before running anything', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(onePagePdf());
+    await readFileTool.execute({ path: '/tmp/a.pdf', pages: '3-7, 9, 12-' });
+    const [, payload] = vi.mocked(invoke).mock.calls.find(([cmd]) => cmd === 'run_argv_command') as [string, InvokePayload];
+    expect(JSON.parse(payload.args[3]).pages).toEqual([[3, 7], [9, 9], [12, null]]);
+
+    vi.mocked(invoke).mockReset();
+    const result = String(await readFileTool.execute({ path: '/tmp/a.pdf', pages: 'first page' }));
+    expect(result).toMatch(/^Error: pages could not be read/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('attaches no page images and asks for none when the model cannot see them', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(onePagePdf());
+    await readFileTool.execute({ path: '/tmp/a.pdf' }, { supportsVision: false });
+    expect(JSON.parse(firstCall()[1].args[3]).render).toBe(false);
   });
 });
 
@@ -224,6 +278,52 @@ describe('readFileTool — non-vision model image gating', () => {
     // did NOT take the non-vision shortcut.
     const result = await readFileTool.execute({ path: '/tmp/图片.png' });
     expect(String(result)).not.toContain('no vision capability');
+  });
+});
+
+describe('readFileTool: a plain picture read labels the picture', () => {
+  /** A PNG header that declares its size. */
+  const png = (w: number, h: number) => {
+    const bytes = new Uint8Array(33);
+    bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+    new DataView(bytes.buffer).setUint32(16, w);
+    new DataView(bytes.buffer).setUint32(20, h);
+    return bytes;
+  };
+
+  it('puts one label block before the image: the file name, its pixel size and how to look closer', async () => {
+    vi.mocked(exists).mockResolvedValue(true);
+    vi.mocked(readFile).mockResolvedValueOnce(png(640, 480));
+    try {
+      const result = await readFileTool.execute({ path: '/tmp/work/photo.png' }, {});
+      expect(result).toEqual([
+        { type: 'text', text: `[Image: photo.png (640×480 px), shown at 640×480 px. ${PICTURE_ZOOM_NOTE}]` },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: expect.any(String) } },
+      ]);
+      expect(JSON.stringify(result)).not.toContain('/tmp/work');
+    } finally {
+      vi.mocked(exists).mockResolvedValue(false);
+    }
+  });
+
+  it('gives the size of the copy the model sees when the picture was scaled down', async () => {
+    vi.mocked(exists).mockResolvedValue(true);
+    // Over 2 MB, which read_file hands to the native resizer.
+    const original = new Uint8Array(3 * 1024 * 1024);
+    original.set(png(4000, 3000));
+    const processImage = vi.fn().mockResolvedValue(png(1280, 960));
+    const files = {
+      readFile: vi.fn().mockResolvedValue(original),
+      exists: vi.fn().mockResolvedValue(true),
+      stat: vi.fn().mockResolvedValue({ size: original.length, isFile: true, isDirectory: false }),
+      processImage,
+    } as unknown as ToolExecutionContext['files'];
+    try {
+      const result = await readFileTool.execute({ path: '/tmp/work/big.png' }, { files });
+      expect(Array.isArray(result) && result[0]).toEqual({ type: 'text', text: `[Image: big.png (4000×3000 px), shown at 1280×960 px. ${PICTURE_ZOOM_NOTE}]` });
+    } finally {
+      vi.mocked(exists).mockResolvedValue(false);
+    }
   });
 });
 
@@ -1177,11 +1277,23 @@ describe('file read outcome record', () => {
   });
 
   it('records a document for extracted PDF text', async () => {
-    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: 'page text', stderr: '' });
+    vi.mocked(invoke).mockResolvedValueOnce(onePagePdf());
 
     const result = await readFileTool.execute({ path: '/docs/report.pdf' }, { reportMetadata });
 
-    expect(result).toBe('page text');
+    expect(String(result)).toContain('--- Page 1 ---\npage text');
+    expect(reportMetadata).toHaveBeenCalledWith({ fileReadOutcome: { kind: 'document' } });
+  });
+
+  it('records a document for a PDF read that attaches page images', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce(probeOutput({
+      ok: true, pages: 1, unexamined_from: null, text_cut_at: null, seconds: 0.1,
+      list: [{ n: 1, w: 595, h: 842, chars: 0, garbled: false, ocr: false, images: 1, image_share: 1, paths: 0, text: '', img: { data: 'AAAA', w: 10, h: 14 } }],
+    }));
+
+    const result = await readFileTool.execute({ path: '/docs/scan.pdf' }, { reportMetadata });
+
+    expect(Array.isArray(result)).toBe(true);
     expect(reportMetadata).toHaveBeenCalledWith({ fileReadOutcome: { kind: 'document' } });
   });
 

@@ -5402,6 +5402,17 @@ export interface TranslationDict {
       /** Update failed. {error} */
       updateFailed: string;
     };
+    // read_file's reading of PDFs and views of pictures
+    fileRead: {
+      /** The PDF needs a password to open. */
+      pdfPasswordProtected: string;
+      /** The PDF reader could not open the file. {detail} */
+      pdfDamaged: string;
+      /** The file is over the document reader's input limit. {name}, {size}, {limit} */
+      tooLarge: string;
+      /** A picture file the viewer could not open. {detail} */
+      pictureUnopenable: string;
+    };
     // read_file / write_file / edit_file
     file: {
       /** Non-vision model image skip note. {path}, {mediaType} */

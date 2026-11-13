@@ -2,6 +2,7 @@ import type { ChatOptions, LLMAdapter } from './adapter';
 import { LLMError, classifyError, isContextOverflowMessage } from './adapter';
 import type { Message, StreamEvent, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
+import { imageAcceptanceLimits } from './imagePolicy';
 import { normalizeMessages, type PreparedContentBlock, type PreparedTurn } from './messageNormalizer';
 import {
   createHeartbeat,
@@ -14,7 +15,8 @@ import {
 import { createDefaultUsageRecorder, type UsageAttemptRecorder } from './usageRecorder';
 import { createTextToolCallParser, type TextSegment, type TextToolCall } from './textToolCalls';
 import { ollamaApiRoot } from './contextWindowProbe';
-import { DOCUMENT_UNSUPPORTED_NOTE, TOOL_RESULT_IMAGES_NOTE } from './openai-compatible';
+import { DOCUMENT_UNSUPPORTED_NOTE } from './openai-compatible';
+import { captionedToolResultImages } from './toolResultImageCaptions';
 
 interface OllamaToolCall {
   id?: string;
@@ -72,12 +74,18 @@ export function toOllamaMessages(turns: PreparedTurn[], systemPrompt?: string, v
       assistant.tool_calls = turn.toolCalls.map((call) => ({ id: call.id, function: { name: call.name, arguments: call.input } }));
     }
     result.push(assistant);
-    const images: string[] = [];
     for (const call of turn.toolCalls) {
       result.push({ role: 'tool', content: call.result, tool_name: call.name, tool_call_id: call.id });
-      images.push(...call.resultImages.map((image) => image.data));
     }
-    if (images.length > 0) result.push({ role: 'user', content: TOOL_RESULT_IMAGES_NOTE, images });
+    // Ollama takes a message's images as one list: the captions name them in the same order.
+    const { note, images } = captionedToolResultImages(turn.toolCalls);
+    if (images.length > 0) {
+      result.push({
+        role: 'user',
+        content: [note, ...images.map(({ caption }) => caption)].join('\n'),
+        images: images.map(({ image }) => image.data),
+      });
+    }
   }
   if (volatileTail) result.push({ role: 'user', content: volatileTail });
   return result;
@@ -138,7 +146,10 @@ export class OllamaNativeAdapter implements LLMAdapter {
       throw new LLMError('Ollama request is missing its address', 'invalid_request', { retryable: false });
     }
     const hasTools = !!options.tools?.length && options.declaredCapabilities?.supportsTools !== false;
-    const turns = normalizeMessages(messages, { supportsVision: options.supportsVision !== false });
+    const turns = normalizeMessages(messages, {
+      supportsVision: options.supportsVision !== false,
+      ...imageAcceptanceLimits(options.model),
+    });
     const body: Record<string, unknown> = {
       model: options.model,
       messages: toOllamaMessages(turns, options.systemPrompt, options.volatileContextTail),

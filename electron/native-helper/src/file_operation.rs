@@ -602,7 +602,12 @@ impl Session {
         let input_format = reader.format().ok_or_else(refused)?;
         let output_format = match operation {
             "compress" => image::ImageFormat::Jpeg,
-            "fit-width" => image::ImageFormat::Png,
+            // PNG, or JPEG when asked (`format`), so a photograph is not turned into a larger PNG.
+            "fit-width" => match options.get("format").map(|value| value.as_str().ok_or_else(refused)).transpose()? {
+                None | Some("png") => image::ImageFormat::Png,
+                Some("jpeg") => image::ImageFormat::Jpeg,
+                Some(_) => return Err(refused()),
+            },
             "convert" => match options.get("format").map(|value| value.as_str().ok_or_else(refused)).transpose()?
                 .unwrap_or("png").to_ascii_lowercase().as_str() {
                 "png" => image::ImageFormat::Png, "jpeg" | "jpg" => image::ImageFormat::Jpeg,

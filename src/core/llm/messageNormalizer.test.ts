@@ -423,6 +423,20 @@ describe('messageNormalizer', () => {
         }
       });
 
+      it('carries the label block right before an image, and no label for other text', () => {
+        const call = (resultContent: Message['toolCalls'] extends (infer T)[] | undefined ? T extends { resultContent?: infer R } ? R : never : never) => makeMessage({
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'tc1', name: 'read_file', input: {}, result: 'r', resultContent }],
+        });
+        const image = { type: 'image' as const, source: { type: 'base64' as const, media_type: 'image/png', data: 'abc123' } };
+        const labeled = normalizeMessages([call([{ type: 'text', text: 'manifest' }, { type: 'text', text: '[Page 2 of a.pdf, whole page]' }, image])]);
+        const unlabeled = normalizeMessages([call([{ type: 'text', text: 'Screenshot: 1280x800 px' }, image])]);
+        const image0 = (turns: ReturnType<typeof normalizeMessages>) => (turns[0].kind === 'assistant' ? turns[0].toolCalls[0].resultImages[0] : undefined);
+        expect(image0(labeled)).toEqual({ mediaType: 'image/png', data: 'abc123', label: 'Page 2 of a.pdf, whole page' });
+        expect(image0(unlabeled)).toEqual({ mediaType: 'image/png', data: 'abc123' });
+      });
+
       it('strips images when supportsVision is false', () => {
         const messages: Message[] = [
           makeMessage({

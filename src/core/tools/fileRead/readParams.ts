@@ -2,7 +2,7 @@ import type { Region } from './documentProbe';
 
 /**
  * The optional read_file parameters that look into documents and pictures:
- * `pages` (PDF), and `region` and `rotate` (a PDF page or a picture).
+ * `pages` and `text_offset` (PDF), and `region` and `rotate` (a PDF page or a picture).
  *
  * Models pass numbers as strings and objects as JSON text often enough that
  * every parser accepts both.
@@ -17,6 +17,8 @@ export interface DocumentReadParams {
   pages: PageRanges | null;
   region: Region | null;
   rotate: Rotation;
+  /** Characters of the first page's text to skip: reads on from where the last read of a long page stopped. */
+  textOffset: number;
 }
 
 type Parsed<T> = T | { error: string };
@@ -97,7 +99,9 @@ export function parseDocumentReadParams(input: Record<string, unknown>): Parsed<
   if (isError(region)) return region;
   const rotate = parseRotation(input.rotate);
   if (isError(rotate)) return rotate;
-  return { pages, region, rotate };
+  const textOffset = parseTextOffset(input.text_offset);
+  if (isError(textOffset)) return textOffset;
+  return { pages, region, rotate, textOffset };
 }
 
 /** Whether a call asks for a closer view (a region or a turn) rather than a plain read. */
@@ -110,6 +114,15 @@ export function singlePage(ranges: PageRanges | null): number | null {
   if (!ranges || ranges.length !== 1) return null;
   const [start, end] = ranges[0];
   return end === start ? start : null;
+}
+
+/** "100000" or a number: a count of characters, 0 or more. */
+export function parseTextOffset(spec: unknown): Parsed<number> {
+  if (spec === undefined || spec === null || spec === '') return 0;
+  const value = typeof spec === 'string' && /^\s*\d+\s*$/.test(spec) ? Number(spec) : spec;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value
+    : { error: `text_offset must be a number of characters, 0 or more, got ${JSON.stringify(spec)}` };
 }
 
 /** "1–6, 9, 12–14" */

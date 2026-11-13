@@ -1,7 +1,7 @@
 {
   "url": "https://api.anthropic.com/v1/messages",
   "body": {
-    "model": "claude-opus-5-5",
+    "model": "claude-opus-4-8",
     "max_tokens": 32768,
     "messages": [
       {
@@ -27,10 +27,26 @@
         }
       }
     ],
-    "temperature": 1,
-    "thinking": {
-      "type": "enabled",
-      "budget_tokens": 4096
-    }
+    "tools": [
+      {
+        "name": "read_file",
+        "description": "Read a file",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "description": "Path to file"
+            }
+          },
+          "required": [
+            "path"
+          ]
+        },
+        "cache_control": {
+          "type": "ephemeral"
+        }
+      }
+    ]
   }
 }

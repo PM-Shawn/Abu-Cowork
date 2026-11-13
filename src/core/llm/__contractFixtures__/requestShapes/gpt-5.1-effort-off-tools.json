@@ -1,0 +1,43 @@
+{
+  "url": "https://api.openai.com/v1/chat/completions",
+  "body": {
+    "model": "gpt-5.1",
+    "messages": [
+      {
+        "role": "system",
+        "content": "You are Abu."
+      },
+      {
+        "role": "user",
+        "content": "hi"
+      }
+    ],
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "reasoning_effort": "none",
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to file"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ],
+    "max_completion_tokens": 50000
+  }
+}

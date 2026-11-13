@@ -30,6 +30,9 @@ import { OpenAICompatibleAdapter } from './openai-compatible';
 import { ClaudeAdapter } from './claude';
 import { recordCapabilityRejection, resetRejectionMemory } from './rejectionMemory';
 import { computeReasoningParams, resolveCapabilities } from './modelCapabilities';
+import { resolveThinkingPick } from './modelProfile';
+import type { AdapterKind } from './adapter';
+import type { DeclaredCapabilities } from '../../types/provider';
 import { resolveModelDeclared } from './resolveModelDeclared';
 
 const FIXED_TIMESTAMP = 1_700_000_000_000;
@@ -131,6 +134,22 @@ async function recordClaude(messages: Message[], options: ChatOptions): Promise<
   return JSON.stringify({ url: String(url), body: JSON.parse(init.body) }, null, 2) + '\n';
 }
 
+/**
+ * What the agent loop hands an adapter for a model: the capabilities' reasoning params computed
+ * with the user's pick, the pick being kept only where the model's control carries it.
+ */
+function agentOptions(
+  modelId: string,
+  adapter: AdapterKind,
+  declared: DeclaredCapabilities | undefined,
+  baseUrl?: string,
+): Pick<ChatOptions, 'maxTokens' | 'enableThinking' | 'thinkingBudget' | 'reasoningEffort' | 'declaredCapabilities'> {
+  const caps = resolveCapabilities(modelId);
+  const pick = resolveThinkingPick({ modelId, declared, adapter, baseUrl });
+  const params = computeReasoningParams(caps, 32768, 200000, pick);
+  return { ...params, declaredCapabilities: declared };
+}
+
 const fixture = (name: string) => `./__contractFixtures__/requestShapes/${name}.json`;
 
 describe('request shapes by model family', () => {
@@ -155,6 +174,30 @@ describe('request shapes by model family', () => {
         maxTokens: 8192, reasoningEffort: 'medium', systemPrompt: 'You are Abu.',
       });
       await expect(body).toMatchFileSnapshot(fixture('gpt-5.5-no-tools-official'));
+    });
+
+    describe('with the user\'s thinking effort (agent turns carry tools)', () => {
+      const gptBody = (model: string, effort: 'off' | 'low' | 'high' | 'max', withTools: boolean) => recordOpenAI([user('m1', 'hi')], {
+        model, apiKey: 'k', baseUrl: 'https://api.openai.com/v1',
+        ...(withTools ? { tools: [readFileTool] } : {}), systemPrompt: 'You are Abu.',
+        ...agentOptions(model, 'openai-compatible', { supportsReasoning: true, thinkingEffort: effort }, 'https://api.openai.com/v1'),
+      });
+
+      it('gpt-5.1, off: reasoning_effort none (the model has it; low would still think)', async () => {
+        await expect(await gptBody('gpt-5.1', 'off', true)).toMatchFileSnapshot(fixture('gpt-5.1-effort-off-tools'));
+      });
+      it('gpt-5.2, max: reasoning_effort xhigh', async () => {
+        await expect(await gptBody('gpt-5.2', 'max', true)).toMatchFileSnapshot(fixture('gpt-5.2-effort-max-tools'));
+      });
+      it('gpt-5.1, max is not offered (no xhigh): the stored pick is dropped, the default medium stays', async () => {
+        const body = await gptBody('gpt-5.1', 'max', true);
+        expect(JSON.parse(body).body.reasoning_effort).toBe('medium');
+      });
+      it('gpt-5.5 with tools: the endpoint takes no reasoning_effort next to tools, so no level is offered and none is sent', async () => {
+        const body = JSON.parse(await gptBody('gpt-5.5', 'max', true)).body;
+        expect(body.reasoning_effort).toBeUndefined();
+        expect(resolveThinkingPick({ modelId: 'gpt-5.5', adapter: 'openai-compatible', declared: { thinkingEffort: 'max' } })).toBeUndefined();
+      });
     });
 
     it('gpt-4o replays a tool turn with an image result', async () => {
@@ -182,7 +225,10 @@ describe('request shapes by model family', () => {
       model: 'deepseek-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com/v1',
       tools: [readFileTool], supportsVision: false,
       // What the agent loop hands the adapter: the reasoning params computed with the pick.
-      ...computeReasoningParams(resolveCapabilities('deepseek-flash'), 8192, undefined, thinkingEffort),
+      ...computeReasoningParams(
+        resolveCapabilities('deepseek-flash'), 8192, undefined,
+        resolveThinkingPick({ modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', adapter: 'openai-compatible', declared: { supportsReasoning: true, thinkingEffort } }),
+      ),
       maxTokens: 8192,
       declaredCapabilities: { supportsTools: true, supportsReasoning: true, thinkingEffort },
     });
@@ -215,7 +261,10 @@ describe('request shapes by model family', () => {
         return {
           model: 'deepseek-flash', apiKey: 'k', baseUrl: 'https://api.deepseek.com/v1',
           tools: [readFileTool], supportsVision: false,
-          ...computeReasoningParams(resolveCapabilities('deepseek-flash'), 8192, undefined, declared?.thinkingEffort),
+          ...computeReasoningParams(
+            resolveCapabilities('deepseek-flash'), 8192, undefined,
+            resolveThinkingPick({ modelId: 'deepseek-flash', requestHost: 'api.deepseek.com', adapter: 'openai-compatible', declared }),
+          ),
           maxTokens: 8192,
           declaredCapabilities: declared,
         };
@@ -374,22 +423,39 @@ describe('request shapes by model family', () => {
       await expect(body).toMatchFileSnapshot(fixture('claude-sections-tools-thinking-history'));
     });
 
-    it('thinking effort low: a 4096-token budget under the same max_tokens', async () => {
-      const body = await recordClaude([user('m1', 'hi')], {
-        model: 'claude-opus-5-5', apiKey: 'k', systemPrompt: 'You are Abu.',
-        ...computeReasoningParams(resolveCapabilities('claude-opus-4-8'), 32768, 200000, 'low'),
-        declaredCapabilities: { supportsReasoning: true, thinkingEffort: 'low' },
+    describe('thinking effort, by how the model is steered', () => {
+      const claudeBody = (model: string, effort: 'off' | 'low' | 'high' | 'max' | undefined, withTools = true) => recordClaude([user('m1', 'hi')], {
+        model, apiKey: 'k', systemPrompt: 'You are Abu.',
+        ...(withTools ? { tools: [readFileTool] } : {}),
+        ...agentOptions(model, 'claude', effort ? { supportsReasoning: true, thinkingEffort: effort } : undefined),
       });
-      await expect(body).toMatchFileSnapshot(fixture('claude-effort-low'));
-    });
 
-    it('thinking effort off: no thinking block and no forced temperature', async () => {
-      const body = await recordClaude([user('m1', 'hi')], {
-        model: 'claude-opus-5-5', apiKey: 'k', systemPrompt: 'You are Abu.',
-        ...computeReasoningParams(resolveCapabilities('claude-opus-4-8'), 32768, 200000, 'off'),
-        declaredCapabilities: { supportsReasoning: true, thinkingEffort: 'off' },
+      it('budget model (sonnet 4.5), low: a 4096-token budget', async () => {
+        await expect(await claudeBody('claude-sonnet-4-5', 'low')).toMatchFileSnapshot(fixture('claude-sonnet-4-5-effort-low'));
       });
-      await expect(body).toMatchFileSnapshot(fixture('claude-effort-off'));
+      it('budget model, off: no thinking block and no forced temperature', async () => {
+        await expect(await claudeBody('claude-sonnet-4-5', 'off')).toMatchFileSnapshot(fixture('claude-sonnet-4-5-effort-off'));
+      });
+      it('always-on adaptive model (fable 5), low: adaptive thinking with the depth in output_config.effort, no budget', async () => {
+        await expect(await claudeBody('claude-fable-5', 'low')).toMatchFileSnapshot(fixture('claude-fable-5-effort-low'));
+      });
+      it('fable 5, max', async () => {
+        await expect(await claudeBody('claude-fable-5', 'max')).toMatchFileSnapshot(fixture('claude-fable-5-effort-max'));
+      });
+      it('fable 5, off is not offered: the stored pick is dropped and the request is the default one', async () => {
+        const dropped = await claudeBody('claude-fable-5', 'off');
+        mockFetch.mockClear();
+        expect(dropped).toBe(await claudeBody('claude-fable-5', undefined));
+      });
+      it('default-on adaptive model (opus 5), off: thinking disabled', async () => {
+        await expect(await claudeBody('claude-opus-5', 'off')).toMatchFileSnapshot(fixture('claude-opus-5-effort-off'));
+      });
+      it('opus 5, high: adaptive with effort high', async () => {
+        await expect(await claudeBody('claude-opus-5', 'high')).toMatchFileSnapshot(fixture('claude-opus-5-effort-high'));
+      });
+      it('opus 4.8 (thinks only when asked), off: no thinking field at all', async () => {
+        await expect(await claudeBody('claude-opus-4-8', 'off')).toMatchFileSnapshot(fixture('claude-opus-4-8-effort-off'));
+      });
     });
 
     it('plain system prompt with temperature', async () => {

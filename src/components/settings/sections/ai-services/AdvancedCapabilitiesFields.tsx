@@ -7,7 +7,7 @@ import { formatContextLength, positiveInteger, type ResolvedContextWindow } from
 import { toggleEffort } from './providerCapabilities';
 import ThinkingEffortSelect from './ThinkingEffortSelect';
 import type { ApiFormat } from '@/types';
-import type { ModelDeclaredCapabilities } from '@/types/provider';
+import type { ModelDeclaredCapabilities, ThinkingEffort } from '@/types/provider';
 
 /** Advanced capabilities editor (per-model declared capabilities) shared by AddProviderModal
  *  and ProviderCard so the add / edit forms never drift apart. The caller decides
@@ -19,12 +19,15 @@ export default function AdvancedCapabilitiesFields({
   setDeclared,
   apiFormat,
   contextWindow,
+  thinkingEfforts,
 }: {
   declared: ModelDeclaredCapabilities;
   setDeclared: Dispatch<SetStateAction<ModelDeclaredCapabilities>>;
   apiFormat: ApiFormat;
   /** Model capacity and the default limit, resolved without the user's override. */
   contextWindow: ResolvedContextWindow;
+  /** The levels the model carries (`offeredThinkingEffortsFor`); none: the row is not shown. Unset: all four. */
+  thinkingEfforts?: readonly ThinkingEffort[];
 }) {
   const { t } = useI18n();
   const fieldId = useId();
@@ -75,16 +78,17 @@ export default function AdvancedCapabilitiesFields({
                 ))}
               </div>
             )}
-            <div className="space-y-1">
+            {thinkingEfforts?.length !== 0 && <div className="space-y-1">
               <div className="flex items-center gap-3">
                 <span className="text-ui text-label-secondary">{t.settings.capThinkingEffort}</span>
                 <ThinkingEffortSelect
                   value={declared.thinkingEffort}
                   onChange={(thinkingEffort) => setDeclared(d => ({ ...d, thinkingEffort }))}
+                  efforts={thinkingEfforts}
                 />
               </div>
               <div className="text-ui-sm text-label-tertiary">{t.settings.capThinkingEffortHint}</div>
-            </div>
+            </div>}
           </div>
         )}
         <div className="grid grid-cols-2 gap-2 pt-1">

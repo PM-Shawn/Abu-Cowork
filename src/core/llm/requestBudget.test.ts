@@ -50,15 +50,31 @@ describe('resolveRequestBudget', () => {
   });
 
   it('carries the thinking effort picked for the model into the reasoning params', () => {
+    const claudeProvider = (declaredCapabilities?: { thinkingEffort: 'off' | 'low' }): ProviderInstance => ({
+      ...provider,
+      apiFormat: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      models: [{ id: 'claude-sonnet-4-5', label: 'Model', declaredCapabilities }],
+    });
+    const claude: ModelCapabilities = { ...caps, thinking: 'anthropic', maxOutputTokens: 32_768 };
+    const settings = { contextWindowSize: 200_000, maxOutputTokens: 4096 };
+
+    expect(resolveRequestBudget('claude-sonnet-4-5', claude, claudeProvider(), settings).reasoningParams)
+      .toMatchObject({ enableThinking: true, thinkingBudget: 10000 });
+    expect(resolveRequestBudget('claude-sonnet-4-5', claude, claudeProvider({ thinkingEffort: 'off' }), settings).reasoningParams.enableThinking).toBe(false);
+    const low = resolveRequestBudget('claude-sonnet-4-5', claude, claudeProvider({ thinkingEffort: 'low' }), settings);
+    expect(low.reasoningParams).toMatchObject({ enableThinking: true, thinkingBudget: 4096, maxTokens: 32_768 });
+    expect(low.thinkingPick).toEqual({ effort: 'low', control: { kind: 'anthropic-budget' } });
+  });
+
+  it('drops a pick the model does not carry instead of sending something else', () => {
     const picked: ProviderInstance = {
       ...provider,
       models: [{ id: 'gpt-4o', label: 'Model', contextWindow: 128_000, declaredCapabilities: { thinkingEffort: 'off' } }],
     };
-    const claude: ModelCapabilities = { ...caps, thinking: 'anthropic' };
-    const settings = { contextWindowSize: 200_000, maxOutputTokens: 4096 };
-
-    expect(resolveRequestBudget('gpt-4o', claude, provider, settings).reasoningParams).toMatchObject({ enableThinking: true, thinkingBudget: 10000 });
-    expect(resolveRequestBudget('gpt-4o', claude, picked, settings).reasoningParams.enableThinking).toBe(false);
+    const result = resolveRequestBudget('gpt-4o', { ...caps, thinking: 'anthropic' }, picked, { contextWindowSize: 200_000, maxOutputTokens: 4096 });
+    expect(result.thinkingPick).toBeUndefined();
+    expect(result.reasoningParams.enableThinking).toBe(true);
   });
 
   it('discards a learned input window after the service reports a changed window', () => {

@@ -130,9 +130,17 @@ describe('resolveModelProfile', () => {
       it('comes from the model\'s declaration, through the provider', () => {
         const p = resolveModelProfile({
           modelId: 'deepseek-flash',
-          provider: provider({ models: [{ id: 'deepseek-flash', label: 'f', declaredCapabilities: { thinkingEffort: 'max' } }] }),
+          provider: provider({ apiFormat: 'openai-compatible', models: [{ id: 'deepseek-flash', label: 'f', declaredCapabilities: { thinkingEffort: 'max' } }] }),
         });
         expect(p.wire.thinkingEffort).toBe('max');
+      });
+
+      it('ignores a level the model does not carry (a stale pick is as good as unset)', () => {
+        const pick = (modelId: string, thinkingEffort: 'off' | 'max', extra: Parameters<typeof resolveModelProfile>[0] = { modelId }) =>
+          resolveModelProfile({ ...extra, modelId, declared: { thinkingEffort }, adapter: 'claude' }).wire.thinkingEffort;
+        expect(pick('claude-fable-5', 'off')).toBeNull();
+        expect(pick('claude-fable-5', 'max')).toBe('max');
+        expect(resolveModelProfile({ modelId: 'gpt-5.5', declared: { thinkingEffort: 'max' }, adapter: 'openai-compatible' }).wire.thinkingEffort).toBeNull();
       });
 
       it('ignores a stored value that is not one of the four efforts', () => {

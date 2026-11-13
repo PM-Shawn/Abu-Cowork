@@ -7,7 +7,7 @@
  * the cached history, so it never changes the cached prefix, and it is not stored
  * in the conversation: a note seen on one request is gone from the next. It is
  * therefore given on every step from the threshold on, with the count of steps
- * left as of that step, and in its own wording on the last step. A pure function
+ * left as of that step, and in its own wording on the last request (tool calls it returns still run; the run just gets no further request). A pure function
  * of the step number, so a retried step gets the same note again.
  */
 
@@ -32,7 +32,7 @@ export function stepBudgetNote(turnCount: number, maxTurns: number): string | un
   if (maxTurns < threshold * 2) return undefined;
   const left = maxTurns - turnCount + 1;
   if (left === 1) {
-    return '[This is your last step in this run. Reply now with what is done and where each file the user asked for is saved; nothing can be saved or fixed after this reply.]';
+    return '[This is the last model request in this run. You can still call the save tool in this one, but you will not get another request to summarise. Save every file the user asked for now, in a usable state.]';
   }
   if (left > 1 && left <= threshold) {
     return `[Only ${left} steps are left in this run. Make sure every file the user asked for is saved now in a usable state, before any further polishing.]`;

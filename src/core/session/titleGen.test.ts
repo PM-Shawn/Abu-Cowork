@@ -2,7 +2,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { useChatStore } from '@/stores/chatStore';
 import { setLanguage } from '@/i18n';
-import { cleanTitle, resetTitleGenForTests, titleContextOf, TITLE_TIMEOUT_MS } from './titleGen';
+import { cleanTitle, MAX_TITLE_ATTEMPTS, resetTitleGenForTests, titleContextOf, TITLE_TIMEOUT_MS } from './titleGen';
 import type { Message } from '@/types';
 
 const llmCallMock = vi.fn();
@@ -176,7 +176,7 @@ describe('model-written conversation titles', () => {
     expect(title(id)).toBe('hello there');
   });
 
-  it('keeps the slice when the call fails, without retrying', async () => {
+  it('keeps the slice when the call fails, and does not retry by itself', async () => {
     llmCallMock.mockRejectedValue(new Error('boom'));
     const id = useChatStore.getState().createConversation();
     useChatStore.getState().addMessage(id, user('hello there'));
@@ -185,6 +185,56 @@ describe('model-written conversation titles', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(title(id)).toBe('hello there');
     expect(llmCallMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed call is not final: the next run\'s end asks again, and a title that comes back is used', async () => {
+    llmCallMock.mockRejectedValueOnce(new Error('boom')).mockResolvedValueOnce({ text: 'Greeting', toolCalls: [] });
+    const id = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(id, user('hello there'));
+    endRun(id);
+    await flush();
+    expect(title(id)).toBe('hello there');
+    endRun(id, 'Hi!');
+    await flush();
+    expect(llmCallMock).toHaveBeenCalledTimes(2);
+    expect(title(id)).toBe('Greeting');
+  });
+
+  it.each([
+    ['an empty answer', { text: '', toolCalls: [] }],
+    ['an answer that is no title', { text: 'Sure! Here is a detailed summary of the quarterly sales numbers you attached, covering each region.', toolCalls: [] }],
+  ])('%s is asked again once, then given up on', async (_name, answer) => {
+    llmCallMock.mockResolvedValue(answer);
+    const id = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(id, user('hello there'));
+    for (let run = 0; run < 4; run++) {
+      endRun(id);
+      await flush();
+    }
+    expect(llmCallMock).toHaveBeenCalledTimes(MAX_TITLE_ATTEMPTS);
+    expect(title(id)).toBe('hello there');
+  });
+
+  it('a timeout counts as an attempt; a call the next run sent out of its way does not', async () => {
+    const id = useChatStore.getState().createConversation();
+    useChatStore.getState().addMessage(id, user('hello there'));
+    // Attempt 1 is sent out of the way by the next run.
+    llmCallMock.mockImplementationOnce((o: { signal: AbortSignal }) => new Promise((_r, reject) => o.signal.addEventListener('abort', () => reject(new Error('aborted')))));
+    endRun(id);
+    await flush();
+    useChatStore.getState().setConversationStatus(id, 'running');
+    await flush();
+    // Attempt 2 (the first one that counts) times out; attempt 3 may still go out.
+    llmCallMock.mockImplementationOnce(() => new Promise(() => {}));
+    useChatStore.getState().setConversationStatus(id, 'completed');
+    await flush();
+    await vi.advanceTimersByTimeAsync(TITLE_TIMEOUT_MS + 10);
+    expect(llmCallMock).toHaveBeenCalledTimes(2);
+    llmCallMock.mockResolvedValueOnce({ text: 'Greeting', toolCalls: [] });
+    endRun(id);
+    await flush();
+    expect(llmCallMock).toHaveBeenCalledTimes(3);
+    expect(title(id)).toBe('Greeting');
   });
 
   it.each([
@@ -245,8 +295,8 @@ describe('model-written conversation titles', () => {
   });
 
   // An attachment-only first message keeps the default title, so a later message gets a slice
-  // and would be a second candidate: only the asked-once guard stops a second call.
-  it('makes exactly one call per conversation: an empty answer to the first, then another message', async () => {
+  // and would be a second candidate: the attempts are bounded per conversation, not per message.
+  it('asks at most MAX_TITLE_ATTEMPTS times per conversation: an empty answer to the first, then another message', async () => {
     llmCallMock.mockResolvedValue({ text: '', toolCalls: [] });
     const id = useChatStore.getState().createConversation();
     const defaultTitle = title(id);
@@ -259,7 +309,10 @@ describe('model-written conversation titles', () => {
     expect(title(id)).toBe('and another thing');
     endRun(id);
     await flush();
-    expect(llmCallMock).toHaveBeenCalledTimes(1);
+    expect(llmCallMock).toHaveBeenCalledTimes(2);
+    endRun(id);
+    await flush();
+    expect(llmCallMock).toHaveBeenCalledTimes(MAX_TITLE_ATTEMPTS);
     expect(title(id)).toBe('and another thing');
   });
 

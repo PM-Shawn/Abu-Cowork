@@ -475,6 +475,87 @@ describe('settingsStore partialize', () => {
   });
 });
 
+describe('settingsStore per-model thinking effort', () => {
+  // The effort lives on the model's declaredCapabilities, so it rides along with the
+  // `providers` array. No whitelist or version bump is needed, and this pins that: a
+  // pick must come back out of a localStorage roundtrip and a migrate pass untouched.
+  const persistOptions = () => (useSettingsStore as unknown as {
+    persist: {
+      getOptions: () => {
+        partialize: (state: unknown) => Record<string, unknown>;
+        migrate: (data: unknown, version: number) => Record<string, unknown>;
+      };
+    };
+  }).persist.getOptions();
+
+  const persistedModels = (providerId: string) => {
+    const snapshot = persistOptions().partialize(useSettingsStore.getState());
+    return (snapshot.providers as ProviderInstance[]).find((p) => p.id === providerId)!.models;
+  };
+
+  beforeEach(() => {
+    useSettingsStore.setState({
+      providers: [makeProvider({
+        id: 'custom-1',
+        source: 'custom',
+        models: [
+          { id: 'deepseek-flash', label: 'deepseek-flash', declaredCapabilities: { supportsReasoning: true, thinkingEffort: 'max' } },
+          { id: 'plain', label: 'plain', declaredCapabilities: { supportsReasoning: true } },
+        ],
+      })],
+      activeModel: { providerId: 'custom-1', modelId: 'deepseek-flash' },
+    });
+  });
+
+  it('is in the persisted snapshot, per model, next to the other declared capabilities', () => {
+    const models = persistedModels('custom-1');
+    expect(models[0].declaredCapabilities).toEqual({ supportsReasoning: true, thinkingEffort: 'max' });
+  });
+
+  it('leaves a model that never picked one without the key (unset = default behaviour)', () => {
+    const models = persistedModels('custom-1');
+    expect(models[1].declaredCapabilities).toEqual({ supportsReasoning: true });
+    expect('thinkingEffort' in (models[1].declaredCapabilities ?? {})).toBe(false);
+  });
+
+  it('keeps a pick made through updateProvider (the Settings save path)', () => {
+    useSettingsStore.getState().updateProvider('custom-1', {
+      models: [
+        { id: 'deepseek-flash', label: 'deepseek-flash', declaredCapabilities: { supportsReasoning: true, thinkingEffort: 'off' } },
+        { id: 'plain', label: 'plain', declaredCapabilities: { supportsReasoning: true, thinkingEffort: 'low' } },
+      ],
+    });
+    const models = persistedModels('custom-1');
+    expect(models.map((m) => m.declaredCapabilities?.thinkingEffort)).toEqual(['off', 'low']);
+  });
+
+  it('survives a localStorage roundtrip and the migrate pass of the current and previous version', () => {
+    const snapshot = persistOptions().partialize(useSettingsStore.getState());
+    const roundTripped = JSON.parse(JSON.stringify(snapshot)) as Record<string, unknown>;
+
+    for (const version of [54, 53]) {
+      const migrated = persistOptions().migrate(structuredClone(roundTripped), version);
+      const providers = migrated.providers as ProviderInstance[];
+      expect(providers[0].models[0].declaredCapabilities?.thinkingEffort).toBe('max');
+      expect(providers[0].models[1].declaredCapabilities?.thinkingEffort).toBeUndefined();
+    }
+  });
+
+  it('is not copied over by the V40 sink of provider-level capabilities', () => {
+    // V40 only sinks the fields in its own list; a model's pick must stay the model's.
+    const migrated = persistOptions().migrate({
+      providers: [{
+        id: 'p1',
+        declaredCapabilities: { supportsReasoning: true, thinkingEffort: 'high' },
+        models: [{ id: 'a', label: 'a', declaredCapabilities: { thinkingEffort: 'low' } }, { id: 'b', label: 'b' }],
+      }],
+    }, 39);
+    const models = (migrated.providers as ProviderInstance[])[0].models;
+    expect(models[0].declaredCapabilities?.thinkingEffort).toBe('low');
+    expect(models[1].declaredCapabilities?.thinkingEffort).toBeUndefined();
+  });
+});
+
 describe('settingsStore account login dialog', () => {
   it('opens and closes without changing the current view or settings selection', () => {
     const previous = useSettingsStore.getState();

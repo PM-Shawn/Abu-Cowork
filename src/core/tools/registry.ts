@@ -2406,12 +2406,13 @@ export async function checkToolApproval(
    * it reports).
    */
   const connectorAction: ConnectorActionKind | null = classifyConnectorAction(name, mcpToolHints(name));
-  // Who the call reaches and what it carries: named in the ask, and with the
-  // tool the key of a send's task grant, so a send approved to one person
-  // does not cover the same tool sending to anyone else.
-  const connectorTarget = connectorAction !== null ? describeConnectorTarget(input) : null;
-  const connectorGrantSubject = connectorTarget ? JSON.stringify([name, connectorTarget.recipientKey]) : '';
-  const connectorGranted = (connectorAction === 'send' || connectorAction === 'change') && !isTeam
+  // Who the call reaches, what it changes and what it carries: named in the
+  // ask, and with the tool the key of a send's or a change's task grant, so an
+  // approval for one recipient or one file does not cover another. A call whose
+  // target cannot be identified has no key and is asked every time.
+  const connectorTarget = connectorAction !== null ? describeConnectorTarget(input, connectorAction) : null;
+  const connectorGrantSubject = connectorTarget?.grantKey != null ? JSON.stringify([name, connectorTarget.grantKey]) : null;
+  const connectorGranted = connectorGrantSubject !== null && !isTeam
     && hasTaskGrant('connector-tool', toolContext?.conversationId, connectorGrantSubject);
   const connectorAsks = connectorAction !== null && !connectorGranted;
 
@@ -2499,7 +2500,7 @@ export async function checkToolApproval(
       return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
     }
     if (!isTeam) {
-      if (connectorAction === 'send' || connectorAction === 'change') grantTask('connector-tool', toolContext?.conversationId, connectorGrantSubject);
+      if (connectorGrantSubject !== null) grantTask('connector-tool', toolContext?.conversationId, connectorGrantSubject);
       if (pluginGrantPending !== null) grantPluginServer(toolContext?.conversationId, pluginGrantPending);
     }
   }

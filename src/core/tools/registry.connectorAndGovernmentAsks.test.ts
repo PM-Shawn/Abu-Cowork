@@ -209,6 +209,42 @@ describe('connector tools', () => {
     expect(asks).toHaveLength(3);
   });
 
+  it('an approved change covers the same file, not another file under the same account', async () => {
+    const { cb, asks } = recordingConfirm();
+    const update = (file: string, content: string) => ({ user_id: 'me', file_id: file, content });
+    await checkToolApproval('drive__update_file', update('file-A', 'hello'), attended(), cb as never);
+    await checkToolApproval('drive__update_file', update('file-A', 'hello again'), attended(), cb as never);
+    expect(asks).toHaveLength(1);
+    await checkToolApproval('drive__update_file', update('file-B', 'hello'), attended(), cb as never);
+    expect(asks).toHaveLength(2);
+    expect(asks[1].level).toBe('warn');
+  });
+
+  it('asks every time for a call whose target it cannot identify', async () => {
+    const { cb, asks } = recordingConfirm();
+    const routed = (to: string) => ({ message: { routing_key: to, text: 'hello' } });
+    await checkToolApproval('corpmail__send_message', routed('recipient-A'), attended(), cb as never);
+    await checkToolApproval('corpmail__send_message', routed('recipient-B'), attended(), cb as never);
+    await checkToolApproval('corpmail__send_message', routed('recipient-A'), attended(), cb as never);
+    expect(asks).toHaveLength(3);
+  });
+
+  it.each([
+    ['corpmail__send_message', { to: 'a@example.com', text: 'hello' }],
+    ['drive__update_file', { user_id: 'me', file_id: 'file-A', content: 'hello' }],
+  ] as const)('%s asks every time when the server declares it destructive', async (tool, input) => {
+    const tools = [{ name: tool, description: 'Does the thing', mcpDestructiveHint: true }];
+    const spy = vi.spyOn(mcpManager, 'getServerTools').mockImplementation((server: string) => tools.filter((entry) => entry.name.startsWith(`${server}__`)) as never);
+    try {
+      const { cb, asks } = recordingConfirm();
+      await checkToolApproval(tool, input, attended(), cb as never);
+      await checkToolApproval(tool, input, attended(), cb as never);
+      expect(asks.map((ask) => ask.level)).toEqual(['danger', 'danger']);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it.each([
     ['corpmail__delete_message', 'danger'],
     ['bank__create_payment', 'danger'],

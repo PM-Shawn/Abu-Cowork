@@ -628,6 +628,7 @@ A Python runtime is built in. The following libraries can be imported directly â
 - Pillow (image processing)
 - fpdf2 (PDF generation)
 - lxml (XML processing)
+- pandas, matplotlib, pypdfium2, xlrd, python-dateutil (data analysis, charts, PDF page rendering, legacy .xls)
 
 Just write a Python script and run it with run_command. Do not run pip install; do not install Node.js packages.
 Use the python3 command â€” the system will automatically use the built-in Python.`, cacheable: true });

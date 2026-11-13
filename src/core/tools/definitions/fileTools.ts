@@ -19,6 +19,7 @@ import {
   type CommandOutput,
 } from '../helpers/toolHelpers';
 import { invokeTaskCommand, isTaskCommandAbortedError } from '../helpers/scopedCommand';
+import { withDocumentReading } from '../fileRead';
 import { TOOL_NAMES } from '../toolNames';
 import { getI18n, format } from '../../../i18n';
 import { bindWorkspaceFromWrite } from '../../agent/defaultWorkspace';
@@ -101,7 +102,9 @@ pdf = pdfplumber.open(sys.argv[1])
 print(chr(10).join((p.extract_text() or '') for p in pdf.pages))
 pdf.close()`;
 
-export const readFileTool: ToolDefinition = {
+// PDFs and views of part of a picture are read by fileRead/, which also sets the
+// description and adds pages/region/rotate.
+export const readFileTool: ToolDefinition = withDocumentReading({
   name: TOOL_NAMES.READ_FILE,
   description: 'Read file contents. Supports text files, images (png/jpg/gif/webp — returns visual content), PDFs (text extraction), Office documents (.docx/.xlsx/.pptx — text extraction), and archives (.zip/.tar.gz — lists contents). Text files support offset (start line) and limit (line count) parameters for paginated reading.',
   inputSchema: {
@@ -282,7 +285,7 @@ export const readFileTool: ToolDefinition = {
     }
   },
   isConcurrencySafe: true,
-};
+});
 
 /**
  * Ensure an HTML document declares UTF-8 so browsers/webviews don't fall back to a

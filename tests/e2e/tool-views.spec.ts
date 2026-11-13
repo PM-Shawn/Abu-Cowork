@@ -244,7 +244,7 @@ async function launchInProject(plansFor: (workspace: string, web: WebServer) => 
     }));
   }, { name: PROJECT_NAME, workspacePath: workspace, version: persistedStoreVersion('abu-projects') });
   await dismissFirstRunOverlays(page);
-  await configureLocalMockProvider(page, mock.baseUrl, { supportsTools: true, permissionMode: 'autonomous' });
+  await configureLocalMockProvider(page, mock.baseUrl, { supportsTools: true, supportsImages: false, permissionMode: 'autonomous' });
   await configureWebSearch(page, web.origin);
 
   await page.getByRole('button', { name: PROJECT_NAME, exact: true })

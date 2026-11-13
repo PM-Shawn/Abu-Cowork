@@ -727,6 +727,29 @@ describe('OpenAICompatibleAdapter streaming finish_reason handling', () => {
     });
   });
 
+  describe('the user\'s thinking effort', () => {
+    async function sentBody(overrides: Partial<ChatOptions>): Promise<Record<string, unknown>> {
+      mockFetch.mockResolvedValueOnce(makeSSEResponse([
+        { choices: [{ delta: { content: 'ok' } }] },
+        { choices: [{ delta: {}, finish_reason: 'stop' }] },
+      ]));
+      await new OpenAICompatibleAdapter().chat([userMessage], makeOptions(overrides), () => {});
+      return JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    }
+
+    it('off reaches DeepSeek as its own switch, with no reasoning_effort', async () => {
+      const body = await sentBody({ model: 'deepseek-flash', declaredCapabilities: { thinkingEffort: 'off' } });
+      expect(body.thinking).toEqual({ type: 'disabled' });
+      expect(body).not.toHaveProperty('reasoning_effort');
+    });
+
+    it('max reaches DeepSeek as reasoning_effort max with thinking enabled', async () => {
+      const body = await sentBody({ model: 'deepseek-flash', declaredCapabilities: { thinkingEffort: 'max' } });
+      expect(body.thinking).toEqual({ type: 'enabled' });
+      expect(body.reasoning_effort).toBe('max');
+    });
+  });
+
   describe('regression: _parse_error fallback when tool args are invalid JSON', () => {
     it('marks tool input with _parse_error in [DONE] path when JSON parse fails', async () => {
       // Send incomplete args via [DONE] without explicit finish_reason on last chunk.

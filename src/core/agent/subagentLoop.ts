@@ -42,7 +42,7 @@ import { localServerKind } from '../llm/localProvider';
 import { adapterKindFor, usageProtocolFor } from '../llm/adapterKind';
 import { promptTokensOf } from '../llm/usageAccounting';
 import { applyDeclaredCapabilities } from '../llm/applyDeclaredCapabilities';
-import { resolveModelProfile } from '../llm/modelProfile';
+import { resolveModelProfile, resolveThinkingPick } from '../llm/modelProfile';
 import { familyNotesFor } from './prompts/variants';
 import { selectToolsForProfile } from '../tools/toolSelection';
 import { repairToolCallsForProfile } from './toolArgumentRepair';
@@ -1021,6 +1021,7 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         subagentCaps,
         settings.maxOutputTokens ?? subagentCaps.maxOutputTokens,
         reserveWindowSize,
+        resolveThinkingPick({ modelId: effectiveModelId, provider, declared }),
       );
       // True output ceiling (distinct from the conservative per-turn budget below):
       // max_tokens-recovery escalation may climb toward this, never above a known limit.

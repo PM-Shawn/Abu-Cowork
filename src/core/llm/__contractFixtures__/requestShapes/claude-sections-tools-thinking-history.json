@@ -120,8 +120,7 @@
     ],
     "temperature": 1,
     "thinking": {
-      "type": "enabled",
-      "budget_tokens": 10000
+      "type": "adaptive"
     }
   }
 }

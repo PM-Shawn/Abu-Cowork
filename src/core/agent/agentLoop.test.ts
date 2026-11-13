@@ -922,6 +922,12 @@ describe('isVisionUnsupportedError', () => {
 // bytes (which precede the history and would re-bill the whole conversation
 // on every change) and never persisted to chatStore.
 describe('buildVolatileContextTail', () => {
+  it('carries the step-budget note inside the envelope, and alone makes a tail', () => {
+    const tail = buildVolatileContextTail({ stepBudgetNote: '[Only 20 steps are left in this run.]' });
+    expect(tail).toContain('<runtime-context>');
+    expect(tail).toContain('Only 20 steps are left');
+  });
+
   it('returns undefined when there is nothing to inject', () => {
     expect(buildVolatileContextTail({})).toBeUndefined();
     expect(buildVolatileContextTail({ todoState: '', relevantMemoriesSection: '' })).toBeUndefined();

@@ -1153,6 +1153,39 @@ describe('Agent Pipeline Integration', () => {
       expect(calls).toBe(2); // turn 3's top-of-loop check trips before its LLM call
     });
 
+    it('tells the model the steps left on every request from the threshold on, never in the prompt or the history', async () => {
+      // Cap 10: the threshold is the floor of 5 steps left, so requests 6 to 10 carry the note.
+      useSettingsStore.setState({ agentMaxTurns: 10 });
+      let calls = 0;
+      mockClaudeChat.mockImplementation(
+        async (_m: unknown, _o: unknown, onEvent: (e: StreamEvent) => void) => {
+          calls++;
+          onEvent({ type: 'tool_use', id: `t-${calls}`, name: 'read_file', input: { path: `/x${calls}` } });
+          onEvent({ type: 'done', stopReason: 'tool_use' });
+        },
+      );
+
+      const convId = useChatStore.getState().createConversation();
+      const result = await runAgentLoop(convId, 'loop on tools');
+
+      expect(result.reason).toBe('max_turns');
+      const requests = mockClaudeChat.mock.calls.map(([messages, options]) => ({
+        messages: messages as Message[],
+        options: options as { systemPrompt?: string; volatileContextTail?: string },
+      }));
+      expect(requests.map((r) => /\[(Only \d+ steps are left|This is the last model request)/.exec(r.options.volatileContextTail ?? '')?.[1] ?? null)).toEqual([
+        null, null, null, null, null,
+        'Only 5 steps are left', 'Only 4 steps are left', 'Only 3 steps are left', 'Only 2 steps are left', 'This is the last model request',
+      ]);
+      const NOTE = /steps are left|last model request in this run/;
+      for (const r of requests) {
+        expect(r.options.systemPrompt ?? '').not.toMatch(NOTE);
+        expect(JSON.stringify(r.messages)).not.toMatch(NOTE);
+      }
+      expect(JSON.stringify(useChatStore.getState().conversations[convId].messages)).not.toMatch(NOTE);
+    });
+
+
     it('stops with reason=awaiting_user when a tool requires sandbox recovery', async () => {
       let calls = 0;
       mockClaudeChat.mockImplementation(

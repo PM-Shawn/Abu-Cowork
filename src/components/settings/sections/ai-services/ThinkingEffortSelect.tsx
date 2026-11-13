@@ -4,6 +4,8 @@ import { isThinkingEffort } from '@/core/llm/thinkingEffort';
 import { SETTING_CONTROL_WIDTH } from '@/components/settings/settingsLayout';
 import type { ThinkingEffort } from '@/types/provider';
 
+const ALL_EFFORTS: readonly ThinkingEffort[] = ['off', 'low', 'high', 'max'];
+
 /** The Select's value for 「默认」: no effort stored, Abu's own setting for the model. */
 const DEFAULT_EFFORT = 'default';
 
@@ -19,6 +21,7 @@ export default function ThinkingEffortSelect({
   onChange,
   label,
   modelDefault,
+  efforts = ALL_EFFORTS,
 }: {
   value: ThinkingEffort | undefined;
   onChange: (value: ThinkingEffort | undefined) => void;
@@ -26,8 +29,20 @@ export default function ThinkingEffortSelect({
   label?: string;
   /** What 「默认」 resolves to for this model, when known; shown as 「默认（高）」. */
   modelDefault?: 'high';
+  /** The levels the model carries on its wire (`offeredThinkingEffortsFor`); only these are listed. */
+  efforts?: readonly ThinkingEffort[];
 }) {
   const { t } = useI18n();
+  const switchOnly = efforts.length === 2 && efforts.includes('off') && efforts.includes('high');
+  const effortLabel = (effort: ThinkingEffort) => {
+    switch (effort) {
+      case 'off': return t.settings.thinkingEffortOff;
+      case 'low': return t.settings.effortLow;
+      // A model with an on/off switch and no depth has one "on", listed under the stored value 'high'.
+      case 'high': return switchOnly ? t.settings.thinkingEffortOn : t.settings.effortHigh;
+      case 'max': return t.settings.thinkingEffortMax;
+    }
+  };
   const defaultLabel = modelDefault
     ? `${t.settings.thinkingEffortDefault}${t.settings.thinkingEffortDefaultIs.replace('{effort}', t.settings.effortHigh)}`
     : t.settings.thinkingEffortDefault;
@@ -40,10 +55,7 @@ export default function ThinkingEffortSelect({
         onValueChange={(next) => onChange(isThinkingEffort(next) ? next : undefined)}
         options={[
           { value: DEFAULT_EFFORT, label: defaultLabel },
-          { value: 'off', label: t.settings.thinkingEffortOff },
-          { value: 'low', label: t.settings.effortLow },
-          { value: 'high', label: t.settings.effortHigh },
-          { value: 'max', label: t.settings.thinkingEffortMax },
+          ...efforts.map((effort) => ({ value: effort, label: effortLabel(effort) })),
         ]}
       />
     </div>

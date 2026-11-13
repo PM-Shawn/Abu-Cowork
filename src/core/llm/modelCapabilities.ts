@@ -7,8 +7,8 @@
  */
 import { GENERATED_KNOWN_MODELS } from './generated/modelData.generated';
 import { FALLBACK_DEFAULT, bareModelId, hasVisionName, resolveFamilyCapabilities } from './model-data/families';
-import type { DeclaredCapabilities, ProviderSource, ThinkingEffort } from '@/types/provider';
-import { ANTHROPIC_THINKING_BUDGET, isThinkingEffort, openAIReasoningEffort } from './thinkingEffort';
+import type { DeclaredCapabilities, ProviderSource } from '@/types/provider';
+import { ANTHROPIC_THINKING_BUDGET, type ThinkingPick } from './model-data/thinkingControl';
 
 export { hasVisionName, resolveModelVisionUpdate } from './model-data/families';
 
@@ -170,7 +170,7 @@ export interface ReasoningRequestParams {
   /** Max reasoning tokens (Claude budget_tokens / Qwen thinking_budget). */
   thinkingBudget?: number;
   /** OpenAI o-series / gpt-5 — coarse reasoning depth. */
-  reasoningEffort?: 'low' | 'medium' | 'high';
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
 }
 
 /**
@@ -187,17 +187,18 @@ export interface ReasoningRequestParams {
  * @param caps  Resolved capabilities (overlay any discovered limits before calling).
  * @param requestedMaxTokens  The caller's desired budget (e.g. user setting).
  * @param contextWindow  Effective context window; caps the answer reserve at 25% of it.
- * @param effort  The user's own thinking-effort pick for the model (unset = the defaults
- *   below). It wins over them wherever the protocol has a knob to carry it: Claude's
- *   budget, OpenAI's `reasoning_effort`, and an off switch everywhere. What the other
- *   protocols put on the wire for it (`thinking`, `enable_thinking`, DeepSeek's
- *   `reasoning_effort`) is written by the request processors from the model profile.
+ * @param pick  The user's own thinking-effort pick for the model (`resolveThinkingPick`; unset =
+ *   the defaults below). It wins over them wherever its control has a knob to carry it: Claude's
+ *   budget, OpenAI's `reasoning_effort`, and an off switch. What the Anthropic adaptive models
+ *   (`thinking` + `output_config.effort`) and the switch formats (`thinking`, `enable_thinking`,
+ *   DeepSeek's `reasoning_effort`) put on the wire is written by the adapters and the request
+ *   processors from the model profile. The budget never leaves `caps.maxOutputTokens`.
  */
 export function computeReasoningParams(
   caps: ModelCapabilities,
   requestedMaxTokens: number,
   contextWindow?: number,
-  effort?: ThinkingEffort,
+  pick?: ThinkingPick,
 ): ReasoningRequestParams {
   const isReasoning = caps.thinking !== false;
   // Reasoning models need room for both reasoning and answer → use the model's
@@ -213,43 +214,37 @@ export function computeReasoningParams(
   const floorCap = Math.max(1024, maxTokens - CONTENT_FLOOR_TOKENS);
   const reasoningCap = floorCap < maxTokens ? floorCap : Math.floor(maxTokens / 2);
 
-  const chosen = isReasoning && isThinkingEffort(effort) ? effort : undefined;
-  if (chosen === 'off') {
+  if (pick) {
+    const { effort, control } = pick;
     // Nothing is thought, so there is no reasoning budget to carve out of the answer.
-    // `enableThinking: false` is what the Anthropic and Ollama adapters read as "off";
-    // OpenAI reasoning models cannot switch thinking off and keep their lowest level.
-    return {
-      maxTokens,
-      enableThinking: false,
-      ...(caps.thinking === 'openai-reasoning' ? { reasoningEffort: openAIReasoningEffort('off') } : {}),
-    };
+    // `enableThinking: false` is what the Anthropic and Ollama adapters read as "off".
+    if (effort === 'off') {
+      return control.kind === 'reasoning-effort'
+        ? { maxTokens, reasoningEffort: 'none' }
+        : { maxTokens, enableThinking: false };
+    }
+    switch (control.kind) {
+      case 'anthropic-budget':
+        // The budget gives way to the cap and the answer floor, never the other way round.
+        return { maxTokens, enableThinking: true, thinkingBudget: Math.min(ANTHROPIC_THINKING_BUDGET[effort], reasoningCap) };
+      case 'anthropic-adaptive':
+        return { maxTokens, enableThinking: true };
+      case 'reasoning-effort':
+        return { maxTokens, reasoningEffort: effort === 'low' ? 'low' : effort === 'high' ? 'high' : 'xhigh' };
+      default:
+        // 'switch': the request processors write the wire fields; the budget is the default one.
+        break;
+    }
   }
 
   switch (caps.thinking) {
     case 'qwen':
       return { maxTokens, thinkingBudget: reasoningCap };
-    case 'anthropic': {
+    case 'anthropic':
       // Claude counts thinking toward max_tokens; preserve the prior 10k budget.
-      if (chosen === undefined) {
-        return { maxTokens: Math.max(maxTokens, 16384), enableThinking: true, thinkingBudget: 10000 };
-      }
-      // The picked budget needs the answer floor on top of it, but max_tokens only grows
-      // as far as the model's ceiling and the window's answer reserve allow; past that the
-      // budget gives way, never the answer.
-      const wanted = ANTHROPIC_THINKING_BUDGET[chosen];
-      const windowReserve = contextWindow === undefined
-        ? Number.POSITIVE_INFINITY
-        : Math.floor(contextWindow * OUTPUT_RESERVE_RATIO);
-      const ceiling = Math.min(caps.outputCeiling ?? caps.maxOutputTokens, Math.max(windowReserve, 16384));
-      const total = Math.max(maxTokens, 16384, Math.min(wanted + CONTENT_FLOOR_TOKENS, ceiling));
-      return {
-        maxTokens: total,
-        enableThinking: true,
-        thinkingBudget: Math.min(wanted, total - CONTENT_FLOOR_TOKENS),
-      };
-    }
+      return { maxTokens: Math.max(maxTokens, 16384), enableThinking: true, thinkingBudget: 10000 };
     case 'openai-reasoning':
-      return { maxTokens, reasoningEffort: chosen === undefined ? 'medium' : openAIReasoningEffort(chosen) };
+      return { maxTokens, reasoningEffort: 'medium' };
     case 'uncontrollable':
       // No budget knob — give the full ceiling; the reactive net catches starvation.
       return { maxTokens };

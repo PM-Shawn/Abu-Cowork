@@ -25,7 +25,15 @@ import {
 import { applyDeclaredCapabilities } from './applyDeclaredCapabilities';
 import { resolveModelDeclared } from './resolveModelDeclared';
 import { deriveThinkingFormat } from './model-data/thinkingFormat';
-import { THINKING_SWITCH_FORMATS, isThinkingEffort } from './thinkingEffort';
+import { isThinkingEffort } from './thinkingEffort';
+import { adapterKindFor } from './adapterKind';
+import type { AdapterKind } from './adapter';
+import {
+  offeredThinkingEfforts,
+  resolveThinkingControl,
+  type ThinkingPick,
+} from './model-data/thinkingControl';
+import type { ThinkingEffort } from '@/types/provider';
 import type { CapabilityRejectionClass } from './capabilityRejection';
 import {
   FAMILY_PROFILE_DEFAULTS,
@@ -56,6 +64,8 @@ export interface ResolveModelProfileInput {
   /** Already-resolved declarations (callers that resolved them for the model take precedence over `provider`). */
   declared?: DeclaredCapabilities;
   providerSource?: ProviderSource;
+  /** The adapter the provider type selects, for callers that have the type but no provider instance (the settings form). */
+  adapter?: AdapterKind;
   /** The request URL or its host; the host picks the thinking format and the cache key. */
   baseUrl?: string;
   requestHost?: string;
@@ -154,7 +164,6 @@ export function resolveModelProfile(input: ResolveModelProfileInput): ModelProfi
     if (declared.supportedEfforts && declared.supportedEfforts.length > 0) {
       wire.supportedEfforts = [...declared.supportedEfforts];
     }
-    if (isThinkingEffort(declared.thinkingEffort)) wire.thinkingEffort = declared.thinkingEffort;
     if (declared.thinkingFormat) wire.thinkingFormat = declared.thinkingFormat;
     if (declared.maxTokensField) wire.maxTokensField = declared.maxTokensField;
     if (declared.requiresToolResultName !== undefined) wire.toolResultName = declared.requiresToolResultName;
@@ -170,14 +179,25 @@ export function resolveModelProfile(input: ResolveModelProfileInput): ModelProfi
 
   applyCapabilityOverrides(input.overrides, wire, capabilities);
 
+  // What a pick can do here. The user's pick counts only when the control carries it: a stale
+  // or hand-edited value for a level the model or wire does not take is as good as unset.
+  wire.thinkingControl = resolveThinkingControl({
+    bareId: bare,
+    protocol: capabilities.thinking,
+    format: wire.thinkingFormat,
+    adapter: input.adapter ?? (input.provider ? adapterKindFor(input.provider, false) : undefined),
+    reasoningEffortWithTools: wire.reasoningEffortWithTools,
+    reasoningStripped: wire.stripReasoningParams,
+  });
+  const pick = declared?.thinkingEffort;
+  if (isThinkingEffort(pick) && offeredThinkingEfforts(wire.thinkingControl).includes(pick)) {
+    wire.thinkingEffort = pick;
+  }
+
   // With thinking switched off (and the switch really sent, which a rejected
   // `thinking` field rules out) nothing is thought, so there is no reasoning to
   // hand back on the earlier assistant turns.
-  if (
-    wire.thinkingEffort === 'off'
-    && !wire.stripReasoningParams
-    && THINKING_SWITCH_FORMATS.has(wire.thinkingFormat)
-  ) {
+  if (wire.thinkingEffort === 'off' && !wire.stripReasoningParams && wire.thinkingControl.kind === 'switch') {
     wire.reasoningReplay = 'none';
   }
 
@@ -202,4 +222,15 @@ export function documentedDefaultThinkingEffort(modelId: string, baseUrl?: strin
   const profile = resolveModelProfile({ modelId, baseUrl, providerSource: 'builtin' });
   if (!profile.capabilities.thinking) return undefined;
   return profile.wire.thinkingFormat === 'deepseek' ? 'high' : undefined;
+}
+
+/** The levels the settings offer for a model on a provider: only those that reach the request. */
+export function offeredThinkingEffortsFor(input: ResolveModelProfileInput): ThinkingEffort[] {
+  return offeredThinkingEfforts(resolveModelProfile(input).wire.thinkingControl);
+}
+
+/** The user's pick for the model together with what its control does with it; undefined when unset or not carried. */
+export function resolveThinkingPick(input: ResolveModelProfileInput): ThinkingPick | undefined {
+  const { wire } = resolveModelProfile(input);
+  return wire.thinkingEffort ? { effort: wire.thinkingEffort, control: wire.thinkingControl } : undefined;
 }

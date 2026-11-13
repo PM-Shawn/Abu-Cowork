@@ -7,14 +7,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { getLanguageSetting, initLanguage, type LanguageSetting } from '@/i18n';
 import { DesignSystemProvider } from '@/components/ds/provider';
 import type { ApiFormat } from '@/types';
-import type { ModelDeclaredCapabilities } from '@/types/provider';
+import type { ModelDeclaredCapabilities, ThinkingEffort } from '@/types/provider';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 
-function Harness({ detected, estimated, initial, apiFormat = 'openai-compatible' }: {
+function Harness({ detected, estimated, initial, apiFormat = 'openai-compatible', thinkingEfforts }: {
   detected?: number;
   estimated: number;
   initial?: ModelDeclaredCapabilities;
   apiFormat?: ApiFormat;
+  thinkingEfforts?: ThinkingEffort[];
 }) {
   const [declared, setDeclared] = useState<ModelDeclaredCapabilities>(initial ?? {});
   return (
@@ -23,6 +24,7 @@ function Harness({ detected, estimated, initial, apiFormat = 'openai-compatible'
         declared={declared}
         setDeclared={setDeclared}
         apiFormat={apiFormat}
+        thinkingEfforts={thinkingEfforts}
         contextWindow={{
           size: Math.min(detected ?? estimated, 200000),
           uncappedSize: detected ?? estimated,
@@ -164,6 +166,23 @@ describe('AdvancedCapabilitiesFields', () => {
       await userEvent.click(effortSelect());
       expect(screen.getAllByRole('option').map((option) => option.textContent))
         .toEqual(['默认', '关闭', '低', '高', '最高']);
+    });
+
+    it('lists only the levels the model carries', async () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true }} thinkingEfforts={['low', 'high', 'max']} />);
+      await userEvent.click(effortSelect());
+      expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['默认', '低', '高', '最高']);
+    });
+
+    it('calls the one level of a plain switch 开启', async () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true }} thinkingEfforts={['off', 'high']} />);
+      await userEvent.click(effortSelect());
+      expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual(['默认', '关闭', '开启']);
+    });
+
+    it('shows no row for a model no level reaches', () => {
+      renderWithProvider(<Harness estimated={32768} initial={{ supportsReasoning: true }} thinkingEfforts={[]} />);
+      expect(screen.queryByRole('combobox', { name: '思考强度' })).toBeNull();
     });
 
     it.each([

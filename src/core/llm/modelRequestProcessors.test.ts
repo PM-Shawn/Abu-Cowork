@@ -860,11 +860,15 @@ describe('modelRequestProcessors', () => {
         expect(b.reasoning_effort).toBeUndefined();
         expect(b.temperature).toBeUndefined();
       });
-      it.each(['low', 'high', 'max'] as const)('%s: thinking enabled with the profile temperature', (effort) => {
-        const b = run({}, { ...kimi, caps: withEffort(effort) });
+      it('high (the one "on"): thinking enabled with the profile temperature', () => {
+        const b = run({}, { ...kimi, caps: withEffort('high') });
         expect(b.thinking).toEqual({ type: 'enabled' });
         expect(b.temperature).toBe(1);
         expect(b.reasoning_effort).toBeUndefined();
+      });
+      it.each(['low', 'max'] as const)('%s is not a level Moonshot has: the pick is not carried', (effort) => {
+        const b = run({}, { ...kimi, caps: withEffort(effort) });
+        expect(b.thinking).toBeUndefined();
       });
     });
 

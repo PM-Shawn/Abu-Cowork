@@ -3,7 +3,7 @@ import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
 import { LLMError, classifyError, buildToolParseError } from './adapter';
 import { resolveModelProfile } from './modelProfile';
 import { rejectedCapabilities } from './rejectionMemory';
-import { ANTHROPIC_THINKING_BUDGET } from './thinkingEffort';
+import { ANTHROPIC_THINKING_BUDGET } from './model-data/thinkingControl';
 import type { Message, StreamEvent, TokenUsage, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
 import { normalizeMessages } from './messageNormalizer';
@@ -322,23 +322,41 @@ export class ClaudeAdapter implements LLMAdapter {
       (params.tools[params.tools.length - 1] as unknown as Record<string, unknown>).cache_control = { type: 'ephemeral' };
     }
 
-    // Extended thinking — auto-enabled when model supports 'anthropic' thinking
-    // protocol. Withheld once the endpoint rejected the thinking field
-    // (profile.wire.stripReasoningParams through the rejection memory), and when the
-    // user switched thinking off for this model. A caller that left the budget out gets
-    // the one the user's effort names, else 10k.
-    const thinkingEffort = profile.wire.thinkingEffort;
-    if (options.enableThinking && !profile.wire.stripReasoningParams && thinkingEffort !== 'off') {
+    // Thinking. The model profile says how this model is steered (`thinkingControl`): the older
+    // Claude models take `enabled` + `budget_tokens`, the newer ones `adaptive` with the depth in
+    // `output_config.effort` (they answer a budget with a 400). Off is the field the model accepts
+    // for it: `disabled`, `between_tools`, or no field where it does not think unasked, and none at
+    // all on a model that cannot be turned off. Everything is withheld once the endpoint rejected
+    // the thinking field (profile.wire.stripReasoningParams through the rejection memory).
+    const { thinkingControl: control } = profile.wire;
+    const adaptive = control.kind === 'anthropic-adaptive';
+    // The user's pick applies to the Anthropic controls only; another control's pick is another wire's.
+    const effort = control.kind === 'anthropic-budget' || adaptive ? profile.wire.thinkingEffort : null;
+    const thinkingOn = options.enableThinking === true && effort !== 'off';
+    const thinkingOff = options.enableThinking === false || effort === 'off';
+    const mutable = params as unknown as Record<string, unknown>;
+    if (profile.wire.stripReasoningParams) {
+      if (options.temperature !== undefined) params.temperature = options.temperature;
+    } else if (thinkingOn) {
       // Anthropic API requires temperature=1 when extended thinking is enabled
       params.temperature = 1;
-      (params as unknown as Record<string, unknown>).thinking = {
-        type: 'enabled',
-        budget_tokens: options.thinkingBudget
-          ?? (thinkingEffort ? ANTHROPIC_THINKING_BUDGET[thinkingEffort] : undefined)
-          ?? 10000,
-      };
-    } else if (options.temperature !== undefined) {
-      params.temperature = options.temperature;
+      if (adaptive) {
+        mutable.thinking = { type: 'adaptive' };
+        if (effort) mutable.output_config = { effort };
+      } else {
+        // A caller that left the budget out gets the one the user's effort names, else 10k.
+        mutable.thinking = {
+          type: 'enabled',
+          budget_tokens: options.thinkingBudget
+            ?? (effort ? ANTHROPIC_THINKING_BUDGET[effort] : undefined)
+            ?? 10000,
+        };
+      }
+    } else {
+      if (thinkingOff && adaptive && (control.off === 'disabled' || control.off === 'between_tools')) {
+        mutable.thinking = { type: control.off };
+      }
+      if (options.temperature !== undefined) params.temperature = options.temperature;
     }
 
     if (options.topP !== undefined) {

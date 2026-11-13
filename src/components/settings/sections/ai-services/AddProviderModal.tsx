@@ -31,7 +31,7 @@ import { toModelInfo, withContextWindows } from './modelInfoUtil';
 import { sortKnownFirst, unionSelectAll, filterModels, MODEL_FILTER_MIN_ITEMS } from './fetchModelUtils';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
 import ThinkingEffortSelect from './ThinkingEffortSelect';
-import { documentedDefaultThinkingEffort } from '@/core/llm/modelProfile';
+import { documentedDefaultThinkingEffort, offeredThinkingEffortsFor } from '@/core/llm/modelProfile';
 import type { LLMProvider, ApiFormat } from '@/types';
 import type { ModelInfo, ProviderSource, ModelDeclaredCapabilities, ProviderInstance, ThinkingEffort } from '@/types/provider';
 import {
@@ -659,6 +659,15 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   // ── Shared row of the three model lists inside the window (fetched checklist / models the
   // user typed / models Ollama reported): the expand button and the abilities under it are
   // gated identically everywhere: showAdvanced && isSelected. ──
+  // The thinking levels the model carries on this provider's wire; a level the request could not
+  // carry is not offered. Ollama has its own adapter, every other type follows its API format.
+  const offeredEfforts = (modelId: string) => offeredThinkingEffortsFor({
+    modelId,
+    baseUrl,
+    declared: perModelDeclared[modelId] ?? defaultModelDeclaredCapabilities(modelId),
+    adapter: isOllama ? 'ollama' : effectiveFormat === 'anthropic' ? 'claude' : 'openai-compatible',
+  });
+
   const renderModelCapsPanel = (modelId: string) => {
     const providerId = shownProvider?.id ?? (isCustom ? undefined : selectedOption?.provider);
     const discovered = providerId ? discoveredCapabilities[`${providerId}:${modelId}`] : undefined;
@@ -673,6 +682,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
           // (design doc §7b), and `selectedOption.format` never changes for
           // it — only `effectiveFormat` (which follows `activePlan`) does.
           apiFormat={effectiveFormat}
+          thinkingEfforts={offeredEfforts(modelId)}
           contextWindow={resolveContextWindow({
             modelId,
             probed: detectedContextWindowFor(modelId),
@@ -1647,9 +1657,10 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                     <p className="text-ui-sm text-label-tertiary">{t.settings.capThinkingEffortHint}</p>
                   </div>
                   {builtinModelList.filter((m) => selectedModels.has(m.id)).map((model) => (
-                    <div key={model.id} className="flex items-center justify-between gap-3">
+                    offeredEfforts(model.id).length > 0 && <div key={model.id} className="flex items-center justify-between gap-3">
                       <span className="min-w-0 truncate text-ui text-label">{model.label}</span>
                       <ThinkingEffortSelect
+                        efforts={offeredEfforts(model.id)}
                         label={`${model.label} ${t.settings.capThinkingEffort}`}
                         value={perModelDeclared[model.id]?.thinkingEffort}
                         onChange={(effort) => setModelThinkingEffort(model.id, effort)}

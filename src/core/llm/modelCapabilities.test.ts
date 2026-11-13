@@ -211,12 +211,27 @@ describe('modelCapabilities', () => {
       expect(p.reasoningEffort).toBeUndefined();
     });
 
-    it('anthropic: enables thinking and keeps a 16384 floor', () => {
+    it('anthropic: a large-output model keeps its ceiling and the 10000 budget', () => {
       const caps = resolveCapabilities('claude-sonnet-4-6');
       const p = computeReasoningParams(caps, 32768);
       expect(p.enableThinking).toBe(true);
       expect(p.thinkingBudget).toBe(10000);
-      expect(p.maxTokens).toBeGreaterThanOrEqual(16384);
+      expect(p.maxTokens).toBe(caps.maxOutputTokens);
+    });
+
+    it('anthropic: a small declared cap is never exceeded and the budget fits under it', () => {
+      const caps = { ...resolveCapabilities('claude-sonnet-4-6'), thinking: 'anthropic' as const, maxOutputTokens: 8192 };
+      const p = computeReasoningParams(caps, 32768);
+      expect(p.maxTokens).toBeLessThanOrEqual(8192);
+      expect(p.enableThinking).toBe(true);
+      expect(p.thinkingBudget!).toBeLessThan(p.maxTokens);
+    });
+
+    it('anthropic: a small context window keeps the window reserve, not a floor', () => {
+      const caps = { ...resolveCapabilities('claude-sonnet-4-6'), thinking: 'anthropic' as const };
+      const p = computeReasoningParams(caps, 32768, 32768);
+      expect(p.maxTokens).toBe(8192);
+      expect(p.thinkingBudget!).toBeLessThan(p.maxTokens);
     });
 
     it('uncontrollable: gives full ceiling, no budget knob', () => {

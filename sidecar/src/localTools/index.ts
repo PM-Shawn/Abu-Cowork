@@ -363,6 +363,7 @@ import { showWidgetTool, readMeTool } from '@/core/tools/definitions/widgetTools
 import { httpFetchTool, webSearchTool } from '@/core/tools/definitions/webTools';
 import {
   readFileTool,
+  readFileNeedsPictureFit,
   listDirectoryTool,
   searchFilesTool,
   findFilesTool,
@@ -434,8 +435,8 @@ const readFileLocalTool: ToolDefinition = {
   ...readFileTool,
   execute: async (input, context) => {
     const path = typeof input.path === 'string' ? input.path : '';
-    // A PDF read and a view of part of a picture run Python in the shell, which the sidecar cannot start.
-    if (readFileUnsupportedLocally(path) || readFileNeedsHostProcess(path, input)) {
+    // A PDF read, a view of part of a picture and the fit of a picture over the limits run Python in the shell, which the sidecar cannot start.
+    if (readFileUnsupportedLocally(path) || readFileNeedsHostProcess(path, input) || await readFileNeedsPictureFit(path, context)) {
       throw new LocalToolUnsupportedError(
         `read_file: "${path}" needs run_argv_command (pdftotext/python3/unzip/tar), which is not on the sidecar's native.invoke allowlist — falling back to the reverse tool.invoke path, where the shell can run it directly.`,
       );

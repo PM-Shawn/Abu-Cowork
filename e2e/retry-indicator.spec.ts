@@ -106,8 +106,9 @@ test.describe('Retry indicator', () => {
     // (server_error → ~2s backoff × 2 retries).
     await expect(page.getByText(/正在重试/).first()).toBeVisible({ timeout: 20_000 });
 
-    // …and the retry eventually succeeds (reply streamed on the 3rd attempt).
-    await expect(page.getByText('E2E retry OK')).toBeVisible({ timeout: 20_000 });
+    // …and the retry eventually succeeds (reply streamed on the 3rd attempt). The mock also
+    // answers the title request with these words, so look for the reply in the message list.
+    await expect(page.getByTestId('chat-message-list').getByText('E2E retry OK')).toBeVisible({ timeout: 20_000 });
 
     expect(attempts).toBeGreaterThanOrEqual(3); // 2 failures + 1 success
   });

@@ -263,4 +263,18 @@ describe.skipIf(!hasLibraries)('the probe program on generated files', () => {
     expect(third.text_cut_at).toBeNull();
     expect(third.list.map((p) => p.n)).toEqual([1, 2]);
   });
+
+  it('pdf-view: a region holding more text than the limit says that its text was cut, and a smaller region does not', () => {
+    const file = join(dir, 'dense.pdf');
+    const whole = run<PdfViewProbe>('pdf-view', { page: 1, region: [0, 0, 1, 1], render: false }, file);
+    expect(whole.text.length).toBe(20_000);
+    expect(whole.text_cut).toBe(true);
+    expect(whole.text_chars).toBeGreaterThan(120_000);
+    const top = run<PdfViewProbe>('pdf-view', { page: 1, region: [0, 0, 1, 0.04], render: false }, file);
+    expect(top.text_cut).toBe(false);
+    expect(top.text_chars).toBe(top.text.length);
+    expect(top.text.startsWith('abcabc')).toBe(true);
+    // The limit is the caller's to set.
+    expect(run<PdfViewProbe>('pdf-view', { page: 1, region: [0, 0, 1, 0.04], render: false, text_chars: 1000 }, file)).toMatchObject({ text_cut: true });
+  });
 });

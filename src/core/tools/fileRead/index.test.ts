@@ -56,6 +56,8 @@ describe('withDocumentReading dispatch', () => {
       .toMatch(/^Error: text_offset does not apply to this file/);
     expect(await tool.execute({ path: '/d/photo.png', pages: '1' }, { files: access }))
       .toMatch(/^Error: pages does not apply to a picture file/);
+    expect(await tool.execute({ path: '/d/photo.png', text_offset: 5 }, { files: access }))
+      .toMatch(/^Error: text_offset does not apply to a picture file/);
     expect(await tool.execute({ path: '/d/a.pdf', region: { x0: 0, y0: 0, x1: 900, y1: 900 } }, { files: access }))
       .toMatch(/^Error: region values are fractions between 0 and 1/);
     expect(upstream).not.toHaveBeenCalled();

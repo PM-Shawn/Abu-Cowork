@@ -57,6 +57,8 @@ export const PDF_AUTO_IMAGE_MAX_PAGES = 3;
 export const PDF_MAX_PAGE_IMAGES = 4;
 /** Characters of PDF text per read_file call. */
 export const PDF_TEXT_BUDGET = 100_000;
+/** Characters of text layer one region view returns. */
+export const PDF_VIEW_TEXT_BUDGET = 20_000;
 /** Long side of a whole-page image, before its rulers. */
 const PAGE_SIDE = 1400;
 /** Long side of a region or a turned page, before its rulers. */
@@ -226,14 +228,17 @@ export function buildPdfViewResult(
   const enlarged = options.vision && view.img ? enlargedNote(view.scan_zoom, 'scan') : '';
   if (enlarged) lines.push(enlarged);
   const text = view.text.trim();
+  const cut = view.text_cut
+    ? `\n[... the text of this region is cut here: ${text.length.toLocaleString('en-US')} of ${view.text_chars.toLocaleString('en-US')} characters are shown. Ask for a smaller region (part of the page at a time) to read the rest.]`
+    : '';
   if (!text) {
     lines.push('No text layer inside this region; read it from the image.');
   } else if (page.garbled) {
-    lines.push(`Text layer inside this region (garbled on this page: do not trust these characters):\n${text}`);
+    lines.push(`Text layer inside this region (garbled on this page: do not trust these characters):\n${text}${cut}`);
   } else if (page.ocr) {
-    lines.push(`Text layer inside this region (scanner OCR: it can misread characters; check them against the image):\n${text}`);
+    lines.push(`Text layer inside this region (scanner OCR: it can misread characters; check them against the image):\n${text}${cut}`);
   } else {
-    lines.push(`Text layer inside this region (exact characters):\n${text}`);
+    lines.push(`Text layer inside this region (exact characters):\n${text}${cut}`);
   }
   if (!options.vision || !view.img) return lines.join('\n');
   return withImages(lines.join('\n'), labeledImage(`${pageLabel(options.fileName, page.n)}, ${where}, ${view.img.w}×${view.img.h} px`, view.img));
@@ -278,7 +283,7 @@ export async function readPdf(
       return { kind: 'done', result: 'Error: region and rotate show one page; pass pages with a single page number, e.g. pages="18".' };
     }
     const outcome = await runDocumentProbe<PdfViewProbe>(filePath, 'pdf-view', {
-      page, region: params.region, rotate: params.rotate, side: VIEW_SIDE, render: vision,
+      page, region: params.region, rotate: params.rotate, side: VIEW_SIDE, render: vision, text_chars: PDF_VIEW_TEXT_BUDGET,
     }, context);
     if (outcome.status !== 'ok') return probeFailure(outcome, fileName);
     return { kind: 'done', result: buildPdfViewResult(outcome.value, { fileName, vision }) };

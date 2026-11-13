@@ -43,6 +43,10 @@ export const DOCUMENT_READ_PROPERTIES: Record<string, ToolParameter> = {
     type: 'string',
     description: 'PDF only: the pages to read with their page images, e.g. "18", "3-5" or "2,7" (up to 4 page images per call). With region or rotate: one page.',
   },
+  text_offset: {
+    type: 'number',
+    description: 'PDF only: characters of the first page\'s text to skip. Use it, with pages, to read on when a read said its text stopped partway through a page.',
+  },
   region: {
     type: 'object',
     description: 'Zoom: the part of a PDF page (with pages) or of a picture file to show enlarged, in fractions 0–1 from its top-left corner as shown, read off the rulers of the image you saw (with rotate, of the turned image); e.g. {"x0":0.5,"y0":0.6,"x1":1,"y1":1} is the lower right. For a PDF page the text layer inside the region comes too.',
@@ -56,10 +60,6 @@ export const DOCUMENT_READ_PROPERTIES: Record<string, ToolParameter> = {
   rotate: {
     type: 'number',
     description: 'Degrees to turn the PDF page or picture clockwise before showing it, to set sideways or upside-down content upright: 270 when the content lies turned a quarter clockwise (the tops of its letters face right), 90 when turned a quarter counter-clockwise (tops face left), 180 when upside down. region, if given, is on the turned image.',
-  },
-  text_offset: {
-    type: 'number',
-    description: 'PDF only: characters of the first page\'s text to skip. Use it, with pages, to read on when a read said its text stopped partway through a page.',
   },
 };
 
@@ -95,6 +95,9 @@ async function handle(input: Record<string, unknown>, context?: ToolExecutionCon
   if (kind === 'image') {
     if (params.pages) {
       return { kind: 'done', result: 'Error: pages does not apply to a picture file; use region and rotate to look at part of it.' };
+    }
+    if (params.textOffset) {
+      return { kind: 'done', result: 'Error: text_offset does not apply to a picture file; it reads on in the text of a PDF page.' };
     }
     // A model that cannot see gets read_file's own note; a plain read is read_file's own code.
     if (context?.supportsVision === false || !asksForView(params)) return { kind: 'upstream' };

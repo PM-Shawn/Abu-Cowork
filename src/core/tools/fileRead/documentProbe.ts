@@ -401,6 +401,7 @@ def pdf_view():
     if text is None:
         text = tp.get_text_bounded(min(xs), min(ys), max(xs), max(ys)).replace('\r\n', '\n').replace('\r', '\n')
     text = text.strip()
+    limit = O.get('text_chars', 20000)
     tp.close()
     got, zoom = None, None
     hx, vy = ruled(reg)
@@ -413,7 +414,7 @@ def pdf_view():
         d = scan_density(page, c, ct)
         zoom = round(scale / d, 1) if d else None
     page.close()
-    emit({'ok': True, 'pages': n, 'page': s, 'region': reg, 'rotate': rot, 'rulers': [hx, vy], 'img': got, 'text': text[:20000], 'scan_zoom': zoom})
+    emit({'ok': True, 'pages': n, 'page': s, 'region': reg, 'rotate': rot, 'rulers': [hx, vy], 'img': got, 'text': text[:limit], 'text_cut': len(text) > limit, 'text_chars': len(text), 'scan_zoom': zoom})
 
 
 def view(im, budget):
@@ -529,8 +530,12 @@ export interface PdfViewProbe {
   rotate: number;
   rulers: Rulers;
   img: ProbeImage | null;
-  /** Text layer characters inside the region. */
+  /** Text layer characters inside the region, up to the limit. */
   text: string;
+  /** The region holds more text than `text` shows. */
+  text_cut: boolean;
+  /** Characters of text the region holds, shown or not. */
+  text_chars: number;
   /** On a scanned page: how many times the view enlarges the scan's own pixels. */
   scan_zoom?: number | null;
 }

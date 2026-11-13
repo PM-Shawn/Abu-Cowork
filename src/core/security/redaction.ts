@@ -114,11 +114,41 @@ function isLocalPosixPath(path: string, before = '', loneNameCounts = true): boo
   return loneNameCounts && !DIVISOR_BEFORE.test(before) && (FILE_NAME.test(names[0]) || ASCII_NAME.test(names[0]));
 }
 
+/** Words after a path that may still belong to it: one space apart, on the same line. */
+const FOLLOWING_WORDS = /^(?: [^\s"'`<>，。；：！？、）】」』》]+)+/u;
+/** Most words a folder or file name may hold after the space that ends a segment. */
+const NAME_WORDS_MAX = 4;
+/** A word that begins a new path, so it is not the rest of this one. */
+const PATH_WORD_START = /^(?:[A-Za-z]:[\\/]|\\\\|[\\/]|~[\\/]|\.\.[\\/])/;
+/** `and/or`, `TCP/IP`: a slash between two plain words. */
+const SLASHED_WORDS = /^[A-Za-z]+\/[A-Za-z]+$/;
+const FILE_NAME_WORD = /^[^\s\\/]+\.[A-Za-z0-9]{1,5}$/;
+
+/**
+ * Whether the words after a space, taken as the rest of a name under a user's
+ * folder, reach the end of the path: a word with a separator inside it
+ * (`Folder\contract.pdf`) or, when the segment so far has no extension, a file
+ * name (`b.docx`), within `NAME_WORDS_MAX` words and before any word that ends a
+ * sentence. Prose after the path (`and then closed the file.`) reaches neither.
+ */
+function nameContinues(following: string, lastSegment: string): boolean {
+  if (TRAILING_PUNCTUATION.test(lastSegment)) return false;
+  const words = (FOLLOWING_WORDS.exec(following)?.[0] ?? '').slice(1).split(' ').slice(0, NAME_WORDS_MAX);
+  for (const word of words) {
+    // After a file name (`a.pdf and/or …`) a slash between two plain words is prose.
+    const prose = lastSegment.includes('.') && SLASHED_WORDS.test(word);
+    const separated = /[\\/]/.test(word) && !PATH_WORD_START.test(word) && !prose;
+    if (separated || (!lastSegment.includes('.') && FILE_NAME_WORD.test(word))) return true;
+    if (PATH_WORD_START.test(word) || TRAILING_PUNCTUATION.test(word)) return false;
+  }
+  return false;
+}
+
 /**
  * Where a path that starts at `start` ends. A path ends at `PATH_STOP`, except
- * that names under a user's folder may hold spaces (`C:\Users\Zhang San\AppData\…`,
- * `…/Library/Application Support/…`): a space followed by more of the path (a
- * separator before the next space, or a file name) continues it. Trailing
+ * that names under a user's folder may hold several spaces (`C:\Users\Zhang San\AppData\…`,
+ * `…/Library/Application Support/…`, `My Great Folder/contract.pdf`): at a space
+ * the path goes on when `nameContinues` finds its end in the next few words. Trailing
  * sentence punctuation, Markdown emphasis and an unmatched closing bracket
  * are left to the text around the path.
  */
@@ -135,13 +165,7 @@ function pathEnd(text: string, start: number): number {
     // Windows writes the folder in any case (`c:\\users\\…`).
     const userAt = segments.findIndex((segment) => /^(users|home)$/i.test(segment));
     const underUser = userAt >= 0 && (segments[userAt + 1] ?? '') !== '';
-    const next = /^ [^\s"'`<>]*/.exec(text.slice(end))?.[0] ?? '';
-    // Under a user's folder any folder or file may hold a space (`Application Support`,
-    // `My Folder`, `a b.docx`): the path goes on when the next word carries a separator,
-    // or is a file name and the segment before it has no extension yet.
-    const lastSegment = segments[segments.length - 1];
-    const fileNameNext = !lastSegment.includes('.') && /^ [^\s\\/]+\.[A-Za-z0-9]{1,5}$/.test(next);
-    if (!underUser || !(/[\\/]/.test(next) || fileNameNext)) break;
+    if (!underUser || !nameContinues(text.slice(end), segments[segments.length - 1])) break;
     end++;
   }
   let path = text.slice(start, end);

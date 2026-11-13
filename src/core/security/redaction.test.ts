@@ -214,4 +214,35 @@ describe('redactSensitiveMediaText', () => {
       expect(redactSensitiveMediaText('open C:\\Users\\bob\\a.txt and then stop')).toBe('open [REDACTED:path] and then stop');
     });
   });
+
+  describe('names with several spaces under a user folder', () => {
+    it.each([
+      ['C:\\Users\\Alice\\Documents\\My Great Folder\\contract.pdf', '[REDACTED:path]'],
+      ['c:\\users\\alice\\Documents\\My Great Folder\\Q3 final budget draft.xlsx', '[REDACTED:path]'],
+      ['C:\\Users\\Alice Smith\\Desktop\\Client Files 2026\\Signed Contract v2.docx', '[REDACTED:path]'],
+      ['/Users/alice/Documents/My Great Folder/contract.pdf', '[REDACTED:path]'],
+      ['/Users/alice/Library/Application Support/My Great App/cache/a.db', '[REDACTED:path]'],
+      ['/home/bob/Documents/Q3 final report v2.docx', '[REDACTED:path]'],
+      ['/Users/some name/My Great Folder/x', '[REDACTED:path]'],
+      ['C:\\Users\\张三\\我的 资料 文件夹\\合同.pdf', '[REDACTED:path]'],
+    ])('removes the whole path: %s', (text, expected) => {
+      expect(redactSensitiveMediaText(text)).toBe(expected);
+    });
+
+    it.each([
+      ['Saved to C:\\Users\\Alice\\Documents\\My Great Folder\\contract.pdf and then closed the file.', 'Saved to [REDACTED:path] and then closed the file.'],
+      ['Saved to /Users/alice/Documents/My Great Folder/contract.pdf. Next step is review.', 'Saved to [REDACTED:path]. Next step is review.'],
+      ['Saved to /Users/alice/Documents/My Great Folder/contract.pdf, then see the other copy.', 'Saved to [REDACTED:path], then see the other copy.'],
+      ['已保存到 C:\\Users\\张三\\我的 资料 文件夹\\合同.pdf，请查看。', '已保存到 [REDACTED:path]，请查看。'],
+      ['Opened "/Users/alice/My Great Folder/a.pdf" for review', 'Opened "[REDACTED:path]" for review'],
+      ['read /Users/alice/Documents/a.pdf and/or the notes', 'read [REDACTED:path] and/or the notes'],
+      ['C:\\Users\\Alice\\a.pdf and C:\\Users\\Bob\\My Great Folder\\b.pdf', '[REDACTED:path] and [REDACTED:path]'],
+      ['/Users/alice/Desktop and /Users/bob/My Great Folder/x.png ok', '[REDACTED:path] and [REDACTED:path] ok'],
+      ['Error: spawn /Users/alice/bin/tool failed to start the process', 'Error: spawn [REDACTED:path] failed to start the process'],
+      ['see /Users/alice/Documents for the files', 'see [REDACTED:path] for the files'],
+      ['line one /Users/alice/Documents\nMy Great Folder holds it', 'line one [REDACTED:path]\nMy Great Folder holds it'],
+    ])('keeps the prose after a path: %s', (text, expected) => {
+      expect(redactSensitiveMediaText(text)).toBe(expected);
+    });
+  });
 });

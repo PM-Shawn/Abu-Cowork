@@ -368,7 +368,7 @@ class Placed(Tmp):
             make_flat(pdf, **kw)
             box = [dw * 0.3 - 60, dh * 0.3 - 8, dw * 0.3 + 60, dh * 0.3 + 8]
             vp = self.p("v.json")
-            with open(vp, "w") as fh:
+            with open(vp, "w", encoding="utf-8") as fh:
                 json.dump([{"page": 1, "box": box, "text": "HELLO WORLD", "size": 12}], fh)
             out = self.p(f"{name}_out.pdf")
             code, text = run(FILL, pdf, vp, out)
@@ -392,7 +392,7 @@ class Placed(Tmp):
                    {"page": 1, "box": [100, 500, 130, 520], "text": "a long piece of text", "fit": True},
                    {"page": 3, "box": [1, 1, 20, 20], "text": "E"}]
         vp = self.p("v.json")
-        with open(vp, "w") as fh:
+        with open(vp, "w", encoding="utf-8") as fh:
             json.dump(entries, fh)
         code, text = run(FILL, pdf, vp, self.p("o.pdf"))
         self.assertEqual(code, 1)
@@ -417,7 +417,7 @@ class Placed(Tmp):
 
     def fill_ok(self, pdf, entries):
         vp = self.p("v.json")
-        with open(vp, "w") as fh:
+        with open(vp, "w", encoding="utf-8") as fh:
             json.dump(entries, fh)
         code, text = run(FILL, pdf, vp, self.p("out.pdf"))
         self.assertEqual(code, 0, text)
@@ -458,7 +458,7 @@ class Placed(Tmp):
         with open(enc, "wb") as fh:
             w.write(fh)
         vp = self.p("v.json")
-        with open(vp, "w") as fh:
+        with open(vp, "w", encoding="utf-8") as fh:
             json.dump([{"page": 1, "box": [100, 400, 200, 420], "text": "x"}], fh)
         code, text = run(FILL, enc, vp, self.p("o.pdf"))
         self.assertEqual(code, 2)

@@ -761,12 +761,15 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
       }
 
       case 'close_tab': {
-        // Only a tab this conversation's task opened itself. The user's own
-        // tabs are never closed by a task.
+        // Only a tab this conversation's task opened itself, and only while no
+        // other conversation holds it now. The user's own tabs are never closed
+        // by a task.
         const owner = ownerFromPayload(payload);
         const target = Number(payload.tabId);
         const opener = Number.isInteger(target) ? tabClaims.openedBy(target) : null;
-        if (!opener || isLegacyOwner(owner) || opener.conversationId !== owner.conversationId) {
+        const holder = Number.isInteger(target) ? tabClaims.holderOf(target) : null;
+        if (!opener || isLegacyOwner(owner) || opener.conversationId !== owner.conversationId
+          || (holder && holder.conversationId !== owner.conversationId)) {
           return {
             id,
             success: true,

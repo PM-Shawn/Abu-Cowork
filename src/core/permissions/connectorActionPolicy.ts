@@ -26,7 +26,8 @@
  *
  * The MCP annotations come from the server and are untrusted (the MCP spec
  * says as much), so they may only ADD an ask: `destructiveHint: true` makes a
- * tool ask on its own. `openWorldHint: true` (the tool reaches a service
+ * tool ask on its own, every time, even one whose name reads as a send or a
+ * change (which would otherwise be a reusable grant). `openWorldHint: true` (the tool reaches a service
  * outside) never makes a tool ask by itself; it only confirms a weak sign of
  * sending, a description that speaks of sending past its opening ("Creates an
  * event and sends the invitations"), which alone is not taken. A server that
@@ -265,10 +266,13 @@ export function classifyConnectorAction(
   if ((verdict === null || verdict === 'change') && hints?.openWorldHint === true && descriptionMentionsSending(description)) {
     verdict = 'send';
   }
-  if (verdict !== null && verdict !== 'read') return verdict;
+  // Money and deletions already ask every time.
+  if (verdict === 'money' || verdict === 'destructive') return verdict;
   // Tighten-only: the server's own word that a tool destroys something is
-  // taken; its word that a tool is harmless never is.
+  // taken, whatever the name says (a send or a change would otherwise be a
+  // reusable grant); its word that a tool is harmless never is.
   if (hints?.destructiveHint === true) return 'destructive';
+  if (verdict !== null && verdict !== 'read') return verdict;
   // Nothing said what the tool does, and the connector has tools that write:
   // an unknown verb is not assumed to read.
   if (verdict === null && hints?.serverWrites === true) return 'change';

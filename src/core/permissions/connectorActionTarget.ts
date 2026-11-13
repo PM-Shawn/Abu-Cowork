@@ -1,32 +1,42 @@
 /**
- * Who a connector action reaches and what it carries, read off the call's own
- * input, for two uses:
+ * Who a connector action reaches, what it changes and what it carries, read off
+ * the call's own input, for two uses:
  *
  * - the ask names the recipients and the start of the content, so the user
  *   approves this message to these people rather than "a send";
- * - the once-per-task grant of a send is keyed by the tool AND the recipients
- *   (`recipientKey`), so approving a note to a colleague does not let the same
- *   tool send anything to anyone else for the next half hour.
+ * - the once-per-task grant of a send or a change is keyed by the tool AND the
+ *   target (`grantKey`), so approving a note to a colleague, or an edit of one
+ *   file, does not let the same tool reach anyone or anything else for the next
+ *   half hour.
  *
  * Recipients are the fields whose name says so (`to`, `cc`, `recipient`,
- * `email`, `channel`, `chat_id`, `receive_id`, `user_id`, `phone`, …), at the
- * top of the input or one object down (`{ message: { to } }`). When no field
- * says so, every field that is not content stands for the recipient in the
- * key: a tool whose target field has a name we do not know still asks again
- * when that field changes. Content is the text-like fields (`text`, `content`,
- * `body`, `subject`, …); it is shown, never part of the key, so a second
- * message to the same person is covered.
+ * `email`, `channel`, `chat_id`, `receive_id`, `phone`, …), at any depth.
+ * The calling identity (`account`, `user_id`, `userId`) is not a recipient: it
+ * says who is acting, not whom it reaches or what it touches. Content is the
+ * text-like fields (`text`, `content`, `body`, `subject`, …); it is shown, never
+ * part of the key, so a second message to the same person is covered.
+ *
+ * What the key holds depends on the action. A send is keyed by its recipients
+ * (and the identity). A change is keyed by everything in the call that is not
+ * content: the object it modifies (`file_id`, `path`, …) and any recipients.
+ * When the target cannot be identified (no recipient for a send; no recipient
+ * and no field naming the object for a change), `grantKey` is null and the call
+ * is asked every time: an account or an empty target set is never a target.
  */
 
-import { toolNameWords } from './connectorActionPolicy';
+import { toolNameWords, type ConnectorActionKind } from './connectorActionPolicy';
 
 export interface ConnectorActionTarget {
   /** The recipients as the call names them, in input order, without repeats. */
   recipients: string[];
   /** The start of the content, on one line, or '' when the call carries none. */
   preview: string;
-  /** What the task grant of a send is keyed by, with the tool name. */
-  recipientKey: string;
+  /**
+   * What the task grant of this call is keyed by, with the tool name, or null
+   * when the call's target cannot be identified (or the action is asked every
+   * time): the call is then never covered by an earlier approval.
+   */
+  grantKey: string | null;
 }
 
 /** Field-name words that mark a recipient (`chat_id` → chat, id). */
@@ -35,13 +45,16 @@ const RECIPIENT_WORDS = new Set([
   'address', 'addresses', 'channel', 'channels', 'chat', 'chats', 'group', 'groups', 'room', 'rooms',
   'conversation', 'user', 'users', 'member', 'members', 'phone', 'phones', 'mobile', 'mobiles', 'target',
   'targets', 'contact', 'contacts', 'attendee', 'attendees', 'invitee', 'invitees', 'webhook', 'thread',
-  'dest', 'destination', 'open', 'union', 'payee', 'account',
+  'dest', 'destination', 'open', 'union', 'payee',
 ]);
 /** Field-name words that mark the content. Checked first: `message_text` is content. */
 const CONTENT_WORDS = new Set([
   'text', 'content', 'contents', 'body', 'message', 'msg', 'subject', 'title', 'markdown', 'html',
   'caption', 'comment', 'note', 'description', 'summary', 'card',
 ]);
+
+/** Words of a field that names what the call modifies (`file_id`, `path`, `spreadsheetId`). */
+const OBJECT_WORDS = new Set(['id', 'ids', 'key', 'keys', 'path', 'paths', 'url', 'uri', 'name', 'filename', 'slug', 'ref', 'uuid']);
 
 const MAX_RECIPIENTS = 5;
 const MAX_RECIPIENT_LENGTH = 60;
@@ -50,15 +63,21 @@ const MAX_PREVIEW_LENGTH = 80;
 /** `msg_type`, `receive_id_type`, `parse_mode`: settings of a field, not the field. */
 const SETTING_WORDS = new Set(['type', 'format', 'mode', 'kind', 'encoding']);
 
-function fieldKind(key: string): 'recipient' | 'content' | 'other' {
+/** The calling identity: `account`, `account_id`, `user_id`, `userId` (`target_user_id` names whom, not who). */
+function isIdentityField(words: string[]): boolean {
+  return words.some((word) => word === 'account' || word === 'accounts' || word === 'accountid') || words.join('') === 'userid';
+}
+
+function fieldKind(key: string): 'recipient' | 'identity' | 'content' | 'object' | 'other' {
   const words = toolNameWords(key);
   if (words.some((word) => SETTING_WORDS.has(word))) return 'other';
   const last = words[words.length - 1];
   const isId = last === 'id' || last === 'ids';
+  if (isIdentityField(words)) return 'identity';
   // `message_id` names a message to act on, not the text of one.
   if (words.some((word) => CONTENT_WORDS.has(word))) return isId ? 'other' : 'content';
   if (words.some((word) => RECIPIENT_WORDS.has(word))) return 'recipient';
-  return 'other';
+  return OBJECT_WORDS.has(last) ? 'object' : 'other';
 }
 
 /** One line, cut to `max` characters. */
@@ -109,27 +128,42 @@ function childrenOf(value: Record<string, unknown> | unknown[]): Array<[string, 
 }
 
 /**
- * Scalars of everything that is not content, at any depth, for the fallback
- * key. A content field's own text stays out (a second message to the same
- * place is covered), but an object or list under a content name is still read:
- * a target hidden in `{ message: { dest_addr } }` must change the key.
+ * One scalar of the call that is neither content nor a recipient: where it
+ * stands, what its field is, and its value.
  */
-function otherScalars(value: unknown, path = '', depth = 0, inContent = false): string[] {
-  if (depth > MAX_DEPTH) return [];
-  if (isContainer(value)) {
-    const out: string[] = [];
-    for (const [key, child] of childrenOf(value)) {
-      const content = inContent || (!Array.isArray(value) && fieldKind(key) === 'content');
-      out.push(...otherScalars(child, path ? `${path}.${key}` : key, depth + 1, content));
-    }
-    return out.sort();
-  }
-  if (inContent) return [];
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return [`${path}=${String(value)}`];
-  return [];
+interface CallScalar {
+  path: string;
+  kind: 'identity' | 'object' | 'other';
+  value: string;
 }
 
-export function describeConnectorTarget(input: Record<string, unknown>): ConnectorActionTarget {
+/**
+ * Every non-content, non-recipient scalar of the call, at any depth. A content
+ * field's own text stays out (a second message to the same place is covered),
+ * but a container under a content name (`message`) is still read field by
+ * field: a target hidden in `{ message: { routing_key } }` must show up.
+ */
+function callScalars(value: unknown, field = '', path = '', depth = 0): CallScalar[] {
+  if (depth > MAX_DEPTH) return [];
+  if (isContainer(value)) {
+    const out: CallScalar[] = [];
+    for (const [key, child] of childrenOf(value)) {
+      // The items of a list belong to the list's own field.
+      const childField = Array.isArray(value) ? field : key;
+      if (!Array.isArray(value) && fieldKind(key) === 'recipient') continue;
+      out.push(...callScalars(child, childField, path ? `${path}.${key}` : key, depth + 1));
+    }
+    return out;
+  }
+  if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return [];
+  const kind = fieldKind(field);
+  if (kind === 'content' || kind === 'recipient') return [];
+  return [{ path, kind, value: String(value) }];
+}
+
+const scalarKey = (scalar: CallScalar) => `${scalar.path}=${scalar.value}`;
+
+export function describeConnectorTarget(input: Record<string, unknown>, action: ConnectorActionKind): ConnectorActionTarget {
   const recipients: string[] = [];
   const content: string[] = [];
   const visit = (record: Record<string, unknown> | unknown[], depth: number) => {
@@ -159,14 +193,32 @@ export function describeConnectorTarget(input: Record<string, unknown>): Connect
     }
   };
   visit(input, 0);
-  const recipientKey = recipients.length > 0
-    ? JSON.stringify(recipients.map((recipient) => recipient.toLowerCase()).sort())
-    : JSON.stringify(otherScalars(input));
   return {
     recipients,
     preview: content.length > 0 ? oneLine(content.join(' '), MAX_PREVIEW_LENGTH) : '',
-    recipientKey,
+    grantKey: grantKeyOf(input, recipients, action),
   };
+}
+
+/**
+ * The key of a reusable grant, or null when the call is asked every time.
+ * A send is keyed by its recipients and the acting identity. A change is keyed
+ * by all of the call that is not content: the object it modifies, the
+ * identity, any recipients. Either needs a target it can name: a recipient, or
+ * (for a change) a field that names the modified object. The identity alone,
+ * or nothing, is never a target.
+ */
+function grantKeyOf(input: Record<string, unknown>, recipients: string[], action: ConnectorActionKind): string | null {
+  if (action !== 'send' && action !== 'change') return null;
+  const scalars = callScalars(input);
+  const identity = scalars.filter((scalar) => scalar.kind === 'identity').map(scalarKey).sort();
+  const named = recipients.map((recipient) => recipient.toLowerCase()).sort();
+  if (action === 'send') {
+    return named.length > 0 ? JSON.stringify({ recipients: named, identity }) : null;
+  }
+  const objects = scalars.filter((scalar) => scalar.kind !== 'identity').map(scalarKey).sort();
+  const namesObject = scalars.some((scalar) => scalar.kind === 'object');
+  return named.length > 0 || namesObject ? JSON.stringify({ recipients: named, identity, objects }) : null;
 }
 
 /** The recipients as the ask lists them: at most five, each cut short. */

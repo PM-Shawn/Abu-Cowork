@@ -246,6 +246,15 @@ describe('connectorActionPolicy', () => {
       expect(classifyConnectorAction('cache__get_and_clear', { destructiveHint: true })).toBe('destructive');
     });
 
+    it('upgrades a tool already read as a send or a change when the server says it is destructive', () => {
+      // A send or a change is a reusable grant; a server-declared destructive call is asked every time.
+      expect(classifyConnectorAction('mail__send_message', { destructiveHint: true })).toBe('destructive');
+      expect(classifyConnectorAction('drive__update_file', { destructiveHint: true })).toBe('destructive');
+      expect(classifyConnectorAction('drive__update_file', { destructiveHint: false })).toBe('change');
+      // Money already asks every time and stays money.
+      expect(classifyConnectorAction('bank__create_payment', { destructiveHint: true })).toBe('money');
+    });
+
     it('still asks for a send the server calls harmless', () => {
       expect(classifyConnectorAction('mail__send_email', { destructiveHint: false })).toBe('send');
     });

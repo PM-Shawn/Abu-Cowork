@@ -2393,12 +2393,13 @@ export async function checkToolApproval(
    * it reports).
    */
   const connectorAction: ConnectorActionKind | null = classifyConnectorAction(name, mcpToolHints(name));
-  // Who the call reaches and what it carries: named in the ask, and with the
-  // tool the key of a send's task grant, so a send approved to one person
-  // does not cover the same tool sending to anyone else.
-  const connectorTarget = connectorAction !== null ? describeConnectorTarget(input) : null;
-  const connectorGrantSubject = connectorTarget ? JSON.stringify([name, connectorTarget.recipientKey]) : '';
-  const connectorGranted = (connectorAction === 'send' || connectorAction === 'change') && !isTeam
+  // Who the call reaches, what it changes and what it carries: named in the
+  // ask, and with the tool the key of a send's or a change's task grant, so an
+  // approval for one recipient or one file does not cover another. A call whose
+  // target cannot be identified has no key and is asked every time.
+  const connectorTarget = connectorAction !== null ? describeConnectorTarget(input, connectorAction) : null;
+  const connectorGrantSubject = connectorTarget?.grantKey != null ? JSON.stringify([name, connectorTarget.grantKey]) : null;
+  const connectorGranted = connectorGrantSubject !== null && !isTeam
     && hasTaskGrant('connector-tool', toolContext?.conversationId, connectorGrantSubject);
   const connectorAsks = connectorAction !== null && !connectorGranted;
 
@@ -2466,10 +2467,15 @@ export async function checkToolApproval(
         { connector },
       );
     const preview = connectorTarget.preview ? format(rules.connectorContentPreview, { preview: connectorTarget.preview }) : '';
+    // Only what the answer really does is promised: a send or a change keeps a
+    // task grant when its target is named (`connectorGrantSubject`) and the run
+    // is not a team's; otherwise it is asked every time and the text says nothing.
+    const savesGrant = connectorGrantSubject !== null && !isTeam;
     const reason = connectorAction === 'send'
-      ? rules.connectorSendReason
+      ? rules.connectorSendReason + (savesGrant ? rules.connectorSendGrantNote : '')
       : connectorAction === 'money' ? rules.connectorMoneyReason
-        : connectorAction === 'change' ? rules.connectorChangeReason : rules.connectorDestructiveReason;
+        : connectorAction === 'change' ? rules.connectorChangeReason + (savesGrant ? rules.connectorChangeGrantNote : '')
+          : rules.connectorDestructiveReason;
     const confirmed = await onRequireConfirmation({
       command: `${action}${preview}`,
       // A sentence about what is about to happen, shown as plain text (the
@@ -2479,14 +2485,14 @@ export async function checkToolApproval(
       level: connectorAction === 'send' || connectorAction === 'change' ? 'warn' : 'danger',
       // One answer here also lets the plugin that serves this tool run for the
       // rest of the conversation (`pluginGrantPending`); the ask says so.
-      reason: pluginGrantPending !== null ? `${reason}${rules.connectorPluginGrantNote}` : reason,
+      reason: pluginGrantPending !== null && !isTeam ? `${reason}${rules.connectorPluginGrantNote}` : reason,
       agentName: toolContext?.agentName,
     }, toolContext?.loopId);
     if (!confirmed) {
       return { decision: 'deny', reason: isTeam ? t.commandConfirm.teamPendingConfirmation : t.commandConfirm.userCancelled };
     }
     if (!isTeam) {
-      if (connectorAction === 'send' || connectorAction === 'change') grantTask('connector-tool', toolContext?.conversationId, connectorGrantSubject);
+      if (connectorGrantSubject !== null) grantTask('connector-tool', toolContext?.conversationId, connectorGrantSubject);
       if (pluginGrantPending !== null) grantPluginServer(toolContext?.conversationId, pluginGrantPending);
     }
   }

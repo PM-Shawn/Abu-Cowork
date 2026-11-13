@@ -1256,7 +1256,8 @@
           const owner = ownerFromPayload(payload);
           const target = Number(payload.tabId);
           const opener = Number.isInteger(target) ? tabClaims.openedBy(target) : null;
-          if (!opener || isLegacyOwner(owner) || opener.conversationId !== owner.conversationId) {
+          const holder = Number.isInteger(target) ? tabClaims.holderOf(target) : null;
+          if (!opener || isLegacyOwner(owner) || opener.conversationId !== owner.conversationId || holder && holder.conversationId !== owner.conversationId) {
             return {
               id,
               success: true,

@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { LLMAdapter, ChatOptions, ToolChoice } from './adapter';
 import { LLMError, classifyError, buildToolParseError } from './adapter';
 import { resolveModelProfile } from './modelProfile';
+import { imageAcceptanceLimits } from './imagePolicy';
 import { rejectedCapabilities } from './rejectionMemory';
 import type { Message, StreamEvent, TokenUsage, ToolDefinition } from '../../types';
 import { getTauriFetch } from './tauriFetch';
@@ -151,8 +152,12 @@ function serializeForAnthropic(turns: PreparedTurn[]): Anthropic.MessageParam[] 
 }
 
 /** Convert messages through normalize → serialize pipeline */
-function convertMessages(messages: Message[], supportsVision: boolean): Anthropic.MessageParam[] {
-  const turns = normalizeMessages(messages, { supportsVision });
+function convertMessages(
+  messages: Message[],
+  supportsVision: boolean,
+  limits: { maxImageDimension: number; maxImageBytes: number },
+): Anthropic.MessageParam[] {
+  const turns = normalizeMessages(messages, { supportsVision, ...limits });
   return serializeForAnthropic(turns);
 }
 
@@ -238,7 +243,9 @@ export class ClaudeAdapter implements LLMAdapter {
       overrides,
     });
 
-    const convertedMessages = convertMessages(messages, !overrides.has('image_block'));
+    const convertedMessages = convertMessages(
+      messages, !overrides.has('image_block'), imageAcceptanceLimits(options.model),
+    );
     addIncrementalCacheBreakpoint(convertedMessages);
     // The volatile context tail goes AFTER the breakpoint: the cached prefix
     // ends at the last stored message, and this per-turn block is the only

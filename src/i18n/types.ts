@@ -5402,6 +5402,24 @@ export interface TranslationDict {
       /** Update failed. {error} */
       updateFailed: string;
     };
+    // read_file's reading of PDFs, Office files and views of pictures
+    fileRead: {
+      /** The PDF needs a password to open. */
+      pdfPasswordProtected: string;
+      /** The PDF reader could not open the file. {detail} */
+      pdfDamaged: string;
+      /** The file is over the document reader's input limit. {name}, {size}, {limit} */
+      tooLarge: string;
+      /** A picture file the viewer could not open. {detail} */
+      pictureUnopenable: string;
+      /** A .docx/.xlsx/.pptx that could not be opened. {detail} */
+      officeDamaged: string;
+      /** A .docx/.xlsx/.pptx that is an encrypted (password-protected) package. */
+      officePasswordProtected: string;
+      officeTooLarge: string;
+      /** A .docx/.pptx that holds an older binary Office file. {ext}, {format} */
+      officeOldFormat: string;
+    };
     // read_file / write_file / edit_file
     file: {
       /** Non-vision model image skip note. {path}, {mediaType} */

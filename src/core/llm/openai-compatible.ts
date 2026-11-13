@@ -15,6 +15,7 @@ import { createLogger } from '../logging/logger';
 import { buildFullChatUrl } from './urlUtils';
 import { applyModelRequestProcessors } from './modelRequestProcessors';
 import { resolveModelProfile } from './modelProfile';
+import { imageAcceptanceLimits } from './imagePolicy';
 import { rejectedCapabilities } from './rejectionMemory';
 import type { ReasoningReplay } from './model-data/families';
 import { observeCompatEvent } from '../observability/compatEvents';
@@ -339,8 +340,9 @@ function convertMessages(
   systemPrompt: string | undefined,
   supportsVision: boolean | undefined,
   reasoningReplay: ReasoningReplay,
+  limits: { maxImageDimension: number; maxImageBytes: number },
 ): OpenAIMessage[] {
-  const turns = normalizeMessages(messages, { supportsVision: supportsVision !== false });
+  const turns = normalizeMessages(messages, { supportsVision: supportsVision !== false, ...limits });
   return serializeForOpenAI(turns, systemPrompt, reasoningReplay);
 }
 
@@ -431,6 +433,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     const supportsVision = overrides.has('image_block') ? false : options.supportsVision;
     const convertedMessages = convertMessages(
       messages, options.systemPrompt, supportsVision, profile.wire.reasoningReplay,
+      imageAcceptanceLimits(options.model),
     );
     // Volatile context tail rides as the LAST message, after the whole stored
     // history: automatic prefix caching (DeepSeek/OpenAI) then keeps matching

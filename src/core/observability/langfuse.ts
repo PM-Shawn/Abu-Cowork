@@ -16,6 +16,7 @@ import type { TokenUsage } from '../../types';
 import { getTauriFetch } from '../llm/tauriFetch';
 import { promptTokensOf, type UsageProtocol } from '../llm/usageAccounting';
 import { redactSensitiveMediaText } from '../security/redaction';
+import { BEARER_PATTERN, JWT_PATTERN, SK_KEY_PATTERN } from '@/utils/secretPatterns';
 
 // Structural match for langfuse-core's LangfuseFetchOptions (not re-exported by
 // the `langfuse` package). Method parameter bivariance lets this override the
@@ -141,12 +142,12 @@ function mapUsage(protocol: UsageProtocol, usage?: TokenUsage, costUsd?: number)
 
 const LANGFUSE_MAX_STRING_CHARS = 2_000;
 const LANGFUSE_SECRET_PATTERNS: Array<[RegExp, string]> = [
-  [/\bBearer\s+[a-zA-Z0-9._\-+/=]{8,}/gi, 'Bearer [REDACTED:bearer]'],
+  [BEARER_PATTERN, 'Bearer [REDACTED:bearer]'],
   [/([?&](?:token|access_token|auth|authorization)=)([^&#\s]{8,})/gi, '$1[REDACTED:url-token]'],
   [/\b(?:api[_-]?key|password|secret|authorization)\s*[=:]\s*\S+/gi, '[REDACTED:secret]'],
   [/\btoken\s*[=:]\s*(?!\[REDACTED:url-token\])\S+/gi, '[REDACTED:secret]'],
-  [/\bsk-[a-zA-Z0-9_-]{12,}/g, '[REDACTED:api-key]'],
-  [/\beyJ[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}\.[a-zA-Z0-9_-]{8,}/g, '[REDACTED:jwt]'],
+  [SK_KEY_PATTERN, '[REDACTED:api-key]'],
+  [JWT_PATTERN, '[REDACTED:jwt]'],
 ];
 
 function sanitizeLangfuseString(value: string): string {

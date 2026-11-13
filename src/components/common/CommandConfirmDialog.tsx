@@ -1,12 +1,14 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
+import { Disclosure } from '@/components/ds/disclosure';
 import { InlineMessage } from '@/components/ds/inline-message';
 import { StatusIcon } from '@/components/ds/status-icon';
 import { format, useI18n } from '@/i18n';
 import { useSettingsStore } from '@/stores/settingsStore';
 import { grantBrowserPermissionTargets } from '@/core/permissions/browserPermissionConfig';
 import { mayOfferPersistentGrant } from '@/core/permissions/alwaysAskPolicy';
+import { cleanPurpose } from '@/utils/commandPurpose';
 import type { DangerLevel } from '@/core/tools/commandSafety';
 
 export interface CommandConfirmRequest {
@@ -34,6 +36,13 @@ export interface CommandConfirmRequest {
   browserPermissionResource?: import('@/core/permissions/browserPermissionDefaults').BrowserPermissionResource;
   browserPermissionTargets?: import('@/core/permissions/browserPermissionConfig').BrowserPermissionTarget[];
   allowPersistentGrant?: boolean;
+  /**
+   * Command confirmations: the model's own one-line statement of what the command is for, in
+   * plain words. It explains the step to a person who cannot read the command. It is the
+   * model's claim, so the system's own risk reason keeps its place and the exact command stays
+   * one click away (see `withCommandPurpose`).
+   */
+  purpose?: string;
 }
 
 /**
@@ -192,20 +201,45 @@ export default function CommandConfirmDialog({
     if (saved) onCancel(); else setSaveFailed(true);
   }, [request.browserOrigin, current, saving, onCancel, setSaving, setSaveFailed]);
 
-  const title = isUpload
-    ? uploadTitle
-    : request.kind === 'browser'
-      ? t.commandConfirm.browserTitle
-      : request.kind === 'self-extension'
-        ? t.commandConfirm.selfExtensionTitle
-        : t.commandConfirm[config.titleKey];
-  const description = isUpload
-    ? t.commandConfirm.browserUploadDescription
-    : request.kind === 'browser'
-      ? t.commandConfirm.browserDescription
-      : request.kind === 'self-extension'
-        ? t.commandConfirm.selfExtensionDescription
-        : t.commandConfirm[config.descKey];
+  // The words a person reads first. A command is explained by what it is for; the exact text
+  // moves behind "technical details", open from the start when the system rates it dangerous
+  // or gives no reason of its own to read.
+  const purpose = request.kind === undefined || request.kind === 'command'
+    ? cleanPurpose(request.purpose, request.command)
+    : undefined;
+  // The purpose is the headline of an ordinary approval. When the system rates the command
+  // dangerous (or blocks it) the headline stays the system's own wording: the purpose is the
+  // model's claim, and a reassuring one must never take the place of the danger title.
+  const purposeIsHeadline = purpose !== undefined && (request.level === 'warn' || request.level === 'safe');
+  const title = purposeIsHeadline
+    ? purpose
+    : isUpload
+      ? uploadTitle
+      : request.kind === 'browser'
+        ? t.commandConfirm.browserTitle
+        : request.kind === 'self-extension'
+          ? t.commandConfirm.selfExtensionTitle
+          : t.commandConfirm[config.titleKey];
+  // The system's own line for the level is never dropped. Under a purpose headline it also says the
+  // headline is the AI's claim; on a dangerous command the model's sentence is a second, marked
+  // line in the body (its claim explains the step, it never vouches for it).
+  const description = purposeIsHeadline
+    ? t.commandConfirm.descriptionAiPurpose
+    : isUpload
+      ? t.commandConfirm.browserUploadDescription
+      : request.kind === 'browser'
+        ? t.commandConfirm.browserDescription
+        : request.kind === 'self-extension'
+          ? t.commandConfirm.selfExtensionDescription
+          : t.commandConfirm[config.descKey];
+  const reasonLine = request.reason ? <InlineMessage tone={config.tone}>{request.reason}</InlineMessage> : null;
+
+  // The command, verbatim. E2E reads it as a `code` element.
+  const commandBlock = (
+    <pre className="whitespace-pre-wrap break-all rounded-control bg-code p-3 font-code text-ui-sm text-label">
+      <code>{request.command}</code>
+    </pre>
+  );
 
   return (
     <Dialog
@@ -221,7 +255,8 @@ export default function CommandConfirmDialog({
       description={description}
       initialFocus={(content) => content.querySelector<HTMLElement>('[data-approval-cancel]')}
       onFocusUnplaced={onFocusUnplaced}
-      header={(
+      // The reason banner carries its own icon; a second one above it says nothing more.
+      header={reasonLine ? undefined : (
         <div className="flex items-start gap-3">
           <StatusIcon tone={config.tone} size="lg" />
         </div>
@@ -264,10 +299,20 @@ export default function CommandConfirmDialog({
       <div className="space-y-3">
         {saveFailed && <InlineMessage tone="danger">{t.settings.browserSaveFailed}</InlineMessage>}
 
-        {/* The command, verbatim. E2E reads it as a `code` element. */}
-        <pre className="whitespace-pre-wrap break-all rounded-control bg-code p-3 font-code text-ui-sm text-label">
-          <code>{request.command}</code>
-        </pre>
+        {reasonLine}
+
+        {purpose !== undefined && !purposeIsHeadline && (
+          <p className="break-words text-ui text-label">{format(t.commandConfirm.purposeLine, { purpose })}</p>
+        )}
+
+        {request.kind === 'self-extension' ? (
+          // A sentence about what is about to happen, not a command: plain text.
+          <p className="break-words text-ui font-medium text-label">{request.command}</p>
+        ) : purpose !== undefined ? (
+          <Disclosure title={t.commandConfirm.technicalDetails} defaultOpen={!request.reason || request.level === 'danger' || request.level === 'block'}>
+            {commandBlock}
+          </Disclosure>
+        ) : commandBlock}
 
         {isBrowserKind && request.browserPermissionTargets && request.browserPermissionTargets.length > 0 && (
           <div className="break-all text-ui-sm text-label-tertiary">
@@ -300,8 +345,6 @@ export default function CommandConfirmDialog({
             )}
           </p>
         )}
-
-        {request.reason && <InlineMessage tone={config.tone}>{request.reason}</InlineMessage>}
       </div>
     </Dialog>
   );

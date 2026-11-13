@@ -108,6 +108,7 @@ Use it for: moving/copying/renaming files (mv/cp), package management (npm/pip/b
     type: 'object',
     properties: {
       command: { type: 'string', description: 'The shell command to execute' },
+      purpose: { type: 'string', description: "Always include. One short plain sentence, in the user's language, saying what this step does for them, as it should read to someone who has never seen code (for example 'Convert page 18 of the contract to an image' or 'Merge the three spreadsheets into one'). It is shown to the user as the step title and in the approval window. Never put a command, a file path, a script or a tool name in it." },
       cwd: { type: 'string', description: 'Working directory for the command (optional, defaults to user home)' },
       background: { type: 'boolean', description: 'Set to true for long-running commands, including services and finite jobs such as rendering. Returns initial output after a few seconds; use background_command_output to check completion and the exit result. Unavailable in scoped unattended runs.' },
       timeout: { type: 'number', description: 'Timeout in seconds (default 30, max 300). Command will be killed if it exceeds this.' },

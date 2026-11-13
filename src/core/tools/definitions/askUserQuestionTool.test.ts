@@ -23,6 +23,15 @@ const MOCK_RESULT: UserQuestionResult = {
   answers: [{ header: '格式', question: '你希望输出什么格式？', selected: ['详细'] }],
 };
 
+describe('askUserQuestionTool description', () => {
+  it('asks only when a wrong guess is costly and not findable, and never invites permission questions', () => {
+    const d = askUserQuestionTool.description;
+    expect(d).toContain('A wrong guess would be costly');
+    expect(d).toContain('do not ask permission for it');
+    expect(d).not.toContain('Implicit assumptions');
+  });
+});
+
 describe('askUserQuestionTool', () => {
   beforeEach(() => {
     bridge.drainUserQuestions();
@@ -90,6 +99,18 @@ describe('askUserQuestionTool', () => {
       };
       await expect(
         askUserQuestionTool.execute(input, VALID_CONTEXT),
+      ).rejects.toThrow(/options length/);
+    });
+
+    it.each([
+      ['an empty list', { options: [] }],
+      ['no options at all', {}],
+    ])('refuses a free-value question (an unknown date) with %s: the ask rule sends it to a plain message', async (_label, extra) => {
+      await expect(
+        askUserQuestionTool.execute(
+          { questions: [{ header: 'Date', question: 'Which date should the contract carry?', multiSelect: false, ...extra }] },
+          VALID_CONTEXT,
+        ),
       ).rejects.toThrow(/options length/);
     });
 

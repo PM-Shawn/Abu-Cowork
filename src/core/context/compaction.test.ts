@@ -41,7 +41,8 @@ describe('compactHistory', () => {
     const marker = await compactHistory({
       history: [msg('user'), step()],
       inputBudget: 100_000,
-      retainTokens: 0,
+      fixedTokens: 0,
+      retainShare: 0,
       source: 'auto',
       summary: summaryRequest as never,
       readFile: vi.fn(),
@@ -66,7 +67,8 @@ describe('compactHistory', () => {
     await compactHistory({
       history: [user, shot, step()],
       inputBudget: 100_000,
-      retainTokens: 0,
+      fixedTokens: 0,
+      retainShare: 0,
       source: 'auto',
       summary: summaryRequest as never,
       readFile: vi.fn(),
@@ -92,7 +94,8 @@ describe('compactHistory', () => {
     await compactHistory({
       history: [user, longStep, step()],
       inputBudget: computeInputBudget(2000, 256).inputBudget,
-      retainTokens: 0,
+      fixedTokens: 0,
+      retainShare: 0,
       source: 'auto',
       summary: request,
       fitSummaryInput: (messages) => enforceContextBudget(messages, system, 2000, 256, tools).messages,
@@ -123,7 +126,8 @@ describe('compactHistory', () => {
     const marker = await compactHistory({
       history,
       inputBudget: 200_000,
-      retainTokens: 0,
+      fixedTokens: 0,
+      retainShare: 0,
       source: 'auto',
       loopId: 'loop-1',
       summary: summaryRequest as never,
@@ -151,7 +155,8 @@ describe('compactHistory', () => {
     await expect(compactHistory({
       history: [msg('user'), step(), step()],
       inputBudget: 100_000,
-      retainTokens: 0,
+      fixedTokens: 0,
+      retainShare: 0,
       source: 'auto',
       summary: summaryRequest as never,
       readFile: vi.fn(),
@@ -172,7 +177,8 @@ describe('compactHistory', () => {
     await expect(compactHistory({
       history,
       inputBudget: 100_000,
-      retainTokens: 0,
+      fixedTokens: 0,
+      retainShare: 0,
       source: 'auto',
       summary: { ...summaryRequest, signal: controller.signal },
       readFile,
@@ -198,7 +204,8 @@ describe('compactHistory', () => {
     await expect(compactHistory({
       history,
       inputBudget: 100_000,
-      retainTokens: 0,
+      fixedTokens: 0,
+      retainShare: 0,
       source: 'auto',
       summary: { ...summaryRequest, signal: controller.signal },
       readFile,
@@ -233,7 +240,8 @@ describe('compactHistory in a window mostly filled by the system prompt', () => 
     const marker = await compactHistory({
       history,
       inputBudget,
-      retainTokens: Math.floor(inputBudget * RETAINED_TAIL_RATIO),
+      fixedTokens,
+      retainShare: RETAINED_TAIL_RATIO,
       source: 'auto',
       summary: summaryRequest as never,
       readFile: vi.fn(),

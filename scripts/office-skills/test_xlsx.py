@@ -112,6 +112,23 @@ class CheckXlsx(Tmp):
         self.assertIn("5000/5000 个公式在本地做了估算", out)
         self.assertIn("B1 = 5000", out)
 
+    def test_a_long_reference_cycle_is_reported_as_a_cycle_not_a_deep_chain(self):
+        from openpyxl import Workbook
+        n = 1000
+        wb = Workbook()
+        ws = wb.active
+        for i in range(1, n + 1):
+            ws[f"A{i}"] = f"=A{i % n + 1}+1"      # A1 reads A2 ... A1000 reads A1
+        ws["B1"] = "=A1+1"                         # reads the cycle without being in it
+        path = self.p("cycle.xlsx")
+        wb.save(path)
+        code, out = run("xlsx", "check_xlsx.py", path, "--values")
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("deep chain", out)
+        self.assertIn("1001/1001 个公式在本地做了估算", out)
+        self.assertIn("Sheet!A1 = #REF!", out)
+        self.assertIn("Sheet!B1 = #REF!", out)
+
     def test_the_check_runs_where_the_thread_stack_size_cannot_be_set(self):
         # the Windows runtime refuses threading.stack_size(256 MB) with ValueError
         wrapper = (

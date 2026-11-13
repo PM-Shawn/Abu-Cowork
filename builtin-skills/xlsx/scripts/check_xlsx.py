@@ -307,6 +307,13 @@ class Engine:
             while path:
                 key, deps = path[-1]
                 for dep in deps:
+                    if dep in on_path and dep not in self.memo:
+                        # dep is on the way down from root and reads its way back to itself: a cycle of
+                        # any length. Every cell from dep to here is part of it (Excel: circular reference).
+                        keys = [k for k, _ in path]
+                        for member in keys[keys.index(dep):]:
+                            self.memo[member] = XlError("#REF!")
+                        continue
                     if dep not in self.memo and dep not in on_path and dep not in self.arrays:
                         path.append((dep, self._deps(dep)))
                         on_path.add(dep)

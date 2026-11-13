@@ -436,6 +436,45 @@ describe('tabs a task opens in the user\'s Chrome', () => {
     expect(browserState.removed).toEqual([tabId]);
   });
 
+  it('does not close a tab another conversation holds now, even though this one opened it', async () => {
+    twoTabWindow();
+    browserState.removed.length = 0;
+
+    const opened = await request('create_tab', { url: 'https://canvas.example.edu/inbox', ownerId: 'conv-A', runId: 'run-1' });
+    const tabId = (opened.data as { tabId: number }).tabId;
+
+    // A's run ends and the bridge releases what A held; B then drives the tab.
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'release', ownerId: 'conv-A' }) });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    sockets[0].sent.length = 0;
+    expect((await request('click', { tabId, locator: { css: '.primary' }, ownerId: 'conv-B', runId: 'run-1' })).success).toBe(true);
+
+    const refused = await request('close_tab', { tabId, ownerId: 'conv-A', runId: 'run-2' });
+    expect(refused.data).toMatchObject({ status: 'requires_user_action' });
+    expect(browserState.removed).toEqual([]);
+    expect(browserState.tabs.some((t) => t.id === tabId)).toBe(true);
+
+    // B's run ends too, so its claim does not leak into the next test's tab ids.
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'release', ownerId: 'conv-B' }) });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    sockets[0].sent.length = 0;
+  });
+
+  it('lets a later run close a tab it opened once nobody else holds it', async () => {
+    twoTabWindow();
+    browserState.removed.length = 0;
+
+    const opened = await request('create_tab', { url: 'https://canvas.example.edu/grades', ownerId: 'conv-A', runId: 'run-1' });
+    const tabId = (opened.data as { tabId: number }).tabId;
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'release', ownerId: 'conv-A' }) });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    sockets[0].sent.length = 0;
+
+    const closed = await request('close_tab', { tabId, ownerId: 'conv-A', runId: 'run-2' });
+    expect(closed.data).toMatchObject({ status: 'closed', tabId });
+    expect(browserState.removed).toEqual([tabId]);
+  });
+
   it('owns a tab its own click opened, and leaves a tab the user opened alone', async () => {
     twoTabWindow();
     browserState.removed.length = 0;

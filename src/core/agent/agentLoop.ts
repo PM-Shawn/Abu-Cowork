@@ -2124,7 +2124,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         ),
         { ...toolContext, abortSignal: abortController.signal },
       );
-      // Summarize everything before the newest `retainTokens` of steps. The
+      // Summarize everything before the newest `retainShare` of the room left for the conversation. The
       // summary request is held to `budgetWindowSize` and uses the output and
       // reasoning budgets of the request it makes room for; it fails loudly,
       // and a failed attempt leaves a failed divider behind (unless the user
@@ -2132,7 +2132,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const compactBeforeRequest = async (
         budgetWindowSize: number,
         requestOptions: Pick<typeof baseChatOptions, 'maxTokens' | 'enableThinking' | 'thinkingBudget' | 'reasoningEffort'>,
-        retainTokens: number,
+        retainShare: number,
       ): Promise<boolean> => {
         const reserveForOutput = requestOptions.maxTokens;
         const budget = computeInputBudget(budgetWindowSize, reserveForOutput).inputBudget;
@@ -2142,7 +2142,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           marker = await compactHistory({
             history: historyMessages,
             inputBudget: budget,
-            retainTokens,
+            fixedTokens: fixedPartOf(requestEstimate),
+            retainShare,
             source: 'auto',
             loopId,
             summary: {
@@ -2193,7 +2194,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (
         fixedPartOf(requestEstimate) < inputBudget
         && measureInputTokens(requestEstimate.total, measurementContext(), usageAnchor) >= inputBudget * COMPACTION_TRIGGER_RATIO
-        && await compactBeforeRequest(contextWindowSize, baseChatOptions, Math.floor(inputBudget * RETAINED_TAIL_RATIO))
+        && await compactBeforeRequest(contextWindowSize, baseChatOptions, RETAINED_TAIL_RATIO)
       ) {
         requestEstimate = measureView();
       }

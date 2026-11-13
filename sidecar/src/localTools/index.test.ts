@@ -31,9 +31,18 @@
  * tests use), so no store mocking is needed.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { readDir, readTextFile, writeTextFile, exists, stat } from '@tauri-apps/plugin-fs';
+import { readDir, readTextFile, readFile, writeTextFile, exists, stat } from '@tauri-apps/plugin-fs';
 import { invoke } from '@tauri-apps/api/core';
+import { strToU8, zipSync } from 'fflate';
+import * as XLSX from 'xlsx';
 import { hasLocalTool, isLocalToolReadOnly, executeLocalTool } from './index';
+
+/** A small workbook with Chinese cells. */
+function xlsxBytes(): Uint8Array {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([['月份', '收入'], ['1月', 100]]), '数据');
+  return new Uint8Array(XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer);
+}
 
 const snapshotBeforeAiEditMock = vi.fn().mockResolvedValue(undefined);
 const captureTurnFileBeforeMock = vi.fn().mockResolvedValue(undefined);
@@ -237,7 +246,6 @@ describe('executeLocalTool — read_file PDF/PPTX/archive escalation (P1-3d-4)',
 
   it.each([
     ['a .pdf path', '/tmp/report.pdf'],
-    ['a .pptx path', '/tmp/deck.pptx'],
     ['a non-Windows .zip path', '/tmp/archive.zip'],
     ['a .tar.gz path', '/tmp/archive.tar.gz'],
     ['a .tgz path', '/tmp/archive.tgz'],
@@ -252,6 +260,36 @@ describe('executeLocalTool — read_file PDF/PPTX/archive escalation (P1-3d-4)',
     // Confirms the escalation happens BEFORE any fs work — the real tool's
     // execute() body was never reached for these extensions.
     expect(readTextFile).not.toHaveBeenCalled();
+  });
+
+
+  it('escalates a view of part of a picture, which the bundled Python renders, and reads a whole picture locally', async () => {
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.png', region: { x0: 0, y0: 0, x1: 0.5, y1: 0.5 } }, undefined))
+      .rejects.toThrow(/run_argv_command/);
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.jpg', rotate: 90 }, undefined))
+      .rejects.toThrow(/run_argv_command/);
+    await expect(executeLocalTool('read_file', { path: '/tmp/scan.png' }, { supportsVision: false }))
+      .resolves.toContain('/tmp/scan.png');
+  });
+  // An Office read unzips and parses here; only a picture render goes to the
+  // shell, as the one run_argv_command it runs for the sidecar.
+  it.each([
+    ['a .xlsx', '/tmp/book.xlsx', () => xlsxBytes()],
+    ['a .docx', '/tmp/report.docx', () => zipSync({ 'word/document.xml': strToU8('<w:document><w:body><w:p><w:r><w:t>合同正文</w:t></w:r></w:p></w:body></w:document>') })],
+    ['a .pptx', '/tmp/deck.pptx', () => zipSync({
+      'ppt/presentation.xml': strToU8('<p:presentation><p:sldIdLst><p:sldId id="256" r:id="rId2"/></p:sldIdLst></p:presentation>'),
+      'ppt/_rels/presentation.xml.rels': strToU8('<Relationships><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide1.xml"/></Relationships>'),
+      'ppt/slides/slide1.xml': strToU8('<p:sld><p:txBody><a:p><a:r><a:t>季度汇报</a:t></a:r></a:p></p:txBody></p:sld>'),
+    })],
+  ])('reads the text of %s file here, in the sidecar, without asking the shell for anything', async (_label, path, bytes) => {
+    vi.mocked(readFile).mockResolvedValue(new Uint8Array(bytes()));
+    vi.mocked(invoke).mockClear();
+    const result = await executeLocalTool('read_file', { path }, undefined)
+      .finally(() => vi.mocked(readFile).mockResolvedValue(new Uint8Array()));
+    expect(typeof result).toBe('string');
+    expect(result as string).toMatch(/^\[(Excel workbook|Word document|PowerPoint)/);
+    expect(result as string).toMatch(/收入|合同正文|季度汇报/);
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it('does NOT escalate a .7z path — listArchiveContents has no run_argv_command branch for it, so it returns its normal "not supported" string locally (identical to what the reverse/shell path would return, no invoke call either way)', async () => {

@@ -1594,6 +1594,108 @@ describe('agentLoopRunner', () => {
       expect(tauriInvokeMock).not.toHaveBeenCalled();
     });
 
+    // An Office read runs in the sidecar; the shell runs only its picture
+    // renders, the probe program unchanged (documentProbe.ts).
+    it('runs read_file\'s document probe for an Office file\'s pictures, and no other run_argv_command', async () => {
+      const { DOCUMENT_PROBE_SCRIPT } = await import('../tools/fileRead/documentProbe');
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-native', makeSession());
+      const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+      const probe = {
+        commandId: 'view-office-image-1', program: 'python3', timeout: 30,
+        args: ['-c', DOCUMENT_PROBE_SCRIPT, 'office-image', '{"parts":["word/media/image1.png"],"side":1400}', '/Users/me/报告.docx'],
+      };
+      await expect(handler({ runId: 'run-native', cmd: 'run_argv_command', args: probe })).resolves.toEqual({ ok: true });
+      expect(tauriInvokeMock).toHaveBeenCalledWith('run_argv_command', probe);
+      tauriInvokeMock.mockClear();
+
+      for (const args of [
+        { ...probe, args: ['-c', 'import os; os.remove("/Users/me/报告.docx")', 'office-image', '{}', '/Users/me/报告.docx'] },
+        { ...probe, args: ['-c', DOCUMENT_PROBE_SCRIPT, 'pdf-read', '{}', '/Users/me/a.pdf'] },
+        { ...probe, args: ['-c', DOCUMENT_PROBE_SCRIPT, 'image-view', '{}', '/Users/me/a.png'] },
+        { ...probe, program: 'bash' },
+        { ...probe, sandboxEnabled: false },
+      ]) {
+        await expect(handler({ runId: 'run-native', cmd: 'run_argv_command', args })).rejects.toThrow('native.invoke: "run_argv_command" is not allowlisted');
+      }
+      expect(tauriInvokeMock).not.toHaveBeenCalled();
+    });
+
+    // Where the probe exception must be off.
+    describe('document probe exception: where it must be off', () => {
+      const probeArgs = async () => {
+        const { DOCUMENT_PROBE_SCRIPT } = await import('../tools/fileRead/documentProbe');
+        return {
+          commandId: 'view-office-image-1', program: 'python3', timeout: 30,
+          args: ['-c', DOCUMENT_PROBE_SCRIPT, 'office-image', '{"parts":["word/media/image1.png"]}', '/Users/me/a.docx'],
+        };
+      };
+
+      it('is off where an enterprise policy runs file tools must run in the shell (host-file execution)', async () => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        const { setToolAuthorizationProvider } = await import('../tools/operationAuthorization');
+        ensureHandlersRegistered();
+        registerRunSession('run-native', makeSession());
+        const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+        const args = await probeArgs();
+        setToolAuthorizationProvider({ requiresHostFiles: true, begin: vi.fn() } as never);
+        try {
+          await expect(handler({ runId: 'run-native', cmd: 'run_argv_command', args })).rejects.toThrow('not allowlisted');
+          expect(tauriInvokeMock).not.toHaveBeenCalled();
+        } finally {
+          setToolAuthorizationProvider(null);
+        }
+        // Without that requirement (a provider that does not require host files) still takes it.
+        setToolAuthorizationProvider({ requiresHostFiles: false, begin: vi.fn() } as never);
+        try {
+          await expect(handler({ runId: 'run-native', cmd: 'run_argv_command', args })).resolves.toEqual({ ok: true });
+        } finally {
+          setToolAuthorizationProvider(null);
+        }
+      });
+
+      it.each(['run_argv_command ', 'RUN_ARGV_COMMAND', 'run_argv_command\u200b', 'run_argv_commandx', 'run-argv-command', ''])(
+        'does not take the command name %j', async (cmd) => {
+          const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+          ensureHandlersRegistered();
+          registerRunSession('run-native', makeSession());
+          const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+          await expect(handler({ runId: 'run-native', cmd, args: await probeArgs() })).rejects.toThrow();
+          expect(tauriInvokeMock).not.toHaveBeenCalled();
+        },
+      );
+
+      it('refuses the probe for an unknown run, and forwards the arguments untouched for a known one', async () => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        registerRunSession('run-native', makeSession());
+        const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+        const args = await probeArgs();
+        await expect(handler({ runId: 'no-such-run', cmd: 'run_argv_command', args })).rejects.toThrow('Unknown runId');
+        expect(tauriInvokeMock).not.toHaveBeenCalled();
+        await handler({ runId: 'run-native', cmd: 'run_argv_command', args });
+        expect(tauriInvokeMock).toHaveBeenCalledTimes(1);
+        expect(tauriInvokeMock.mock.calls[0][1]).toBe(args);
+      });
+
+      it.each([
+        ['an option as the file', (a: { args: string[] }) => ({ ...a, args: [...a.args.slice(0, 4), '--foo'] })],
+        ['python3 -I', (a: { args: string[] }) => ({ ...a, args: ['-I', ...a.args] })],
+        ['another python', (a: { args: string[] }) => ({ ...a, program: '/usr/bin/python3' })],
+        ['a cwd', (a: { args: string[] }) => ({ ...a, cwd: '/' })],
+        ['a longer timeout', (a: { args: string[] }) => ({ ...a, timeout: 300 })],
+        ['shell metacharacters in the program text', (a: { args: string[] }) => ({ ...a, args: [a.args[0], `${a.args[1]}; rm -rf ~`, ...a.args.slice(2)] })],
+      ])('refuses %s through the handler', async (_l, mutate) => {
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        registerRunSession('run-native', makeSession());
+        const handler = handlerFor(onSidecarRequest, 'native.invoke') as (p: unknown) => Promise<unknown>;
+        await expect(handler({ runId: 'run-native', cmd: 'run_argv_command', args: mutate(await probeArgs() as { args: string[] }) })).rejects.toThrow('not allowlisted');
+        expect(tauriInvokeMock).not.toHaveBeenCalled();
+      });
+    });
+
     it('rejects malformed params (missing runId/cmd)', async () => {
       const { ensureHandlersRegistered } = await importFresh();
       ensureHandlersRegistered();

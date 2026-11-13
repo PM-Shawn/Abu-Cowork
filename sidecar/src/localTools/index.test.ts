@@ -280,7 +280,7 @@ describe('executeLocalTool — read_file PDF/PPTX/archive escalation (P1-3d-4)',
     // Inside both limits: read here, the original bytes.
     vi.mocked(readFile).mockResolvedValue(png(1200, 800));
     const result = await executeLocalTool('read_file', { path: '/tmp/ok.png' }, { supportsVision: true });
-    expect(JSON.stringify(result)).toContain('Image: /tmp/ok.png');
+    expect(JSON.stringify(result)).toContain('Image: ok.png (1200×800 px)');
     vi.mocked(readFile).mockReset();
   });
 

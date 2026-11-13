@@ -102,6 +102,11 @@ export async function precomputeOrchestration(
   abortSignal?: AbortSignal,
   toolContext?: ToolExecutionContext,
 ): Promise<PrecomputedOrchestration> {
+  // The skill catalog is filled by discovery scans that run on their own (boot,
+  // workspace switch). Everything below reads it, so wait for a running scan
+  // instead of building the first request from a catalog that is not there yet.
+  await skillLoader.ready();
+
   // In-conversation team: a conversation pinned to a team runs its leader as
   // the root agent (general → agent route rewrite; prompt + roster are derived
   // from route.team by the orchestrator and the loop).

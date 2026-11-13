@@ -68,7 +68,8 @@ describe.skipIf(!hasPillow)('read_file with no file access (the open-source buil
     expect(Math.max(size.w, size.h)).toBe(admissionMaxDimension());
     expect(size.h).toBe(Math.round(1300 * admissionMaxDimension() / 5200));
     expect(image.source.media_type).toBe('image/png');
-    expect(JSON.stringify((result as ToolResultContent[])[0])).toContain(`${admissionMaxDimension()}px on its long side`);
+    // The picture's caption (not a separate resize note) tells the model the size it is shown at.
+    expect(JSON.stringify((result as ToolResultContent[])[0])).toContain(`shown at ${size.w}×${size.h} px`);
   });
 
   it('fits a tall picture by its height', async () => {

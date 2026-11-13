@@ -125,7 +125,7 @@ async function fitToAdmissionLimit(
   bytes: Uint8Array,
   mediaType: string,
   context?: ToolExecutionContext,
-): Promise<{ bytes: Uint8Array; mediaType: string; longSide: number | null } | null> {
+): Promise<{ bytes: Uint8Array; mediaType: string } | null> {
   const size = imageHeaderSize(bytes);
   if (!size) return null;
   const steps = planImageFit({ width: size.w, height: size.h, byteLength: bytes.length, mediaType });
@@ -149,9 +149,7 @@ async function fitToAdmissionLimit(
       return null;
     }
     if (fitted) {
-      // `longSide` is set only when the picture got smaller; otherwise it was re-encoded at its size.
-      const longSide = step.width < size.w ? Math.round(Math.max(step.width, step.width * size.h / size.w)) : null;
-      return { bytes: fitted, mediaType: jpeg ? 'image/jpeg' : 'image/png', longSide };
+      return { bytes: fitted, mediaType: jpeg ? 'image/jpeg' : 'image/png' };
     }
   }
   return null;

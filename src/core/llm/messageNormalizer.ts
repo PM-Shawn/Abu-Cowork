@@ -12,6 +12,7 @@
  */
 
 import type { Message, MessageContent, ToolCall, ToolCallForContext, ToolResultContent } from '../../types';
+import { judgeImage } from './imageAcceptance';
 import { withIntroductionContext } from '../team/expertContact';
 
 // ─── Normalized types ────────────────────────────────────────────────
@@ -56,6 +57,15 @@ export type PreparedTurn =
 export interface NormalizeOptions {
   /** Whether the target model supports vision/images (default true) */
   supportsVision?: boolean;
+  /**
+   * The route's hard pixel limit on either side, what its API rejects
+   * (`imageAcceptanceLimits`), not the size pictures are fitted to at entry. When set,
+   * every picture is judged against it and the formats every route takes, and
+   * one the provider would reject is replaced by a note (imageAcceptance.ts).
+   */
+  maxImageDimension?: number;
+  /** The route's per-picture byte ceiling in base64 characters, judged with `maxImageDimension`. */
+  maxImageBytes?: number;
 }
 
 // ─── Placeholder for orphaned tool calls ─────────────────────────────
@@ -176,24 +186,43 @@ function generateToolId(index: number, msgIndex: number): string {
   return `toolu_${msgIndex}_${index}`;
 }
 
-/** Extract images from ToolResultContent[] */
-function extractImages(resultContent: ToolResultContent[] | undefined): PreparedImage[] {
-  if (!resultContent || !Array.isArray(resultContent)) return [];
+/**
+ * Extract images from ToolResultContent[]. With a route limit, a picture the
+ * provider would reject is left out and its note returned instead.
+ */
+function extractImages(
+  resultContent: ToolResultContent[] | undefined,
+  maxImageDimension?: number,
+  maxImageBytes?: number,
+): { images: PreparedImage[]; notes: string[] } {
+  if (!resultContent || !Array.isArray(resultContent)) return { images: [], notes: [] };
   const images: PreparedImage[] = [];
+  const notes: string[] = [];
   for (const b of resultContent) {
     // Skip images whose base64 was stripped and not rehydrated — emitting an
     // empty `data:<mime>;base64,` makes providers reject the whole request.
     if (b.type === 'image' && b.source.data) {
-      images.push({ mediaType: b.source.media_type as PreparedImage['mediaType'], data: b.source.data });
+      let mediaType = b.source.media_type as PreparedImage['mediaType'];
+      if (maxImageDimension !== undefined) {
+        const verdict = judgeImage(b.source.media_type, b.source.data, maxImageDimension, maxImageBytes);
+        if (verdict.kind === 'leave-out') {
+          notes.push(verdict.note);
+          continue;
+        }
+        mediaType = verdict.mediaType;
+      }
+      images.push({ mediaType, data: b.source.data });
     }
   }
-  return images;
+  return { images, notes };
 }
 
 /** Convert user MessageContent[] to PreparedContentBlock[] */
 function convertUserContent(
   content: string | MessageContent[],
   supportsVision: boolean,
+  maxImageDimension?: number,
+  maxImageBytes?: number,
 ): PreparedContentBlock[] {
   if (typeof content === 'string') {
     return content ? [{ type: 'text', text: content }] : [];
@@ -209,14 +238,19 @@ function convertUserContent(
       if (!supportsVision) {
         imageCount++;
       } else if (c.source.data) {
-        blocks.push({ type: 'image', mediaType: c.source.media_type, data: c.source.data });
+        const verdict = maxImageDimension === undefined
+          ? { kind: 'send' as const, mediaType: c.source.media_type }
+          : judgeImage(c.source.media_type, c.source.data, maxImageDimension, maxImageBytes);
+        blocks.push(verdict.kind === 'send'
+          ? { type: 'image', mediaType: verdict.mediaType, data: c.source.data }
+          : { type: 'text', text: verdict.note });
         // Composer admission downscaled this image to fit provider dimension
         // limits. Tell the model, or it reads fine print and reports pixel
         // coordinates as though it were seeing the original resolution. Produced
         // here rather than stored as content so it never renders in the user's
         // own message bubble; the recorded dimensions make it deterministic.
         // LLM-facing → English, like the other agent-loop prompts.
-        if (c.resized) {
+        if (c.resized && verdict.kind === 'send') {
           const { fromWidth, fromHeight, toWidth, toHeight } = c.resized;
           blocks.push({
             type: 'text',
@@ -296,7 +330,7 @@ export function normalizeMessages(
     if (msg.role === 'system') continue;
 
     if (msg.role === 'user') {
-      const content = convertUserContent(msg.content, supportsVision);
+      const content = convertUserContent(msg.content, supportsVision, options?.maxImageDimension, options?.maxImageBytes);
       if (msg.imageEditRequest && !msg.inheritedFromBranch) content.push({ type: 'text', text: `The user submitted an image edit. Call edit_image with request_id ${JSON.stringify(msg.imageEditRequest.id)}. The application has already frozen the source image and all editing instructions for this request.` });
       if (content.length > 0) {
         turns.push({ kind: 'user', content });
@@ -332,7 +366,9 @@ export function normalizeMessages(
         const result = 'result' in tc ? tc.result : undefined;
         const resultContent = 'resultContent' in tc ? tc.resultContent : undefined;
         const isError = 'isError' in tc ? !!tc.isError : false;
-        const rawImages = extractImages(resultContent);
+        const { images: rawImages, notes: leftOut } = extractImages(
+          resultContent, supportsVision ? options?.maxImageDimension : undefined, options?.maxImageBytes,
+        );
         const images = supportsVision ? rawImages : [];
 
         // When images are stripped for non-vision models, append a hint so the
@@ -341,6 +377,9 @@ export function normalizeMessages(
         if (!supportsVision && rawImages.length > 0 && result !== undefined) {
           effectiveResult += '\n[当前模型不支持视觉识别，无法查看截图内容。请使用其他方式获取信息，不要再尝试截图操作。]';
         }
+        // A picture the route would reject travels as its note, in the result
+        // the tool message is built from.
+        if (leftOut.length > 0) effectiveResult += `\n\n${leftOut.join('\n')}`;
         const appContext = typeof tc.id === 'string' ? appContextById.get(tc.id) : undefined;
         if (appContext) effectiveResult += wrapAppModelContext(appContext.text, appContext.server);
 

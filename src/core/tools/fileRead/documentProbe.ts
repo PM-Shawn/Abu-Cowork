@@ -276,7 +276,9 @@ def pdf_read():
     req = req or list(range(1, n + 1))
     # text budget in characters and in bytes of the JSON form history keeps (a quote or line break takes two), whichever runs out first
     budget, bbudget = O.get('text_chars', 100000), O.get('text_bytes', 200000)
-    pages, used, bused, cut, late = [], 0, 0, None, None
+    pages, used, bused, cut, cut_from, late = [], 0, 0, None, 0, None
+    # text_from: where in the first page's text this read starts, so a page longer than the budget is read on from the place its last chunk ended
+    start = max(0, int(O.get('text_from') or 0))
     for p in req:
         if time.time() - T0 > O.get('stats_seconds', 14):
             late = p
@@ -288,6 +290,9 @@ def pdf_read():
         tp.close()
         page.close()
         s['n'] = p
+        if not pages and start:
+            text = text[start:]
+            s['text_from'] = start
         if cut is None:
             room = budget - used
             t = text[:room]
@@ -309,6 +314,7 @@ def pdf_read():
                 if len(t) < len(text):
                     s['text_cut'] = True
                     cut = p
+                    cut_from = (start if s.get('text_from') else 0) + len(t)
         pages.append(s)
     sel = []
     if O.get('render'):
@@ -336,7 +342,7 @@ def pdf_read():
                 s['skip'] = 'size'
         except Exception as e:
             s['skip'] = 'error: %s' % e
-    emit({'ok': True, 'pages': n, 'unexamined_from': late, 'text_cut_at': cut, 'list': pages, 'seconds': round(time.time() - T0, 2)})
+    emit({'ok': True, 'pages': n, 'unexamined_from': late, 'text_cut_at': cut, 'text_cut_from': cut_from, 'list': pages, 'seconds': round(time.time() - T0, 2)})
 
 
 def scan_density(page, c, ct):
@@ -489,6 +495,8 @@ export interface PdfPageProbe extends PdfPageFacts {
   /** Absent once the text budget ran out. */
   text?: string;
   text_cut?: boolean;
+  /** Where in the page's text this read starts (the page was read on from there). */
+  text_from?: number;
   img?: ProbeImage;
   /** Why a page chosen for rendering came back without an image: `size`, `time`, `error: …`. */
   skip?: string;
@@ -501,6 +509,8 @@ export interface PdfReadProbe {
   unexamined_from: number | null;
   /** The page at which the text budget ran out (its text is cut or absent). */
   text_cut_at: number | null;
+  /** Where in that page's text the unread part begins (0 when the page itself was left out whole). */
+  text_cut_from: number;
   list: PdfPageProbe[];
   seconds: number;
 }

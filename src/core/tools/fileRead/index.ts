@@ -19,7 +19,7 @@ import { asksForView, parseDocumentReadParams } from './readParams';
  */
 
 const RASTER_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
-const DOCUMENT_PARAMETERS = ['pages', 'region', 'rotate'] as const;
+const DOCUMENT_PARAMETERS = ['pages', 'text_offset', 'region', 'rotate'] as const;
 
 type FileKind = 'pdf' | 'image';
 
@@ -57,6 +57,10 @@ export const DOCUMENT_READ_PROPERTIES: Record<string, ToolParameter> = {
     type: 'number',
     description: 'Degrees to turn the PDF page or picture clockwise before showing it, to set sideways or upside-down content upright: 270 when the content lies turned a quarter clockwise (the tops of its letters face right), 90 when turned a quarter counter-clockwise (tops face left), 180 when upside down. region, if given, is on the turned image.',
   },
+  text_offset: {
+    type: 'number',
+    description: 'PDF only: characters of the first page\'s text to skip. Use it, with pages, to read on when a read said its text stopped partway through a page.',
+  },
 };
 
 /** What the wrapper does with one call. */
@@ -84,7 +88,7 @@ async function handle(input: Record<string, unknown>, context?: ToolExecutionCon
   if (!kind) {
     const asked = DOCUMENT_PARAMETERS.filter((name) => given(input[name]));
     if (!asked.length) return { kind: 'upstream' };
-    return { kind: 'done', result: `Error: ${asked.join(', ')} ${asked.length === 1 ? 'does' : 'do'} not apply to this file. pages is for PDFs; ${VIEW_APPLIES_TO}.` };
+    return { kind: 'done', result: `Error: ${asked.join(', ')} ${asked.length === 1 ? 'does' : 'do'} not apply to this file. pages and text_offset are for PDFs; ${VIEW_APPLIES_TO}.` };
   }
   const params = parseDocumentReadParams(input);
   if ('error' in params) return { kind: 'done', result: `Error: ${params.error}` };

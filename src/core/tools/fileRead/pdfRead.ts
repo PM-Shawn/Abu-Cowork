@@ -131,7 +131,7 @@ function textBody(pages: readonly PdfPageProbe[]): string {
   const body: string[] = [];
   for (const page of pages) {
     if (page.text === undefined) continue;
-    body.push(`--- Page ${page.n} ---`);
+    body.push(page.text_from ? `--- Page ${page.n}, from character ${page.text_from.toLocaleString('en-US')} of its text ---` : `--- Page ${page.n} ---`);
     const text = page.text.trim();
     body.push(text ? text + (page.text_cut ? '\n[... the text of this page is cut here: the read budget ran out ...]' : '') : '(no text layer)');
   }
@@ -192,7 +192,10 @@ export function buildPdfReadResult(
     lines.push(zoomHint(attached[0]?.n ?? example));
   }
   if (probe.text_cut_at !== null) {
-    lines.push(`The text stops at page ${probe.text_cut_at} (about ${PDF_TEXT_BUDGET.toLocaleString('en-US')} characters per read). To read on, call read_file with pages="${probe.text_cut_at}-".`);
+    const budget = PDF_TEXT_BUDGET.toLocaleString('en-US');
+    lines.push(probe.text_cut_from > 0
+      ? `The text stops partway through page ${probe.text_cut_at}, at character ${probe.text_cut_from.toLocaleString('en-US')} of its text (about ${budget} characters per read). To read on, call read_file with pages="${probe.text_cut_at}-" and text_offset=${probe.text_cut_from}; the pages after it follow.`
+      : `The text stops at page ${probe.text_cut_at} (about ${budget} characters per read). To read on, call read_file with pages="${probe.text_cut_at}-".`);
   }
   if (probe.unexamined_from !== null) {
     lines.push(`Pages from ${probe.unexamined_from} on were not examined in the time available. To read them, call read_file with pages="${probe.unexamined_from}-".`);
@@ -282,6 +285,7 @@ export async function readPdf(
   }
   const outcome = await runDocumentProbe<PdfReadProbe>(filePath, 'pdf-read', {
     pages: params.pages,
+    text_from: params.textOffset,
     render: vision,
     render_all_at_most: PDF_AUTO_IMAGE_MAX_PAGES,
     max_render: PDF_MAX_PAGE_IMAGES,

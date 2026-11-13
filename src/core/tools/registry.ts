@@ -1391,8 +1391,14 @@ export async function checkToolApproval(
     capability: target.purpose === 'write' || target.purpose === 'delete' ? 'write' as const : 'read' as const,
     listing: target.purpose === 'list' || target.purpose === 'traverse',
     followFinalSymlink: target.followFinalSymlink,
+    deletes: target.purpose === 'delete',
   })) : [pathExtractor?.(input) ?? null].flat().filter((target): target is FileToolPathTarget => target != null)
-    .map(target => ({ ...target, listing: name === TOOL_NAMES.LIST_DIRECTORY, followFinalSymlink: name !== TOOL_NAMES.DELETE_FILE }));
+    .map(target => ({
+      ...target,
+      listing: name === TOOL_NAMES.LIST_DIRECTORY,
+      followFinalSymlink: name !== TOOL_NAMES.DELETE_FILE,
+      deletes: name === TOOL_NAMES.DELETE_FILE,
+    }));
   for (const pathInfo of plannedPaths) {
     if (pathInfo) {
       // Use the appropriate check function based on capability
@@ -1400,7 +1406,7 @@ export async function checkToolApproval(
         ? (candidate: string, id?: AuthorizationScopeId) => checkWritePath(
           candidate,
           id,
-          { followFinalSymlink: pathInfo.followFinalSymlink },
+          { followFinalSymlink: pathInfo.followFinalSymlink, purpose: pathInfo.deletes ? 'delete' : 'write' },
         )
         : async (candidate: string, id?: AuthorizationScopeId) => (
           await checkConversationResultRead(candidate, conversation ? toolContext?.conversationId : undefined)

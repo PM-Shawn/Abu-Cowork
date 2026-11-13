@@ -43,6 +43,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { answerTitleRequest, isTitleRequest } from './openAiMock';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -64,7 +65,7 @@ interface MockRequest {
   authorization: string | undefined;
   body: unknown;
   pathname: string;
-  purpose: 'compression' | 'memory' | 'task';
+  purpose: 'compression' | 'memory' | 'task' | 'title';
 }
 
 type MockReplyPlan =
@@ -176,11 +177,13 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlanEntry[]): Promi
       return;
     }
 
-    const purpose = isMemoryExtractionRequest(body)
-      ? 'memory'
-      : isCompressionRequest(body)
-        ? 'compression'
-        : 'task';
+    const purpose = isTitleRequest(body)
+      ? 'title'
+      : isMemoryExtractionRequest(body)
+        ? 'memory'
+        : isCompressionRequest(body)
+          ? 'compression'
+          : 'task';
     requests.push({
       authorization: req.headers.authorization,
       body,
@@ -188,6 +191,12 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlanEntry[]): Promi
       purpose,
     });
 
+    if (purpose === 'title') {
+      // The conversation's model-written title: answered apart from the
+      // scripted sequence, so it neither counts as a task turn nor uses up a plan.
+      answerTitleRequest(body, res);
+      return;
+    }
     if (purpose === 'memory') {
       res.writeHead(200, {
         'cache-control': 'no-cache',
@@ -248,7 +257,7 @@ async function startOpenAiMock(replyPlans: readonly MockReplyPlanEntry[]): Promi
   };
 }
 
-/** The scripted tool-call/complete sequence only, excluding background memory/compression noise. */
+/** The scripted tool-call/complete sequence only, excluding background title/memory/compression noise. */
 function taskRequests(mock: OpenAiMock): MockRequest[] {
   return mock.requests.filter((request) => request.purpose === 'task');
 }

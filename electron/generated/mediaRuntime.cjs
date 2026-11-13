@@ -53070,7 +53070,14 @@ var zhCN = {
       errProcessImage: "Error: 图片处理失败：{error}",
       imageProcessed: "图片处理完成：{path}",
       hintVolcChatEndpoint: "提示：当前生图后端的 baseUrl 指向的是火山方舟的聊天端点（/api/coding/），不是图片生成端点。请在 设置 → 图片生成 中把 baseUrl 改为 {url}，并将模型设置为生图模型（doubao-seedream 系列）。",
-      hintCheckImageBackend: "提示：请在 设置 → 图片生成 中检查 baseUrl 是否为图片生成端点、模型是否为生图模型（火山引擎需使用 doubao-seedream 系列而非聊天模型），并确认 API Key 有效。"
+      hintCheckImageBackend: "提示：请在 设置 → 图片生成 中检查 baseUrl 是否为图片生成端点、模型是否为生图模型（火山引擎需使用 doubao-seedream 系列而非聊天模型），并确认 API Key 有效。",
+      hintVolcLimit: "提示：火山方舟这边的用量上限已用完，生图被暂停；这个报错没有说明是模型的还是某个接入点的上限。请两处都看一下：火山方舟控制台 → 开通管理，关闭「安心体验模式」或调高这个模型的用量上限；如果用的是接入点 ID，再到该接入点的「接入点详情页」调整或取消它自己的用量上限。然后再试。",
+      hintVolcLimitModel: "提示：火山方舟账号开着「安心体验模式」或设置了这个模型的用量上限，生图已被暂停。请到 火山方舟控制台 → 开通管理 关闭「安心体验模式」（或调高这个模型的用量上限）后再试。",
+      hintVolcLimitEndpoint: "提示：这个推理接入点自己设置的用量上限已用完，接入点被暂停（同一模型下的其他接入点不受影响）。请到 火山方舟控制台 打开该接入点的「接入点详情页」，调整或取消它的用量上限后再试。",
+      hintVolcModelNotOpen: "提示：这个火山方舟账号还没有开通 {model}。请到 火山方舟控制台 → 开通管理 → 视觉模型 找到它，点「开通服务」后再试。",
+      hintVolcOverdue: "提示：火山引擎账号余额不足或已欠费。请到 火山引擎 费用中心 充值后再试。",
+      hintVolcSensitive: "提示：描述或参考图没有通过火山方舟的内容审核。换一种描述或换一张参考图再试。",
+      hintVolcBadKey: "提示：火山方舟的 API Key 无效。请到 火山方舟控制台 → API Key 管理 新建一个，粘贴到 设置 → 图片生成 里再试。"
     },
     todo: {
       errTitleEmpty: "标题不能为空，未创建提议。",
@@ -57639,7 +57646,14 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
       errProcessImage: "Error processing image: {error}",
       imageProcessed: "Image processed successfully: {path}",
       hintVolcChatEndpoint: "Hint: this backend's baseUrl points at Volcengine Ark's chat endpoint (/api/coding/), not the image-generation endpoint. In Settings → Image Generation, change the baseUrl to {url} and set the model to an image-generation model (doubao-seedream series).",
-      hintCheckImageBackend: "Hint: in Settings → Image Generation, check that the baseUrl is an image-generation endpoint and the model is an image-generation model (for Volcengine use the doubao-seedream series, not a chat model), and confirm the API key is valid."
+      hintCheckImageBackend: "Hint: in Settings → Image Generation, check that the baseUrl is an image-generation endpoint and the model is an image-generation model (for Volcengine use the doubao-seedream series, not a chat model), and confirm the API key is valid.",
+      hintVolcLimit: "Hint: a Volcengine Ark usage cap has been reached and image generation is paused; the error does not say whether it is the model's cap or one endpoint's cap. Check both: in the Ark console, open Model Activation and turn off Safe Experience Mode (or raise the model's usage cap); and if the backend uses an Endpoint ID, open that endpoint's detail page and adjust or remove its own usage cap. Then try again.",
+      hintVolcLimitModel: "Hint: this Volcengine Ark account has Safe Experience Mode on, or a usage cap set for the model, so image generation is paused. In the Ark console, open Model Activation and turn off Safe Experience Mode (or raise the model's usage cap), then try again.",
+      hintVolcLimitEndpoint: "Hint: the usage cap set on this inference endpoint has been reached, so the endpoint is paused (other endpoints of the same model are not affected). In the Ark console, open the endpoint's detail page and adjust or remove its usage cap, then try again.",
+      hintVolcModelNotOpen: "Hint: this Volcengine Ark account has not activated {model}. In the Ark console, open Model Activation → Vision models, find it, click Activate, then try again.",
+      hintVolcOverdue: "Hint: the Volcengine account balance is too low or overdue. Top up in the Volcengine billing center, then try again.",
+      hintVolcSensitive: "Hint: the prompt or a reference image did not pass Volcengine Ark's content review. Rephrase it or use another reference image.",
+      hintVolcBadKey: "Hint: the Volcengine Ark API key is invalid. Create a new one under API Key Management in the Ark console and paste it in Settings → Image Generation."
     },
     todo: {
       errTitleEmpty: "Title cannot be empty; proposal not created.",

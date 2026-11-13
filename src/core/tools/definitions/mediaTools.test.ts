@@ -449,35 +449,32 @@ describe('generateImageTool', () => {
     });
 
     it.each([
-      ['/w/photo.JPG', 'image/jpeg'],
-      ['/w/shot.heic', 'image/heic'],
-      ['/w/shot.HEIF', 'image/heif'],
-      ['/w/scan.tif', 'image/tiff'],
-    ])('falls back to the extension of %s when the bytes have no known signature', async (path, mime) => {
-      const unknown = new Uint8Array([1, 2, 3, 4]);
-      mockReadFile.mockResolvedValue(unknown);
+      '/w/photo.JPG', '/w/shot.heic', '/w/scan.tif', '/w/PHOTO.PNG',
+    ])('refuses %s when its bytes are not a recognised image, whatever the name says', async (path) => {
+      mockReadFile.mockResolvedValue(new Uint8Array([1, 2, 3, 4]));
 
-      await generateImageTool.execute({ prompt: 'x', reference_images: [path], save_path: '/tmp/abu-test/out.png' });
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: [path], save_path: '/tmp/abu-test/out.png' });
 
-      expect(sentBody().image).toBe(`data:${mime};base64,${b64(unknown)}`);
+      expect(result as string).toContain(path);
+      expect(result as string).toContain('not a supported format');
+      expect(mockFetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses text content named like an image and uploads nothing', async () => {
+      mockReadFile.mockResolvedValue(new TextEncoder().encode('api_key=not-a-picture'));
+
+      const result = await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/looks-like.png'], save_path: '/tmp/abu-test/out.png' });
+
+      expect(result as string).toContain('not a supported format');
+      expect(mockFetch).not.toHaveBeenCalled();
     });
 
     it('writes the format in the data URI in lowercase, as Ark requires', async () => {
-      mockReadFile.mockResolvedValue(new Uint8Array([1, 2, 3, 4]));
+      mockReadFile.mockResolvedValue(PNG);
 
       await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/PHOTO.PNG'], save_path: '/tmp/abu-test/out.png' });
 
       expect(String(sentBody().image)).toMatch(/^data:image\/png;base64,/);
-    });
-
-    it('rejects a file that is neither a known image nor named like one, before calling the API', async () => {
-      mockReadFile.mockResolvedValue(new Uint8Array([0x68, 0x69]));
-
-      const result = await generateImageTool.execute({ prompt: 'x', reference_images: ['/w/notes.txt'], save_path: '/tmp/abu-test/out.png' });
-
-      expect(result as string).toContain('/w/notes.txt');
-      expect(result as string).toContain('not a supported format');
-      expect(mockFetch).not.toHaveBeenCalled();
     });
 
     function useBackendModel(model: string) {

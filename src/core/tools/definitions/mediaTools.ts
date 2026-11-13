@@ -13,6 +13,7 @@ import { getI18n, format } from '../../../i18n';
 import { runFileOperationStage, type ToolFileAccess } from '@/core/tools/fileOperation';
 import { uint8ArrayToBase64 } from '../../../utils/base64';
 import { readFile as readBinFile } from '../fsBridge';
+import { parseReferenceImages, isRemoteReference } from '../referenceImages';
 
 // `process_image` lives in its own file (P1-3d-5 slice 1) so the sidecar can
 // register it locally without dragging in generateImageTool's store imports
@@ -25,24 +26,7 @@ import { readFile as readBinFile } from '../fsBridge';
 // (volcengineMaxReferenceImages).
 const MAX_REFERENCE_IMAGE_BYTES = 20 * 1024 * 1024;
 
-const REFERENCE_EXTENSION_MIME: Readonly<Record<string, string>> = {
-  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', webp: 'image/webp',
-  gif: 'image/gif', bmp: 'image/bmp', tif: 'image/tiff', tiff: 'image/tiff',
-  heic: 'image/heic', heif: 'image/heif',
-};
-
-/** The model may pass one string or an array; blanks are noise, not references. */
-function parseReferenceImages(raw: unknown): string[] {
-  const list = typeof raw === 'string' ? [raw] : Array.isArray(raw) ? raw : [];
-  return list.flatMap((entry) => (typeof entry === 'string' && entry.trim() ? [entry.trim()] : []));
-}
-
-/** URLs and inline data go to the backend as given; anything else is a local file. */
-function isRemoteReference(entry: string): boolean {
-  return /^(https?:\/\/|data:)/i.test(entry);
-}
-
-/** Magic bytes first: a file's extension says what it was named, not what it is. */
+/** A file's extension says what it was named, not what it is: only its bytes decide. */
 function sniffImageMime(bytes: Uint8Array): string | null {
   const at = (offset: number, ...expected: number[]) => expected.every((byte, i) => bytes[offset + i] === byte);
   if (at(0, 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a)) return 'image/png';
@@ -91,8 +75,7 @@ async function encodeReferenceImages(
         }),
       };
     }
-    const extension = /\.([a-z0-9]+)$/i.exec(entry)?.[1].toLowerCase();
-    const mime = sniffImageMime(bytes) ?? (extension ? REFERENCE_EXTENSION_MIME[extension] : undefined);
+    const mime = sniffImageMime(bytes);
     if (!mime) return { error: format(tm.errRefUnsupportedType, { path: entry }) };
     images.push(`data:${mime};base64,${uint8ArrayToBase64(bytes)}`);
   }

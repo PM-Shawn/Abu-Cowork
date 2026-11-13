@@ -37,6 +37,7 @@ export const FILE_TOOL_NAMES: ReadonlySet<string> = new Set([
   TOOL_NAMES.SEARCH_FILES,
   TOOL_NAMES.FIND_FILES,
   TOOL_NAMES.SEND_FILE,
+  TOOL_NAMES.GENERATE_IMAGE,
 ]);
 
 export function isFileToolName(name: string): boolean {

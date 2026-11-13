@@ -174,3 +174,33 @@ describe('declared tool file targets', () => {
     expect(resolveToolFileInput('read_file', { path: '/work/a.txt', note: '/work/a.txt' }, new Map([['/work/a.txt', '/canonical/a.txt']]))).toEqual({ path: '/canonical/a.txt', note: '/work/a.txt' });
   });
 });
+
+describe('generate_image reference image targets', () => {
+  it('plans every local reference as a read next to the save_path write, and leaves URLs alone', async () => {
+    const input = {
+      prompt: 'restyle',
+      save_path: 'out.png',
+      reference_images: ['a.png', 'https://example.com/b.png', 'data:image/png;base64,AAAA', '/abs/c.jpg'],
+    };
+    const plan = await planToolFiles('generate_image', input, { workspacePath: '/work' });
+    expect(plan?.targets.map(target => [target.path, target.purpose])).toEqual([
+      ['/work/out.png', 'write'], ['/work/a.png', 'read'], ['/abs/c.jpg', 'read'],
+    ]);
+    expect(plan?.input.reference_images).toEqual([
+      '/work/a.png', 'https://example.com/b.png', 'data:image/png;base64,AAAA', '/abs/c.jpg',
+    ]);
+  });
+
+  it('pins the references the tool reads to the destinations the host observed', async () => {
+    const plan = await planToolFiles('generate_image', { prompt: 'x', save_path: '/work/out.png', reference_images: ['a.png', 'https://example.com/b.png'] }, { workspacePath: '/work' });
+    const resolved = resolveToolFileInput('generate_image', plan!.input, new Map([
+      ['/work/out.png', '/real/out.png'], ['/work/a.png', '/real/a.png'],
+    ]));
+    expect(resolved).toEqual({ prompt: 'x', save_path: '/real/out.png', reference_images: ['/real/a.png', 'https://example.com/b.png'] });
+  });
+
+  it('accepts the single-string form the tool also accepts', async () => {
+    const plan = await planToolFiles('generate_image', { prompt: 'x', save_path: '/work/out.png', reference_images: 'a.png' }, { workspacePath: '/work' });
+    expect(plan?.targets.map(target => [target.path, target.purpose])).toContainEqual(['/work/a.png', 'read']);
+  });
+});

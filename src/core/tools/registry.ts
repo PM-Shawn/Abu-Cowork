@@ -139,7 +139,8 @@ import { finalizeToolApproval, rememberToolApproval, filesForToolApproval, scope
 import { snapshotToolOutputs, type OutputCapture } from '../session/outputSnapshots';
 import { FileOperationDenied, type ToolFileAccess } from '@/core/tools/fileOperation';
 import { uint8ArrayToBase64 } from '@/core/tools/helpers/toolHelpers';
-import { hasToolFileTargets, planToolFiles } from '@/core/tools/fileToolTargets';
+import { hasToolFileTargets, planToolFiles, resolveToolFileInput } from '@/core/tools/fileToolTargets';
+import { localReferenceImages } from '@/core/tools/referenceImages';
 import { parsePatchOperations, resolvePatchPath } from '@/core/tools/definitions/patchTools';
 import { rewriteShellApplyPatch } from '@/core/tools/applyPatchCommand';
 export { finalizeToolApproval } from './approvalFinalization';
@@ -436,6 +437,12 @@ export const FILE_TOOL_PATH_MAP: Record<string, (input: Record<string, unknown>)
   // Uploading is a read of local data. It must pass the same path/scope gate as
   // read_file before any IM network side effect occurs.
   [TOOL_NAMES.SEND_FILE]:      (i) => typeof i.path === 'string' ? { path: i.path, capability: 'read' } : null,
+  // A local reference image is read and uploaded to the image service: the same
+  // read as read_file, so the same path, grant and scope checks apply to it.
+  [TOOL_NAMES.GENERATE_IMAGE]: (i) => {
+    const reads = localReferenceImages(i.reference_images).map((path): FileToolPathTarget => ({ path, capability: 'read' }));
+    return reads.length > 0 ? reads : null;
+  },
 };
 
 /**
@@ -1258,6 +1265,8 @@ export async function checkToolApproval(
   }
   let largeWritePathAfterApproval: string | null = null;
   let approvedExecutionPath: string | undefined;
+  /** generate_image: each reference image's approved canonical path, so the bytes read are the bytes checked. */
+  const approvedReferencePaths = new Map<string, string>();
   /** Carried out of the browser block to the executor — see `BrowserExecutionPin`. */
   let browserExecutionPin: BrowserExecutionPin | undefined;
   /**
@@ -1509,6 +1518,7 @@ export async function checkToolApproval(
         };
       }
       if (pathInfo.path === input.path) approvedExecutionPath = pathCheck.resolvedPath;
+      if (name === TOOL_NAMES.GENERATE_IMAGE) approvedReferencePaths.set(pathInfo.path, pathCheck.resolvedPath);
 
       if (name === TOOL_NAMES.WRITE_FILE) {
         // The overwrite-safety read-precheck below calls checkReadPath, which
@@ -2436,8 +2446,10 @@ export async function checkToolApproval(
   // Enterprise confirmation may wait while the user revokes browser access.
   const browserRevocation = await recheckBrowserPermission?.();
   if (browserRevocation) return browserRevocation;
-  const executionInput = files?.executionInput ?? (operation ? freezeToolInput(approvedExecutionPath && FILE_TOOL_PATH_MAP[name]
-    ? { ...input, path: approvedExecutionPath } : input) : undefined);
+  const executionInput = files?.executionInput
+    ?? (approvedReferencePaths.size > 0 ? resolveToolFileInput(name, input, approvedReferencePaths) : undefined)
+    ?? (operation ? freezeToolInput(approvedExecutionPath && FILE_TOOL_PATH_MAP[name]
+      ? { ...input, path: approvedExecutionPath } : input) : undefined);
   if (operation && executionInput) {
     const authorized = await operation.authorization.authorize(executionInput);
     if (authorized.decision === 'deny') {

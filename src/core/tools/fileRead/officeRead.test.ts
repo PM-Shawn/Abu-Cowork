@@ -121,7 +121,7 @@ function contextFor(bytes: Uint8Array, fields: Partial<ToolExecutionContext> = {
 }
 
 const params = (fields: Partial<DocumentReadParams> = {}): DocumentReadParams =>
-  ({ pages: null, region: null, rotate: 0, imageIndex: null, ...fields });
+  ({ pages: null, region: null, rotate: 0, imageIndex: null, textOffset: 0, ...fields });
 
 const textOf = (result: string | ToolResultContent[]): string =>
   typeof result === 'string' ? result : (result[0] as { text: string }).text;
@@ -182,6 +182,51 @@ describe('readOfficeManifest', () => {
       { lines: ['Chart slide'], pictures: [], charts: [1] },
     ]);
     expect(manifest.pictures.map((p) => [p.index, p.where])).toEqual([[1, ['slide 1']], [2, ['slide layout']]]);
+  });
+});
+
+/** The same package with every XML part rewritten, still the same XML. */
+function rewritten(bytes: Uint8Array, rewrite: (xml: string) => string): Uint8Array {
+  const entries = unzipSync(bytes);
+  for (const part of Object.keys(entries)) {
+    if (/\.(xml|rels)$/.test(part)) entries[part] = strToU8(rewrite(new TextDecoder().decode(entries[part])));
+  }
+  return zipSync(entries);
+}
+
+const tags = (xml: string, change: (tag: string) => string) => xml.replace(/<[^!?/][^>]*>/g, change);
+/** Attribute values in single quotes. */
+const singleQuoted = (xml: string) => tags(xml, (tag) => tag.replace(/(\s[\w:.-]+\s*=\s*)"([^"']*)"/g, "$1'$2'"));
+/** Spaces around every `=` and between attributes and the end of the tag. */
+const spaced = (xml: string) => tags(xml, (tag) => tag.replace(/(\s[\w:.-]+)=("[^"]*"|'[^']*')/g, '$1 = $2').replace(/\s*(\/?)>$/, '  $1>'));
+/** Text in CDATA sections, empty elements written as a pair of tags, character references for letters. */
+const cdataAndPairs = (xml: string) => xml
+  .replace(/(<(?:w|a):t(?:\s[^>]*)?>)([^<]+)(<\/(?:w|a):t>)/g, (_all, open: string, text: string, close: string) => `${open}<![CDATA[${text.replace(/&amp;/g, '&')}]]>${close}`)
+  .replace(/<([\w:.-]+)((?:\s[^>]*?)?)\/>/g, '<$1$2></$1>');
+
+describe('readOfficeManifest on XML written another valid way', () => {
+  const forms: Array<[string, (xml: string) => string]> = [
+    ['single-quoted attributes', singleQuoted],
+    ['spaces around = and before the end of a tag', spaced],
+    ['CDATA text and empty elements written as a pair', cdataAndPairs],
+  ];
+  const files: Array<[string, () => Uint8Array]> = [['Word', () => docx('many')], ['Excel', () => xlsx(3)], ['PowerPoint', pptx]];
+
+  for (const [office, build] of files) {
+    for (const [form, rewrite] of forms) {
+      it(`reads a ${office} file with ${form} as it reads the usual form`, () => {
+        const usual = readOfficeManifest(unzipSync(build()))!;
+        expect(readOfficeManifest(unzipSync(rewritten(build(), rewrite)))).toEqual(usual);
+      });
+    }
+  }
+
+  it('finds the slides of a deck whose slide ids are single-quoted, and the sheet and relationships of a workbook', () => {
+    const deck = readOfficeManifest(unzipSync(rewritten(pptx(), singleQuoted)))!;
+    expect(deck.slides).toHaveLength(2);
+    const book = readOfficeManifest(unzipSync(rewritten(xlsx(3), singleQuoted)))!;
+    expect(book.sheets?.map((sheet) => sheet.name)).toEqual(['Data', 'Old']);
+    expect(book.pictures.map((picture) => picture.where)).toEqual([["sheet 'Data' at B4"]]);
   });
 });
 
@@ -295,6 +340,7 @@ describe('readOffice', () => {
     expect(textOf((await read(docx('many'), { imageIndex: 3 })).result)).toBe('Error: Image 3 is a vector picture (EMF), which cannot be shown.');
     expect(textOf((await read(docx('many'), { region: [0, 0, 0.5, 0.5] })).result)).toMatch(/^Error: region and rotate apply to one picture/);
     expect(textOf((await read(docx('many'), { pages: [[1, 1]] })).result)).toMatch(/^Error: pages is for PDF files/);
+    expect(textOf((await read(docx('many'), { textOffset: 5 })).result)).toMatch(/^Error: text_offset is for PDF files/);
     expect(textOf((await read(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 13, 1, 2, 3]))).result)).toMatch(/^Error: The file could not be opened as an Office document/);
     expect(textOf((await read(new Uint8Array(0))).result))
       .toBe('Error: The file could not be opened as an Office document (the file is empty). It may be damaged, password-protected, or an older .doc/.xls/.ppt file renamed.');

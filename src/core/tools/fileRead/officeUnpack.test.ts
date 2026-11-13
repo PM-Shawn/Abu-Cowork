@@ -42,7 +42,7 @@ describe('readOffice on a zip bomb', () => {
     });
     expect(bomb.length).toBeLessThan(2 * 1024 * 1024);
     const files = { readFile: vi.fn().mockResolvedValue(bomb), stat: vi.fn(), runProcessor: vi.fn() } as unknown as ToolFileAccess;
-    const outcome = await readOffice('/d/deck.pptx', { pages: null, region: null, rotate: 0, imageIndex: null }, { files } as ToolExecutionContext);
+    const outcome = await readOffice('/d/deck.pptx', { pages: null, region: null, rotate: 0, imageIndex: null, textOffset: 0 }, { files } as ToolExecutionContext);
     if (outcome.kind !== 'done') throw new Error(outcome.kind);
     const text = typeof outcome.result === 'string' ? outcome.result : (outcome.result as ToolResultContent[]).map((b) => (b as { text?: string }).text ?? '').join('');
     expect(text).toMatch(/too large to read/);

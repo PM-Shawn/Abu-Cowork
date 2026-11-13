@@ -1,3 +1,5 @@
+import { normalizeXml } from './officeXml';
+
 /**
  * What a .docx, .xlsx or .pptx holds besides its text: the pictures it embeds
  * (numbered, with where each sits), the charts it defines, and embedded
@@ -84,91 +86,9 @@ const MAX_CACHED_POINTS = 24;
 
 const decoder = new TextDecoder();
 
-/**
- * The prefix this module's patterns use for each namespace. Producers choose
- * their own prefixes: Excel writes `<xdr:oneCellAnchor>` and `<c:barChart>`,
- * openpyxl writes the same elements in a default namespace (`<oneCellAnchor>`,
- * `<barChart>`), the .NET Open XML SDK writes `<x:sheet>`. Reading by
- * namespace means renaming each part's prefixes to these before matching.
- */
-const CANONICAL_PREFIX: Record<string, string> = {
-  'http://schemas.openxmlformats.org/wordprocessingml/2006/main': 'w',
-  'http://schemas.openxmlformats.org/presentationml/2006/main': 'p',
-  'http://schemas.openxmlformats.org/spreadsheetml/2006/main': '',
-  'http://schemas.openxmlformats.org/drawingml/2006/main': 'a',
-  'http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing': 'xdr',
-  'http://schemas.openxmlformats.org/drawingml/2006/chart': 'c',
-  'http://schemas.microsoft.com/office/drawing/2014/chartex': 'cx',
-  'http://schemas.openxmlformats.org/officeDocument/2006/relationships': 'r',
-  'http://schemas.openxmlformats.org/package/2006/relationships': '',
-  'http://schemas.openxmlformats.org/markup-compatibility/2006': 'mc',
-  'urn:schemas-microsoft-com:vml': 'v',
-  'http://schemas.microsoft.com/office/drawing/2016/SVG/main': 'asvg',
-  // "Strict Open XML", which Excel, Word and PowerPoint can save
-  'http://purl.oclc.org/ooxml/wordprocessingml/main': 'w',
-  'http://purl.oclc.org/ooxml/presentationml/main': 'p',
-  'http://purl.oclc.org/ooxml/spreadsheetml/main': '',
-  'http://purl.oclc.org/ooxml/drawingml/main': 'a',
-  'http://purl.oclc.org/ooxml/drawingml/spreadsheetDrawing': 'xdr',
-  'http://purl.oclc.org/ooxml/drawingml/chart': 'c',
-  'http://purl.oclc.org/ooxml/officeDocument/relationships': 'r',
-};
-
-const NAMESPACE_DECLARATION = /\sxmlns(?::([\w.-]+))?\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
-/** A comment, CDATA section, processing instruction or doctype, left as it is; or a tag, with its attributes. */
-const XML_MARKUP = /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<!(?!--|\[CDATA\[)[^>]*>|<(\/?)([\w.-]+(?::[\w.-]+)?)((?:[^>"']|"[^"]*"|'[^']*')*?)(\/?)>/g;
-const ATTRIBUTE = /(\s)([\w.:-]+)(\s*=\s*(?:"[^"]*"|'[^']*'))/g;
-
-/**
- * A part's XML with every element and attribute of the namespaces above
- * written with their prefix, whatever prefix (or default namespace) the part
- * declares, element by element as XML scopes them. A part that already uses
- * these prefixes is returned as it is.
- */
-export function canonicalPrefixes(text: string): string {
-  const declarations = [...text.matchAll(NAMESPACE_DECLARATION)];
-  if (declarations.every((match) => {
-    const canonical = CANONICAL_PREFIX[match[2] ?? match[3]];
-    return canonical === undefined || canonical === (match[1] ?? '');
-  })) return text;
-
-  // Each open element's prefix → namespace map; the root has none declared.
-  const scopes: Array<Map<string, string>> = [new Map()];
-  const renamed = (scope: Map<string, string>, qualified: string, isAttribute: boolean): string => {
-    const colon = qualified.indexOf(':');
-    const prefix = colon < 0 ? '' : qualified.slice(0, colon);
-    const local = colon < 0 ? qualified : qualified.slice(colon + 1);
-    // An unprefixed attribute is in no namespace, whatever the default is.
-    if (prefix === 'xmlns' || prefix === 'xml' || (isAttribute && !prefix)) return qualified;
-    const namespace = scope.get(prefix);
-    const canonical = namespace === undefined ? undefined : CANONICAL_PREFIX[namespace];
-    if (canonical === undefined) return qualified;
-    return canonical ? `${canonical}:${local}` : local;
-  };
-  return text.replace(XML_MARKUP, (whole, slash: string | undefined, name: string | undefined, attributesText: string, selfClosing: string) => {
-    if (name === undefined) return whole;
-    if (slash) {
-      const scope = scopes[scopes.length - 1];
-      if (scopes.length > 1) scopes.pop();
-      return `</${renamed(scope, name, false)}${attributesText}>`;
-    }
-    let scope = scopes[scopes.length - 1];
-    const declared = [...attributesText.matchAll(NAMESPACE_DECLARATION)];
-    if (declared.length) {
-      scope = new Map(scope);
-      for (const match of declared) scope.set(match[1] ?? '', match[2] ?? match[3]);
-    }
-    if (!selfClosing) scopes.push(scope);
-    const attributes = attributesText.replace(ATTRIBUTE, (_all, space: string, attribute: string, value: string) => (
-      `${space}${renamed(scope, attribute, true)}${value}`
-    ));
-    return `<${renamed(scope, name, false)}${attributes}${selfClosing}>`;
-  });
-}
-
 function xml(entries: ZipEntries, part: string): string {
   const bytes = entries[part];
-  return bytes ? canonicalPrefixes(decoder.decode(bytes)) : '';
+  return bytes ? normalizeXml(decoder.decode(bytes)) : '';
 }
 
 /** XML character entities. */

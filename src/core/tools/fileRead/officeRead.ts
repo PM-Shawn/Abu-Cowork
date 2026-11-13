@@ -464,6 +464,9 @@ export async function readOffice(
   if (params.pages) {
     return { kind: 'done', result: 'Error: pages is for PDF files. A read of this file shows all of it; its pictures are numbered for image_index.' };
   }
+  if (params.textOffset) {
+    return { kind: 'done', result: 'Error: text_offset is for PDF files. A read of this file shows all of it.' };
+  }
   if (asksForView(params) && params.imageIndex === null) {
     return { kind: 'done', result: 'Error: region and rotate apply to one picture of this document: pass image_index with the number read_file lists as [Image N].' };
   }

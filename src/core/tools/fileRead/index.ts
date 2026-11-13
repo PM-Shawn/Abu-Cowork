@@ -21,7 +21,7 @@ import { asksForView, parseDocumentReadParams } from './readParams';
 
 const RASTER_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp']);
 const OFFICE_EXTENSIONS = new Set(['.docx', '.xlsx', '.pptx']);
-const DOCUMENT_PARAMETERS = ['pages', 'region', 'rotate', 'image_index'] as const;
+const DOCUMENT_PARAMETERS = ['pages', 'text_offset', 'region', 'rotate', 'image_index'] as const;
 
 type FileKind = 'pdf' | 'office' | 'image';
 
@@ -46,6 +46,10 @@ export const DOCUMENT_READ_PROPERTIES: Record<string, ToolParameter> = {
   pages: {
     type: 'string',
     description: 'PDF only: the pages to read with their page images, e.g. "18", "3-5" or "2,7" (up to 4 page images per call). With region or rotate: one page.',
+  },
+  text_offset: {
+    type: 'number',
+    description: 'PDF only: characters of the first page\'s text to skip. Use it, with pages, to read on when a read said its text stopped partway through a page.',
   },
   region: {
     type: 'object',
@@ -92,13 +96,16 @@ async function handle(input: Record<string, unknown>, context?: ToolExecutionCon
   if (!kind) {
     const asked = DOCUMENT_PARAMETERS.filter((name) => given(input[name]));
     if (!asked.length) return { kind: 'upstream' };
-    return { kind: 'done', result: `Error: ${asked.join(', ')} ${asked.length === 1 ? 'does' : 'do'} not apply to this file. pages is for PDFs, image_index for Word, Excel and PowerPoint files; ${VIEW_APPLIES_TO}.` };
+    return { kind: 'done', result: `Error: ${asked.join(', ')} ${asked.length === 1 ? 'does' : 'do'} not apply to this file. pages and text_offset are for PDFs, image_index for Word, Excel and PowerPoint files; ${VIEW_APPLIES_TO}.` };
   }
   const params = parseDocumentReadParams(input);
   if ('error' in params) return { kind: 'done', result: `Error: ${params.error}` };
   if (kind === 'image') {
     if (params.pages || params.imageIndex !== null) {
       return { kind: 'done', result: 'Error: pages and image_index do not apply to a picture file; use region and rotate to look at part of it.' };
+    }
+    if (params.textOffset) {
+      return { kind: 'done', result: 'Error: text_offset does not apply to a picture file; it reads on in the text of a PDF page.' };
     }
     // A model that cannot see gets read_file's own note; a plain read is read_file's own code.
     if (context?.supportsVision === false || !asksForView(params)) return { kind: 'upstream' };

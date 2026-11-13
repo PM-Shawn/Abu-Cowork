@@ -22,8 +22,10 @@ vi.mock('./orchestrator', () => ({
 
 const refreshSkillMock = vi.fn().mockResolvedValue(undefined);
 const getSkillMock = vi.fn();
+const readyMock = vi.fn((_opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<void> => Promise.resolve());
 vi.mock('../skill/loader', () => ({
   skillLoader: {
+    ready: (opts?: { signal?: AbortSignal; timeoutMs?: number }) => readyMock(opts),
     refreshSkill: (...a: unknown[]) => refreshSkillMock(...a),
     getSkill: (...a: unknown[]) => getSkillMock(...a),
     listSupportingFiles: async () => [],
@@ -48,7 +50,7 @@ vi.mock('./prompts/capabilityPrompt', () => ({
   getCapabilityPrompt: () => 'capability prompt',
 }));
 
-import { precomputeOrchestration } from './entryOrchestration';
+import { precomputeOrchestration, SKILL_SCAN_WAIT_MS } from './entryOrchestration';
 
 const PRELOADED_SECTION = {
   text: '## Preloaded Skills\nguidance\n\n### weekly-report\nA report skill\n\nbody',
@@ -110,6 +112,42 @@ describe('precomputeOrchestration', () => {
     await precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
 
     expect(resolvePreloadedSkillsMock).not.toHaveBeenCalled();
+  });
+
+  it('builds nothing until the skill catalog is ready', async () => {
+    routeInputMock.mockReturnValue({ type: 'general', cleanInput: 'hi' });
+    let finishScan: () => void = () => {};
+    readyMock.mockReturnValueOnce(new Promise<void>((done) => { finishScan = done; }));
+
+    const pending = precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(buildSystemPromptSectionsMock).not.toHaveBeenCalled();
+
+    finishScan();
+    await pending;
+    expect(buildSystemPromptSectionsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops waiting for a scan that does not finish, within SKILL_SCAN_WAIT_MS, and honours the run signal', async () => {
+    routeInputMock.mockReturnValue({ type: 'general', cleanInput: 'hi' });
+    // A loader whose scan hangs: it settles only through the bound or the signal it is given.
+    readyMock.mockImplementationOnce((opts) => new Promise<void>((done) => {
+      if (opts?.timeoutMs !== undefined) setTimeout(done, opts.timeoutMs);
+      opts?.signal?.addEventListener('abort', () => done(), { once: true });
+    }));
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    try {
+      const pending = precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel }, controller.signal);
+      await vi.advanceTimersByTimeAsync(SKILL_SCAN_WAIT_MS - 1);
+      expect(buildSystemPromptSectionsMock).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await pending;
+      expect(buildSystemPromptSectionsMock).toHaveBeenCalledTimes(1);
+      expect(readyMock.mock.calls.at(-1)?.[0]).toMatchObject({ signal: controller.signal, timeoutMs: SKILL_SCAN_WAIT_MS });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('builds the system prompt for the tier the entry model will run at', async () => {

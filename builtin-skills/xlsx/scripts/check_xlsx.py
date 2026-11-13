@@ -27,7 +27,6 @@ import math
 import os
 import re
 import sys
-import threading
 import zipfile
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -226,6 +225,7 @@ class Engine:
         self.lower_sheets = {n.lower(): n for n in wb.sheetnames}
         self.memo = {}
         self.stack = set()
+        self.settling = False
         self.ast = {}
         self.names = {}
         try:
@@ -248,29 +248,13 @@ class Engine:
                 raise err
             if key in self.stack:
                 return XlError("#REF!")  # circular reference
-            self.stack.add(key)
-            try:
-                try:
-                    node = self.ast.get(key)
-                    if node is None:
-                        node = Parser(self.formulas[key]).parse()
-                        self.ast[key] = node
-                    res = self.ev(node, key[0])
-                    if isinstance(res, Rng):
-                        raise Unsupported("array result")
-                    if res is None:
-                        res = 0.0
-                except Unsupported as exc:
-                    self.memo[key] = exc
-                    raise
-                except RecursionError:
-                    exc = Unsupported("deep chain")
-                    self.memo[key] = exc
-                    raise exc
-            finally:
-                self.stack.discard(key)
-            self.memo[key] = res
-            return res
+            self._settle(key)
+            if key in self.memo:
+                res = self.memo[key]
+                if isinstance(res, Unsupported):
+                    raise res
+                return res
+            return self._compute(key)
         v = self.cells.get(key)
         if isinstance(v, bool):
             return v
@@ -283,6 +267,104 @@ class Engine:
         if isinstance(v, str) and v in ERRORS:
             return XlError(v)
         return v
+
+    def _compute(self, key):
+        self.stack.add(key)
+        try:
+            try:
+                node = self.ast.get(key)
+                if node is None:
+                    node = Parser(self.formulas[key]).parse()
+                    self.ast[key] = node
+                res = self.ev(node, key[0])
+                if isinstance(res, Rng):
+                    raise Unsupported("array result")
+                if res is None:
+                    res = 0.0
+            except Unsupported as exc:
+                self.memo[key] = exc
+                raise
+            except RecursionError:
+                exc = Unsupported("deep chain")
+                self.memo[key] = exc
+                raise exc
+        finally:
+            self.stack.discard(key)
+        self.memo[key] = res
+        return res
+
+    def _settle(self, root):
+        """Evaluate every formula `root` reads, the ones furthest away first, with a work list of our own.
+
+        A chain of formulas (A2 reads A1, A3 reads A2, ...) is then never walked by nested calls, so the
+        Python call stack stays shallow however long the chain is and no stack setting is needed."""
+        if self.settling:
+            return          # already inside a settle: a cycle or a name found late; the plain call is shallow
+        self.settling = True
+        try:
+            path = [(root, self._deps(root))]
+            on_path = {root}
+            while path:
+                key, deps = path[-1]
+                for dep in deps:
+                    if dep in on_path and dep not in self.memo:
+                        # dep is on the way down from root and reads its way back to itself: a cycle of
+                        # any length. Every cell from dep to here is part of it (Excel: circular reference).
+                        keys = [k for k, _ in path]
+                        for member in keys[keys.index(dep):]:
+                            self.memo[member] = XlError("#REF!")
+                        continue
+                    if dep not in self.memo and dep not in on_path and dep not in self.arrays:
+                        path.append((dep, self._deps(dep)))
+                        on_path.add(dep)
+                        break
+                else:
+                    path.pop()
+                    on_path.discard(key)
+                    if key is not root and key not in self.memo:
+                        try:
+                            self._compute(key)
+                        except Unsupported:
+                            pass        # kept in memo; whoever reads it gets the same answer
+        finally:
+            self.settling = False
+
+    def _deps(self, key):
+        """The formula cells the formula in `key` reads (what value_of would go and fetch for it)."""
+        node = self.ast.get(key)
+        if node is None:
+            try:
+                node = Parser(self.formulas[key]).parse()
+            except Unsupported:
+                return
+            self.ast[key] = node
+        for text in _refs(node):
+            pr = self._target(text, key[0])
+            if pr is None:
+                continue
+            s, r1, c1, r2, c2 = pr
+            if s not in self.wb.sheetnames:
+                continue
+            if r2 is None:
+                r2 = self.max_row[s]
+            r2 = min(r2, max(self.max_row[s], r1))
+            c2 = min(c2, max(self.max_col[s], c1))
+            for r in range(r1, r2 + 1):
+                for c in range(c1, c2 + 1):
+                    if (s, r, c) in self.formulas:
+                        yield (s, r, c)
+
+    def _target(self, text, sheet):
+        """A reference or defined name as (sheet, r1, c1, r2, c2) with the sheet spelled as in the file, else None."""
+        pr = parse_ref(text, sheet)
+        if pr is None:
+            name = text.upper()
+            if name in self.names:
+                pr = parse_ref(self.names[name].replace("$", ""), sheet)
+            if pr is None:
+                return None
+        s, r1, c1, r2, c2 = pr
+        return self.lower_sheets.get(s.lower(), s), r1, c1, r2, c2   # sheet names are case-insensitive in Excel
 
     def block(self, sheet, r1, c1, r2, c2):
         if sheet not in self.wb.sheetnames:
@@ -302,15 +384,10 @@ class Engine:
             return None
         if k == "ref":
             text = n[1]
-            pr = parse_ref(text, sheet)
+            pr = self._target(text, sheet)
             if pr is None:
-                name = text.upper()
-                if name in self.names:
-                    pr = parse_ref(self.names[name].replace("$", ""), sheet)
-                if pr is None:
-                    raise Unsupported("name " + text)
+                raise Unsupported("name " + text)
             s, r1, c1, r2, c2 = pr
-            s = self.lower_sheets.get(s.lower(), s)   # sheet names are case-insensitive in Excel
             if s not in self.wb.sheetnames:
                 return XlError("#REF!")
             if r1 == r2 and c1 == c2 and r2 is not None:
@@ -892,21 +969,13 @@ def run_checks(path, want_values=False):
     computed, unverified = {}, {}
 
     if n_cells <= MAX_CELLS_TO_EVALUATE:
-        def evaluate():
-            for key in sorted(eng.formulas, key=lambda k: (k[0], k[1], k[2])):
-                try:
-                    computed[key] = eng.value_of(key)
-                except Unsupported as exc:
-                    unverified[key] = str(exc)
-                except Exception as exc:  # engine bug: never let it hide the other checks
-                    unverified[key] = f"engine: {exc.__class__.__name__}"
-        old = sys.getrecursionlimit()
-        sys.setrecursionlimit(20000)
-        threading.stack_size(256 * 1024 * 1024)
-        t = threading.Thread(target=evaluate)
-        t.start()
-        t.join()
-        sys.setrecursionlimit(old)
+        for key in sorted(eng.formulas, key=lambda k: (k[0], k[1], k[2])):
+            try:
+                computed[key] = eng.value_of(key)
+            except Unsupported as exc:
+                unverified[key] = str(exc)
+            except Exception as exc:  # engine bug: never let it hide the other checks
+                unverified[key] = f"engine: {exc.__class__.__name__}"
     else:
         for key in eng.formulas:
             unverified[key] = "too large"

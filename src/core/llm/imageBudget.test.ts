@@ -246,3 +246,49 @@ describe('dropOldImages — both limits in one pass', () => {
     expect(out).toBe(messages);
   });
 });
+
+// The byte budget bounds what `normalizeMessages` sends, so it is measured and
+// enforced on that list, picture by picture.
+describe('dropOldImages (maxBytes) — the list that is actually sent', () => {
+  const BUDGET = 92;
+  const pic = (marker: string): ToolResultContent => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: payload(BUDGET, marker) } });
+  const callOf = (id: string | undefined, ...markers: string[]) => ({
+    ...(id === undefined ? {} : { id }), name: 'read_file', input: {}, result: 'pages', resultContent: markers.map(pic),
+  });
+  /** Characters of picture data the request carries, counted on the normalized turns. */
+  const sentChars = (messages: Message[]): number => normalizeMessages(messages, { supportsVision: true })
+    .flatMap((turn) => (turn.kind === 'assistant' ? turn.toolCalls.flatMap((call) => call.resultImages) : []))
+    .reduce((sum, image) => sum + image.data.length, 0);
+
+  it('bounds an old message whose context list has a call without an id', () => {
+    const message = {
+      id: 'a', role: 'assistant', content: '', timestamp: TS,
+      toolCalls: [callOf('t1', 'a', 'b')],
+      toolCallsForContext: [callOf(undefined, 'a', 'b')],
+    } as unknown as Message;
+    expect(sentChars(dropOldImages([message], { maxBytes: BUDGET }))).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it('bounds a context list that holds a call the request-order list does not', () => {
+    const message = {
+      id: 'a', role: 'assistant', content: '', timestamp: TS,
+      toolCalls: [callOf('t1', 'a', 'b')],
+      toolCallsForContext: [callOf('t1', 'a', 'b'), callOf('t2', 'c', 'd')],
+    } as unknown as Message;
+    expect(sentChars(dropOldImages([message], { maxBytes: BUDGET }))).toBeLessThanOrEqual(BUDGET);
+  });
+
+  it('does not count a sub-agent call that is not sent', () => {
+    const sub = { ...callOf('s', 's', 't'), fromSubagent: true };
+    const message = { id: 'a', role: 'assistant', content: '', timestamp: TS, toolCalls: [sub, callOf('t1', 'a')] } as unknown as Message;
+    expect(dropOldImages([message], { maxBytes: BUDGET })).toEqual([message]);
+  });
+
+  it('keeps the newest picture of a call when the budget fits only one, instead of dropping the whole call', () => {
+    const message = { id: 'a', role: 'assistant', content: '', timestamp: TS, toolCalls: [callOf('t1', 'a', 'b')] } as unknown as Message;
+    const out = dropOldImages([message], { maxBytes: BUDGET });
+    expect(survivingPayloads(out)).toEqual([payload(BUDGET, 'b')]);
+    expect(out[0].toolCalls![0].result).toBe(`pages\n\n${omittedImagesNote(1)}`);
+    expect(sentChars(out)).toBe(BUDGET);
+  });
+});

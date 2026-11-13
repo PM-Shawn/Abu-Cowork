@@ -23,10 +23,12 @@ const logger = createLogger('imageBudget');
  * OLDEST images until the request fits, leaving the newest — the ones the current
  * turn is most likely about — intact.
  *
- * The same pass also enforces the other bound on old pictures: how many tool
+ * The same function also enforces the other bound on old pictures: how many tool
  * calls keep their screenshots (a token budget the context manager sets from
  * context usage). Both limits drop the oldest pictures first and leave the same
  * stand-in note, so one history never carries two notes for one kind of loss.
+ * The byte limit is measured on the list `normalizeMessages` sends and trims
+ * picture by picture; the call limit trims by call.
  *
  * Determinism is a hard requirement, not a nicety. Which images get dropped is a
  * pure function of (recorded history, route policy), decided by position in the
@@ -53,14 +55,11 @@ export interface ImageLimits {
   maxBytes?: number;
 }
 
-/** One droppable thing, in send order: an image of a message, or all images of one tool call. */
-interface Unit {
+/** One tool call with pictures, in send order, for the call limit. */
+interface CallUnit {
   msg: number;
-  /** Index of the image block in the message content. */
-  block?: number;
   /** Index of the call in the message's request-order tool call list. */
-  call?: number;
-  bytes: number;
+  call: number;
 }
 
 type CallList = NonNullable<Message['toolCalls']>;
@@ -102,12 +101,123 @@ function stripImages<T extends { result?: string; resultContent?: ToolResultCont
 }
 
 /**
- * Drop the oldest images of a request until it is inside both limits.
+ * The tool calls of one message that reach the model, and the key that holds
+ * them: `toolCallsForContext` when there is one, else `toolCalls` without the
+ * sub-agent records (display only, never sent). This is `normalizeMessages`'
+ * own rule; the byte budget is measured and enforced on exactly this list.
+ */
+function sentCalls(message: Message): { key: 'toolCallsForContext' | 'toolCalls'; calls: readonly { fromSubagent?: boolean; result?: string; resultContent?: ToolResultContent[] }[] } | null {
+  if (message.toolCallsForContext) return { key: 'toolCallsForContext', calls: message.toolCallsForContext };
+  if (message.toolCalls) return { key: 'toolCalls', calls: message.toolCalls.filter((call) => !call.fromSubagent) };
+  return null;
+}
+
+/** Call limit: strip the pictures of every call but the newest `keep` that have any. */
+function keepNewestCalls(messages: Message[], keep: number): Message[] {
+  const units: CallUnit[] = [];
+  messages.forEach((message, msg) => {
+    const { calls, mirror } = callsOf(message);
+    calls.forEach((call, index) => {
+      if (call.fromSubagent) return;
+      // Count what is sent: the context list's copy when there is one.
+      const sent = mirror ? mirror.find((other) => other.id === call.id) : call;
+      if (imagesOf(sent?.resultContent).length > 0 || imagesOf(call.resultContent).length > 0) units.push({ msg, call: index });
+    });
+  });
+  const dropped = units.slice(0, Math.max(0, units.length - keep));
+  if (dropped.length === 0) return messages;
+  return messages.map((message, msg) => {
+    const indices = new Set(dropped.filter((unit) => unit.msg === msg).map((unit) => unit.call));
+    if (indices.size === 0) return message;
+    const { calls, mirror } = callsOf(message, true);
+    const ids = new Set(calls.filter((_, index) => indices.has(index)).map((call) => call.id));
+    let next = message;
+    if (message.toolCalls) next = { ...next, toolCalls: calls.map((call, index) => (indices.has(index) ? stripImages(call) : call)) };
+    if (mirror) next = { ...next, toolCallsForContext: mirror.map((call) => (ids.has(call.id!) ? stripImages(call) : call)) };
+    // Only toolCallsForContext: `calls` is that list, thinned by position.
+    else if (!message.toolCalls) next = { ...next, toolCallsForContext: calls.map((call, index) => (indices.has(index) ? stripImages(call) : call)) as ToolCallForContext[] };
+    return next;
+  });
+}
+
+/** One picture of the request, in send order, for the byte budget. */
+interface PictureUnit {
+  msg: number;
+  /** Index of the image block in the message content, or the call (index in the sent list) and the picture's place among the call's pictures. */
+  block?: number;
+  call?: number;
+  nth?: number;
+  bytes: number;
+}
+
+/** Byte budget: drop the oldest pictures of the list that is sent, one picture at a time, until the total fits. */
+function fitBytes(messages: Message[], maxBytes: number): Message[] {
+  const pictures: PictureUnit[] = [];
+  messages.forEach((message, msg) => {
+    if (Array.isArray(message.content)) {
+      message.content.forEach((block, index) => {
+        if (block.type === 'image') pictures.push({ msg, block: index, bytes: block.source?.data?.length ?? 0 });
+      });
+    }
+    sentCalls(message)?.calls.forEach((call, index) => {
+      imagesOf(call.resultContent).forEach((image, nth) => pictures.push({ msg, call: index, nth, bytes: image.source?.data?.length ?? 0 }));
+    });
+  });
+
+  let total = pictures.reduce((sum, picture) => sum + picture.bytes, 0);
+  if (total <= maxBytes) return messages;
+  // A single picture larger than the whole budget is dropped too: keeping it
+  // would guarantee the 413 this exists to prevent.
+  const dropped = new Set<PictureUnit>();
+  for (const picture of pictures) {
+    if (total <= maxBytes) break;
+    total -= picture.bytes;
+    dropped.add(picture);
+  }
+
+  return messages.map((message, msg) => {
+    const mine = [...dropped].filter((picture) => picture.msg === msg);
+    if (mine.length === 0) return message;
+    let next = message;
+    const blocks = new Set(mine.map((picture) => picture.block).filter((index) => index !== undefined));
+    if (blocks.size > 0 && Array.isArray(message.content)) {
+      const content = message.content.map((block, index) => (
+        blocks.has(index) ? { type: 'text', text: omittedImagesNote(1) } as unknown as MessageContent : block
+      ));
+      next = { ...next, content };
+    }
+    const sent = sentCalls(message);
+    if (sent && mine.some((picture) => picture.call !== undefined)) {
+      const calls = sent.calls.map((call, index) => {
+        const gone = new Set(mine.filter((picture) => picture.call === index).map((picture) => picture.nth));
+        if (gone.size === 0) return call;
+        let nth = 0;
+        const resultContent = (call.resultContent ?? []).filter((block) => block.type !== 'image' || !gone.has(nth++));
+        const note = omittedImagesNote(gone.size);
+        return { ...call, result: call.result === undefined || call.result === '' ? note : `${call.result}\n\n${note}`, resultContent };
+      });
+      // The sub-agent records of a `toolCalls` list are not sent and stay where they are.
+      const key = sent.key;
+      next = { ...next, [key]: key === 'toolCalls' ? putBack(message.toolCalls!, calls) : calls };
+    }
+    return next;
+  });
+}
+
+/** `toolCalls` without its sub-agent records, thinned: the records go back in their places. */
+function putBack(original: CallList, thinned: readonly unknown[]): CallList {
+  let at = 0;
+  return original.map((call) => (call.fromSubagent ? call : thinned[at++] as CallList[number]));
+}
+
+/**
+ * Drop the oldest pictures of a request until it is inside both limits.
  *
- * Pass 1 lists the droppable units in send order (a message image, or the images
- * of one tool call), drops the calls beyond the newest `keepToolCalls`, then the
- * oldest remaining units until the payload fits `maxBytes`. Pass 2 applies that
- * choice by position, never by object identity: two identical images are not
+ * The call limit (`keepToolCalls`, a token budget the context manager sets) works
+ * by call: the calls beyond the newest few lose all their pictures. The byte limit
+ * (`maxBytes`) works on what is sent, picture by picture, oldest first, so a call
+ * that holds several pictures keeps those that fit. Both choices are made by
+ * position, never by object identity: two identical images are not
  * interchangeable, and a replay must drop the same one. Calls from a sub-agent
  * are recorded for display only and never sent, so they count for nothing.
  *
@@ -118,63 +228,9 @@ function stripImages<T extends { result?: string; resultContent?: ToolResultCont
  * @returns the original array when nothing is dropped; otherwise copies.
  */
 export function dropOldImages(messages: Message[], limits: ImageLimits): Message[] {
-  const units: Unit[] = [];
-  messages.forEach((message, msg) => {
-    if (Array.isArray(message.content)) {
-      message.content.forEach((block, index) => {
-        if (block.type === 'image') units.push({ msg, block: index, bytes: block.source?.data?.length ?? 0 });
-      });
-    }
-    const { calls, mirror } = callsOf(message);
-    calls.forEach((call, index) => {
-      if (call.fromSubagent) return;
-      // Measure what is sent: the context list's copy when there is one.
-      const sent = mirror ? mirror.find((other) => other.id === call.id) : call;
-      const images = imagesOf(sent?.resultContent);
-      if (images.length === 0 && imagesOf(call.resultContent).length === 0) return;
-      units.push({ msg, call: index, bytes: images.reduce((sum, image) => sum + (image.source?.data?.length ?? 0), 0) });
-    });
-  });
-
-  const dropped = new Set<Unit>();
-  if (limits.keepToolCalls !== undefined) {
-    const withCalls = units.filter((unit) => unit.call !== undefined);
-    withCalls.slice(0, Math.max(0, withCalls.length - limits.keepToolCalls)).forEach((unit) => dropped.add(unit));
-  }
+  let out = messages;
+  if (limits.keepToolCalls !== undefined) out = keepNewestCalls(out, limits.keepToolCalls);
   const { maxBytes } = limits;
-  if (maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0) {
-    let total = units.reduce((sum, unit) => sum + (dropped.has(unit) ? 0 : unit.bytes), 0);
-    // A single image larger than the whole budget is dropped too: keeping it
-    // would guarantee the 413 this exists to prevent.
-    for (const unit of units) {
-      if (total <= maxBytes) break;
-      if (dropped.has(unit)) continue;
-      total -= unit.bytes;
-      dropped.add(unit);
-    }
-  }
-  if (dropped.size === 0) return messages;
-
-  return messages.map((message, msg) => {
-    const mine = [...dropped].filter((unit) => unit.msg === msg);
-    if (mine.length === 0) return message;
-    let next = message;
-    const blocks = new Set(mine.map((unit) => unit.block).filter((index) => index !== undefined));
-    if (blocks.size > 0 && Array.isArray(message.content)) {
-      const content = message.content.map((block, index) => (
-        blocks.has(index) ? { type: 'text', text: omittedImagesNote(1) } as unknown as MessageContent : block
-      ));
-      next = { ...next, content };
-    }
-    const indices = new Set(mine.map((unit) => unit.call).filter((index) => index !== undefined));
-    if (indices.size > 0) {
-      const { calls, mirror } = callsOf(message, true);
-      const ids = new Set(calls.filter((_, index) => indices.has(index)).map((call) => call.id));
-      if (message.toolCalls) next = { ...next, toolCalls: calls.map((call, index) => (indices.has(index) ? stripImages(call) : call)) };
-      if (mirror) next = { ...next, toolCallsForContext: mirror.map((call) => (ids.has(call.id!) ? stripImages(call) : call)) };
-      // Only toolCallsForContext: `calls` is that list, thinned by position.
-      else if (!message.toolCalls) next = { ...next, toolCallsForContext: calls.map((call, index) => (indices.has(index) ? stripImages(call) : call)) as ToolCallForContext[] };
-    }
-    return next;
-  });
+  if (maxBytes !== undefined && Number.isFinite(maxBytes) && maxBytes > 0) out = fitBytes(out, maxBytes);
+  return out;
 }

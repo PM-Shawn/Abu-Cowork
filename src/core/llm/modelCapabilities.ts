@@ -241,8 +241,9 @@ export function computeReasoningParams(
     case 'qwen':
       return { maxTokens, thinkingBudget: reasoningCap };
     case 'anthropic':
-      // Claude counts thinking toward max_tokens; preserve the prior 10k budget.
-      return { maxTokens: Math.max(maxTokens, 16384), enableThinking: true, thinkingBudget: 10000 };
+      // Claude counts thinking toward max_tokens. Keep the usual 10k budget, but let it give way
+      // to the cap and the answer floor like the picked path; maxTokens is never raised past the cap.
+      return { maxTokens, enableThinking: true, thinkingBudget: Math.min(10000, reasoningCap) };
     case 'openai-reasoning':
       return { maxTokens, reasoningEffort: 'medium' };
     case 'uncontrollable':

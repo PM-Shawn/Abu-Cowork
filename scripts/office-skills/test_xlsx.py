@@ -94,6 +94,53 @@ class CheckXlsx(Tmp):
         self.assertIn("XLOOKUP", out)
         self.assertIn("无法在本地验证", out)
 
+    def chain(self, n, name="chain.xlsx"):
+        from openpyxl import Workbook
+        wb = Workbook()
+        ws = wb.active
+        ws["A1"] = 1
+        for i in range(2, n + 1):
+            ws[f"A{i}"] = f"=A{i - 1}+1"
+        ws["B1"] = f"=SUM(A{n})"
+        path = self.p(name)
+        wb.save(path)
+        return path
+
+    def test_a_long_dependency_chain_is_estimated_on_the_default_stack(self):
+        code, out = run("xlsx", "check_xlsx.py", self.chain(5000), "--values")
+        self.assertEqual(code, 0, out)
+        self.assertIn("5000/5000 个公式在本地做了估算", out)
+        self.assertIn("B1 = 5000", out)
+
+    def test_the_check_runs_where_the_thread_stack_size_cannot_be_set(self):
+        # the Windows runtime refuses threading.stack_size(256 MB) with ValueError
+        wrapper = (
+            "import runpy, sys, threading\n"
+            "def refuse(size=0):\n"
+            "    if size: raise ValueError('size not valid: %d bytes' % size)\n"
+            "    return 0\n"
+            "threading.stack_size = refuse\n"
+            "sys.argv = sys.argv[1:]\n"
+            "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+        )
+        for name, path in (("plain", self.make()), ("chain", self.chain(3000))):
+            proc = subprocess.run([sys.executable, "-I", "-c", wrapper, script("xlsx", "check_xlsx.py"), path],
+                                  capture_output=True, text=True, encoding="utf-8", errors="replace")
+            self.assertEqual(proc.returncode, 0, name + proc.stdout + proc.stderr)
+            self.assertIn("文件:", proc.stdout)
+
+    def test_no_script_changes_the_thread_stack_size(self):
+        import ast
+        scripts = os.path.join(ROOT, "xlsx", "scripts")
+        for file in os.listdir(scripts):
+            if file.endswith(".py"):
+                with open(os.path.join(scripts, file), encoding="utf-8") as fh:
+                    tree = ast.parse(fh.read())
+                names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+                names |= {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
+                self.assertNotIn("stack_size", names, file)
+                self.assertNotIn("setrecursionlimit", names, file)
+
 
 class XlsxValues(Tmp):
     """Formulas are written to sheet S, data to sheet D. The checker never writes values into a file; its

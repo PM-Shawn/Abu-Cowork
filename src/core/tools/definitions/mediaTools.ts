@@ -117,6 +117,8 @@ export const generateImageTool: ToolDefinition = {
           // Ark names what is wrong in its own error code; say how to fix it in the console.
           const hints = {
             limit: tm.hintVolcLimit,
+            limitModel: tm.hintVolcLimitModel,
+            limitEndpoint: tm.hintVolcLimitEndpoint,
             notOpen: format(tm.hintVolcModelNotOpen, { model: modelId }),
             overdue: tm.hintVolcOverdue,
             sensitive: tm.hintVolcSensitive,

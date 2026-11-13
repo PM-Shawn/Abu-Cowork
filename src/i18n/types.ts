@@ -5310,6 +5310,8 @@ export interface TranslationDict {
        *  (doubao-seedream series for Volcengine), and API key. */
       hintCheckImageBackend: string;
       hintVolcLimit: string;
+      hintVolcLimitModel: string;
+      hintVolcLimitEndpoint: string;
       hintVolcModelNotOpen: string;
       hintVolcOverdue: string;
       hintVolcSensitive: string;

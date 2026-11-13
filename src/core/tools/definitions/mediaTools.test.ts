@@ -306,7 +306,40 @@ describe('generateImageTool', () => {
       const result = await run();
       expect(result).toContain('429');
       expect(result).toContain('SetLimitExceeded');
-      expect(result).toContain(tm().hintVolcLimit);
+      expect(result).toContain(tm().hintVolcLimitModel);
+    });
+
+    it('tells a model usage cap from one endpoint cap by Ark\'s own message, and names both places when only the code is known', async () => {
+      arkError(429, 'SetLimitExceeded', 'Your account [2100001234] has reached the set usage limit for the [doubao-seedream-4-0] model, and the model service has been paused. Request id: abc');
+      const model = await run();
+      expect(model).toContain(tm().hintVolcLimitModel);
+      expect(model).not.toContain(tm().hintVolcLimitEndpoint);
+
+      arkError(429, 'SetLimitExceeded', 'Your account [2100001234] has reached the set usage limit for the [ep-20260101000000-abcde] endpoint, and the endpoint service has been paused. Request id: abc');
+      const endpoint = await run();
+      expect(endpoint).toContain(tm().hintVolcLimitEndpoint);
+      expect(endpoint).not.toContain(tm().hintVolcLimitModel);
+
+      arkError(429, 'SetLimitExceeded', '');
+      const unknown = await run();
+      expect(unknown).toContain(tm().hintVolcLimit);
+      expect(unknown).not.toContain(tm().hintVolcLimitModel);
+      expect(unknown).not.toContain(tm().hintVolcLimitEndpoint);
+    });
+
+    it('does not read a model name that contains the word endpoint as the endpoint cap', async () => {
+      arkError(429, 'SetLimitExceeded', 'Your account [1] has reached the set usage limit for the [my-endpoint-model] model, and the model service has been paused.');
+      const result = await run();
+      expect(result).toContain(tm().hintVolcLimitModel);
+      expect(result).not.toContain(tm().hintVolcLimitEndpoint);
+    });
+
+    it('explains blocked input text (InputTextRiskDetection) as a moderation rejection', async () => {
+      arkError(400, 'InputTextRiskDetection', 'The request could not be processed because the input text includes sensitive content');
+      const result = await run();
+      expect(result).toContain('InputTextRiskDetection');
+      expect(result).toContain(tm().hintVolcSensitive);
+      expect(result).not.toContain(tm().hintCheckImageBackend);
     });
 
     it('names the model to activate on ModelNotOpen instead of the generic check-backend hint', async () => {
@@ -334,7 +367,7 @@ describe('generateImageTool', () => {
       arkError(500, 'InternalServiceError', 'boom');
       const result = await run();
       expect(result).toContain('InternalServiceError');
-      for (const hint of [tm().hintVolcLimit, tm().hintVolcOverdue, tm().hintVolcSensitive, tm().hintVolcBadKey, tm().hintCheckImageBackend]) {
+      for (const hint of [tm().hintVolcLimit, tm().hintVolcLimitModel, tm().hintVolcLimitEndpoint, tm().hintVolcOverdue, tm().hintVolcSensitive, tm().hintVolcBadKey, tm().hintCheckImageBackend]) {
         expect(result).not.toContain(hint);
       }
     });

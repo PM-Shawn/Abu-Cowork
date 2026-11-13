@@ -34,7 +34,7 @@ import { TOOL_NAMES } from '@/core/tools/toolNames';
 import { isWindows } from '@/utils/platform';
 import { getMessageText } from './contextUtils';
 import { computeInputBudget, enforceContextBudget } from './contextManager';
-import { estimateToolSchemaTokens } from './tokenEstimator';
+import { estimateTokens, estimateToolSchemaTokens } from './tokenEstimator';
 
 export type CompactionReason = 'ok' | 'too-few' | 'summarize-failed' | 'no-conversation' | 'model-unavailable';
 
@@ -61,6 +61,7 @@ export interface CompactionResult {
 async function resolveSummaryRequest(convId: string): Promise<{
   request: SummaryRequest;
   inputBudget: number;
+  fixedTokens: number;
   fitSummaryInput: (messages: Message[]) => Message[];
 } | null> {
   const settings = getSettingsReader().getSnapshot();
@@ -116,6 +117,7 @@ async function resolveSummaryRequest(convId: string): Promise<{
   const inputBudget = computeInputBudget(budget.contextWindowSize, budget.reasoningParams.maxTokens).inputBudget;
   return {
     inputBudget,
+    fixedTokens: estimateTokens(systemPrompt) + toolTokens,
     fitSummaryInput: (messages) => enforceContextBudget(messages, systemPrompt, budget.contextWindowSize, budget.reasoningParams.maxTokens, toolTokens).messages,
     request: {
       adapter,
@@ -173,7 +175,8 @@ export async function compactConversationManually(
     marker = await compactHistory({
       history: conv.messages ?? [],
       inputBudget: resolved.inputBudget,
-      retainTokens: 0,
+      fixedTokens: resolved.fixedTokens,
+      retainShare: 0,
       source: 'manual',
       summary: resolved.request,
       fitSummaryInput: resolved.fitSummaryInput,

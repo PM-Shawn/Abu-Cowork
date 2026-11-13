@@ -3169,16 +3169,11 @@ export interface TranslationDict {
     rememberChoiceDescription: string;
     forgetAfterSession: string;
     // Duration options
-    durationOnce: string;
     durationSession: string;
-    duration24h: string;
     durationAlways: string;
-    durationAlwaysConfirm: string;
     // Button labels per duration
     durationLabel: string;
-    allowOnceButton: string;
     allowSessionButton: string;
-    allow24hButton: string;
     allowAlwaysButton: string;
   };
 
@@ -5558,6 +5553,10 @@ export interface TranslationDict {
       injWinPsNoProfile: string;
       injWinCmdDel: string;
       // getDangerLevelLabel — danger level display labels
+      /** Writing to a place a program starts from at sign-in (autostart) is refused in every mode. */
+      blockAutostart: string;
+      /** Taking an autostart entry away is asked about, not refused. */
+      warnRemoveAutostart: string;
       levelBlock: string;
       levelDanger: string;
       levelWarn: string;

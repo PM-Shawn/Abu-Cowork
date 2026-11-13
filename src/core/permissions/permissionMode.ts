@@ -1,6 +1,13 @@
 /**
  * Permission Mode System — controls tool execution confirmation behavior.
  *
+ * Reading a file never asks, in any mode: a command can already read nearly
+ * everything (the sandbox only closes a short list of paths), so a dialog on
+ * `read_file` protected little while being the commonest prompt there was.
+ * What has to stay closed to reads is closed by the hard-block lists in
+ * `pathSafety.ts` (credential stores, browser profiles, the app's own data),
+ * which apply before any mode is consulted.
+ *
  * Three tiers along a single autonomy axis (the workspace is the boundary):
  * - standard:   Inside the workspace, read/write/commands run freely. Escalations
  *               (writes to new directories, dangerous commands) require confirmation.
@@ -62,8 +69,15 @@ export interface PermissionStrategy {
    */
   decideCommand(info: ConfirmationInfo, readOnly: boolean, boundary?: CmdBoundary): PermissionDecision;
 
-  /** Decide gating for file tools (read_file, write_file, edit_file, etc.). */
-  decideFileAccess(capability: 'read' | 'write', needsPermission: boolean): PermissionDecision;
+  /**
+   * Decide gating for file tools (read_file, write_file, edit_file, etc.).
+   * @param unattended - nobody is present to see the run (scheduler, trigger,
+   *   IM, background). A read outside the run's scope then is never granted by
+   *   the gate itself: it goes to the run tier's own callback, which refuses
+   *   (`scheduled`, `safe_tools`) or grants it (`full`). Autonomous mode is the
+   *   person's own choice to let runs act freely and is unchanged.
+   */
+  decideFileAccess(capability: 'read' | 'write', needsPermission: boolean, unattended?: boolean): PermissionDecision;
 
   /**
    * Decide gating for MCP/other tools.
@@ -110,7 +124,8 @@ const standardStrategy: PermissionStrategy = {
     if (boundary === 'outside') return 'confirm';
     return 'allow';
   },
-  decideFileAccess(_capability, needsPermission) {
+  decideFileAccess(capability, needsPermission, unattended) {
+    if (capability === 'read' && !unattended) return 'allow';
     // needsPermission === true means the path isn't in an authorized working dir yet.
     return needsPermission ? 'confirm' : 'allow';
   },
@@ -125,7 +140,9 @@ const smartStrategy: PermissionStrategy = {
     if (readOnly) return 'allow';
     return (isRiskyCommand(info.level) || boundary === 'outside') ? 'review' : 'allow';
   },
-  decideFileAccess(_capability, needsPermission) {
+  decideFileAccess(capability, needsPermission, unattended) {
+    if (capability === 'read' && !unattended) return 'allow';
+    if (capability === 'read') return needsPermission ? 'confirm' : 'allow';
     return needsPermission ? 'review' : 'allow';
   },
   decideOtherTool(consequence, alreadyGranted) {

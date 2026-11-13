@@ -79,35 +79,28 @@ describe('ChatInput: access to the folder picked on the welcome page', () => {
     expect(folderControl('project')).toBeNull();
   });
 
-  it('records a grant for the session and takes the folder on Allow for Session', async () => {
+  it('records a grant for good and takes the folder on Always Allow: the default, one press', async () => {
     const user = userEvent.setup();
     await pickFolder(user);
 
-    await user.click(allow(t().permission.allowSessionButton));
-    expect(grants().persisted).toEqual({});
-    expect(grants().session).toEqual({
-      [FOLDER]: expect.objectContaining({ path: FOLDER, capabilities: ['read', 'write', 'execute'], duration: 'session', expiresAt: null }),
+    await user.click(allow(t().permission.allowAlwaysButton));
+    expect(grants().session).toEqual({});
+    expect(grants().persisted).toEqual({
+      [FOLDER]: expect.objectContaining({ path: FOLDER, capabilities: ['read', 'write', 'execute'], duration: 'always', expiresAt: null }),
     });
     expect(title()).toBeNull();
     expect(folderControl('project')).toBeInTheDocument();
   });
 
-  it('records a grant for good only after the second press', async () => {
+  it('records a grant until the app is quit when that is chosen', async () => {
     const user = userEvent.setup();
     await pickFolder(user);
 
-    await user.click(duration(t().permission.durationAlways));
-    await user.click(allow(t().permission.allowAlwaysButton));
-    expect(grants()).toEqual(NO_GRANTS);
-    expect(title()).toBeInTheDocument();
-    expect(folderControl('project')).toBeNull();
-
-    // Confirm is where the allowing button was: the window holds pointer presses again for a moment.
-    passSettleInterval();
-    await user.click(screen.getByRole('button', { name: t().common.confirm }));
-    expect(grants().session).toEqual({});
-    expect(grants().persisted[FOLDER]).toEqual(expect.objectContaining({
-      capabilities: ['read', 'write', 'execute'], duration: 'always', expiresAt: null,
+    await user.click(duration(t().permission.durationSession));
+    await user.click(allow(t().permission.allowSessionButton));
+    expect(grants().persisted).toEqual({});
+    expect(grants().session[FOLDER]).toEqual(expect.objectContaining({
+      capabilities: ['read', 'write', 'execute'], duration: 'session', expiresAt: null,
     }));
     expect(folderControl('project')).toBeInTheDocument();
   });

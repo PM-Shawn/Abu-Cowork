@@ -51430,15 +51430,10 @@ var zhCN = {
     rememberChoiceDescription: "阿布将记住此授权，下次不再询问",
     forgetAfterSession: "仅本次会话有效，关闭应用后需重新授权",
     // Duration options
-    durationOnce: "仅本次",
-    durationSession: "本次会话",
-    duration24h: "24小时内",
+    durationSession: "直到关闭应用",
     durationAlways: "始终允许",
-    durationAlwaysConfirm: "确定始终允许？这将永久记住此授权。",
     durationLabel: "授权时效",
-    allowOnceButton: "允许本次",
-    allowSessionButton: "允许本次会话",
-    allow24hButton: "允许24小时",
+    allowSessionButton: "允许到关闭应用",
     allowAlwaysButton: "始终允许"
   },
   media: {
@@ -53332,6 +53327,8 @@ var zhCN = {
       injWinPsHidden: "检测到 PowerShell 隐藏窗口执行",
       injWinPsNoProfile: "检测到 PowerShell NoProfile 模式，可能绕过安全策略",
       injWinCmdDel: "检测到 cmd /c 中的删除命令",
+      blockAutostart: "禁止设置开机自启动",
+      warnRemoveAutostart: "这会移除一个开机自启动项",
       levelBlock: "已阻止",
       levelDanger: "危险操作",
       levelWarn: "需要确认",
@@ -55997,15 +55994,10 @@ var enUS = {
     rememberChoiceDescription: "Abu will remember this and not ask again",
     forgetAfterSession: "Only for this session, will ask again after restart",
     // Duration options
-    durationOnce: "Just this time",
-    durationSession: "This session",
-    duration24h: "For 24 hours",
+    durationSession: "Until I quit",
     durationAlways: "Always allow",
-    durationAlwaysConfirm: "Always allow? This will permanently remember this authorization.",
     durationLabel: "Duration",
-    allowOnceButton: "Allow Once",
-    allowSessionButton: "Allow for Session",
-    allow24hButton: "Allow for 24h",
+    allowSessionButton: "Allow Until I Quit",
     allowAlwaysButton: "Always Allow"
   },
   media: {
@@ -57901,6 +57893,8 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
       injWinPsHidden: "PowerShell hidden-window execution detected",
       injWinPsNoProfile: "PowerShell NoProfile mode detected — may bypass security policies",
       injWinCmdDel: "Delete command inside cmd /c detected",
+      blockAutostart: "Making a program start automatically when you sign in is not allowed",
+      warnRemoveAutostart: "This removes a program that starts when you sign in",
       levelBlock: "Blocked",
       levelDanger: "Dangerous",
       levelWarn: "Needs Confirmation",

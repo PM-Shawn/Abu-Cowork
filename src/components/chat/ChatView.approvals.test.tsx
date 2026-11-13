@@ -83,7 +83,6 @@ const FOLDER = '/fake/project';
 const FILE = `${FOLDER}/notes.txt`;
 const SECOND_FILE = '/fake/elsewhere/report.txt';
 const OTHER_FOLDER = '/fake/other';
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 function conversation(skipActivate = false, workspacePath: string | null = null): string {
   const store = useChatStore.getState();
@@ -133,7 +132,7 @@ const view = (id: string) => act(() => { useChatStore.setState({ activeConversat
 const heading = (name: string) => screen.queryByRole('heading', { name });
 const headings = () => screen.queryAllByRole('heading').map((element) => element.textContent);
 const press = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
-// One of the four durations of a file grant.
+// One of the two durations of a file grant.
 const duration = (name: string) => screen.getByRole('radio', { name });
 // The allowing button of a file grant. With the grant for good chosen, the duration carries
 // nearly the same words.
@@ -458,9 +457,9 @@ describe('ChatView approvals', () => {
       const first = askFile(id);
       const second = askFile(id, SECOND_FILE);
       readable();
-      pointerPress(t().permission.allowSessionButton);
+      pointerPress(t().permission.allowAlwaysButton);
       await settle();
-      pointerPress(t().permission.allowSessionButton);
+      pointerPress(t().permission.allowAlwaysButton);
       await settle();
       expect(first).toEqual([true]);
       expect(second).toEqual([]);
@@ -484,19 +483,19 @@ describe('ChatView approvals', () => {
       expect(grants()).toEqual(NO_GRANTS);
     });
 
-    it('records a grant for the session, with read, write and execute, for a write request', async () => {
+    it('records a grant for good, with read, write and execute, for a write request: the default, one press', async () => {
       const id = conversation();
       render(<ChatView />);
       const answers = askFile(id);
       await settle();
 
-      pressAllow(t().permission.allowSessionButton);
+      pressAllow(t().permission.allowAlwaysButton);
       await settle();
       expect(answers).toEqual([true]);
       expect(getPendingFilePermission()).toBeNull();
-      expect(grants().persisted).toEqual({});
-      expect(grants().session).toEqual({
-        [FILE]: expect.objectContaining({ path: FILE, capabilities: ['read', 'write', 'execute'], duration: 'session', expiresAt: null }),
+      expect(grants().session).toEqual({});
+      expect(grants().persisted).toEqual({
+        [FILE]: expect.objectContaining({ path: FILE, capabilities: ['read', 'write', 'execute'], duration: 'always', expiresAt: null }),
       });
       expect(heading(t().permission.fileWrite.title)).toBeNull();
     });
@@ -508,63 +507,25 @@ describe('ChatView approvals', () => {
       await settle();
       expect(heading(t().permission.fileRead?.title ?? '')).toBeInTheDocument();
 
-      pressAllow(t().permission.allowSessionButton);
+      pressAllow(t().permission.allowAlwaysButton);
       await settle();
       expect(answers).toEqual([true]);
-      expect(grants().session[FILE]?.capabilities).toEqual(['read']);
+      expect(grants().persisted[FILE]?.capabilities).toEqual(['read']);
       expect(usePermissionStore.getState().hasPermission(FILE, 'write')).toBe(false);
     });
 
-    it('records a grant for this time as one that ends with the session', async () => {
+    it('records a grant until the app is quit as one that ends with the session', async () => {
       const id = conversation();
       render(<ChatView />);
       const answers = askFile(id);
       await settle();
 
-      fireEvent.click(duration(t().permission.durationOnce));
-      pressAllow(t().permission.allowOnceButton);
+      fireEvent.click(duration(t().permission.durationSession));
+      pressAllow(t().permission.allowSessionButton);
       await settle();
       expect(answers).toEqual([true]);
       expect(grants().persisted).toEqual({});
-      expect(grants().session[FILE]).toEqual(expect.objectContaining({ duration: 'once', expiresAt: null }));
-    });
-
-    it('records a grant for 24 hours as one that is kept and ends a day later', async () => {
-      const id = conversation();
-      render(<ChatView />);
-      const answers = askFile(id);
-      await settle();
-
-      fireEvent.click(duration(t().permission.duration24h));
-      pressAllow(t().permission.allow24hButton);
-      await settle();
-      expect(answers).toEqual([true]);
-      expect(grants().session).toEqual({});
-      const grant = grants().persisted[FILE];
-      expect(grant).toEqual(expect.objectContaining({ duration: '24h', capabilities: ['read', 'write', 'execute'] }));
-      expect((grant.expiresAt ?? 0) - grant.grantedAt).toBe(DAY_MS);
-    });
-
-    it('records a grant for good only after the second press', async () => {
-      const id = conversation();
-      render(<ChatView />);
-      const answers = askFile(id);
-      const pending = getPendingFilePermission();
-      await settle();
-
-      fireEvent.click(duration(t().permission.durationAlways));
-      pressAllow(t().permission.allowAlwaysButton);
-      await settle();
-      expect(answers).toEqual([]);
-      expect(grants()).toEqual(NO_GRANTS);
-      expect(getPendingFilePermission()).toBe(pending);
-      expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
-
-      press(t().common.confirm);
-      await settle();
-      expect(answers).toEqual([true]);
-      expect(grants().session).toEqual({});
-      expect(grants().persisted[FILE]).toEqual(expect.objectContaining({ duration: 'always', expiresAt: null, capabilities: ['read', 'write', 'execute'] }));
+      expect(grants().session[FILE]).toEqual(expect.objectContaining({ duration: 'session', expiresAt: null, capabilities: ['read', 'write', 'execute'] }));
     });
 
     it.each([
@@ -649,7 +610,7 @@ describe('ChatView approvals', () => {
       const second = askFile(id);
       await settle();
 
-      pressAllow(t().permission.allowSessionButton);
+      pressAllow(t().permission.allowAlwaysButton);
       await settle();
       expect(first).toEqual([true]);
       expect(second).toEqual([true]);
@@ -897,7 +858,7 @@ describe('ChatView approvals', () => {
   // the next.
   describe('file grants and workspace requests: a new window per request', () => {
     const deny = () => screen.getByRole('button', { name: t().permission.deny });
-    const allowSession = () => screen.getByRole('button', { name: t().permission.allowSessionButton });
+    const allowDefault = () => screen.getByRole('button', { name: t().permission.allowAlwaysButton });
 
     it('opens a file grant with the focus on Deny: Enter pressed as it appears denies and records nothing', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
@@ -924,7 +885,7 @@ describe('ChatView approvals', () => {
 
       // The press leaves the focus on the allowing button of the first grant.
       readable();
-      await user.click(allowSession());
+      await user.click(allowDefault());
       await settle();
       expect(first).toEqual([true]);
       expect(screen.getByText(SECOND_FILE)).toBeInTheDocument();
@@ -933,11 +894,11 @@ describe('ChatView approvals', () => {
       await user.keyboard('{Enter}');
       await settle();
       expect(second).toEqual([false]);
-      expect(Object.keys(grants().session)).toEqual([FILE]);
+      expect(Object.keys(grants().persisted)).toEqual([FILE]);
       expect(usePermissionStore.getState().hasPermission(SECOND_FILE, 'write')).toBe(false);
     });
 
-    it('starts the next file grant from the default: a grant for good given to the first asks nothing of the second in advance', async () => {
+    it('starts the next file grant from the default: a duration chosen for the first is not carried to the second', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       const id = conversation();
       render(<ChatView />);
@@ -946,25 +907,20 @@ describe('ChatView approvals', () => {
       await settle();
 
       readable();
-      await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
-      await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
-      // The allowing button now reads Confirm: the window holds pointer presses again for a moment.
-      readable();
-      await user.click(screen.getByRole('button', { name: t().common.confirm }));
+      await user.click(screen.getByRole('radio', { name: t().permission.durationSession }));
+      await user.click(screen.getByRole('button', { name: t().permission.allowSessionButton }));
       await settle();
       expect(first).toEqual([true]);
 
       expect(screen.getByText(SECOND_FILE)).toBeInTheDocument();
-      expect(screen.queryByText(t().permission.durationAlwaysConfirm)).toBeNull();
-      expect(screen.queryByRole('button', { name: t().common.confirm })).toBeNull();
-      expect(screen.getByRole('radio', { name: t().permission.durationSession })).toHaveAttribute('aria-checked', 'true');
-      expect(allowSession()).toBeInTheDocument();
+      expect(screen.getByRole('radio', { name: t().permission.durationAlways })).toHaveAttribute('aria-checked', 'true');
+      expect(allowDefault()).toBeInTheDocument();
       expect(deny()).toHaveFocus();
       expect(second).toEqual([]);
-      expect(Object.keys(grants().persisted)).toEqual([FILE]);
+      expect(Object.keys(grants().session)).toEqual([FILE]);
     });
 
-    it('starts a second request for the same path from the default too: the question about a grant for good is not left open for it', async () => {
+    it('starts a second request for the same path from the default too', async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
       const id = conversation();
       render(<ChatView />);
@@ -973,19 +929,15 @@ describe('ChatView approvals', () => {
       await settle();
 
       readable();
-      await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
-      await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
-      expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
-      await user.tab();
-      expect(screen.getByRole('button', { name: t().common.confirm })).toHaveFocus();
+      await user.click(screen.getByRole('radio', { name: t().permission.durationSession }));
+      expect(screen.getByRole('radio', { name: t().permission.durationSession })).toHaveAttribute('aria-checked', 'true');
 
       // The first is denied from the keyboard; the second, for the same path, takes its place.
       await user.keyboard('{Escape}');
       await settle();
       expect(first).toEqual([false]);
       expect(heading(t().permission.fileWrite.title)).toBeInTheDocument();
-      expect(screen.queryByText(t().permission.durationAlwaysConfirm)).toBeNull();
-      expect(screen.getByRole('radio', { name: t().permission.durationSession })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByRole('radio', { name: t().permission.durationAlways })).toHaveAttribute('aria-checked', 'true');
       expect(deny()).toHaveFocus();
 
       await user.keyboard('{Enter}');
@@ -1045,9 +997,7 @@ describe('ChatView approvals', () => {
       const file = askFile(id);
       await settle();
       readable();
-      await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
-      await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
-      expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
+      await user.click(screen.getByRole('radio', { name: t().permission.durationSession }));
 
       const workspace = askWorkspace(id);
       await settle();
@@ -1059,8 +1009,7 @@ describe('ChatView approvals', () => {
       await settle();
       expect(workspace).toEqual([null]);
       expect(headings()).toEqual([t().permission.fileWrite.title]);
-      expect(screen.queryByText(t().permission.durationAlwaysConfirm)).toBeNull();
-      expect(screen.getByRole('radio', { name: t().permission.durationSession })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByRole('radio', { name: t().permission.durationAlways })).toHaveAttribute('aria-checked', 'true');
       expect(deny()).toHaveFocus();
       expect(file).toEqual([]);
       expect(grants()).toEqual(NO_GRANTS);
@@ -1093,16 +1042,14 @@ describe('ChatView approvals', () => {
       const answers = askFile(id);
       await settle();
       readable();
-      await user.click(screen.getByRole('radio', { name: t().permission.durationAlways }));
-      await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
-      expect(screen.getByText(t().permission.durationAlwaysConfirm)).toBeInTheDocument();
+      await user.click(screen.getByRole('radio', { name: t().permission.durationSession }));
 
       view(other);
       await settle();
       view(id);
       await settle();
       expect(heading(t().permission.fileWrite.title)).toBeInTheDocument();
-      expect(screen.queryByText(t().permission.durationAlwaysConfirm)).toBeNull();
+      expect(screen.getByRole('radio', { name: t().permission.durationAlways })).toHaveAttribute('aria-checked', 'true');
       expect(deny()).toHaveFocus();
 
       await user.keyboard('{Enter}');
@@ -1247,10 +1194,10 @@ describe('ChatView approvals', () => {
       expect(screen.queryByText(PICKED)).toBeNull();
 
       readable();
-      await user.click(screen.getByRole('button', { name: t().permission.allowSessionButton }));
+      await user.click(screen.getByRole('button', { name: t().permission.allowAlwaysButton }));
       await settle();
       expect(answers).toEqual([true]);
-      expect(Object.keys(grants().session)).toEqual([FILE]);
+      expect(Object.keys(grants().persisted)).toEqual([FILE]);
       expect(useWorkspaceStore.getState().currentPath).toBe(PANEL_FOLDER);
 
       // The panel's question is shown now, from its default, with the focus on Deny.
@@ -1260,7 +1207,7 @@ describe('ChatView approvals', () => {
       await user.keyboard('{Enter}');
       await settle();
       expect(windows()).toEqual([]);
-      expect(Object.keys(grants().session)).toEqual([FILE]);
+      expect(Object.keys(grants().persisted)).toEqual([FILE]);
       expect(useWorkspaceStore.getState().currentPath).toBe(PANEL_FOLDER);
     });
   });

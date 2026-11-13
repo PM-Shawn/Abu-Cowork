@@ -44,9 +44,14 @@ describe('permissionMode', () => {
       expect(s.decideCommand(cmd('safe'), false, 'unknown')).toBe('allow');
     });
 
-    it('access to new (unauthorized) paths requires confirmation', () => {
-      expect(s.decideFileAccess('read', true)).toBe('confirm');
+    it('writing to a new (unauthorized) path requires confirmation, reading never asks', () => {
+      expect(s.decideFileAccess('read', true)).toBe('allow');
       expect(s.decideFileAccess('write', true)).toBe('confirm');
+    });
+
+    it('an unattended run asks the run tier before reading outside its scope', () => {
+      expect(s.decideFileAccess('read', true, true)).toBe('confirm');
+      expect(s.decideFileAccess('read', false, true)).toBe('allow');
     });
 
     it('access inside authorized dirs auto-proceeds', () => {
@@ -72,13 +77,17 @@ describe('permissionMode', () => {
       expect(s.decideCommand(cmd('danger'), true)).toBe('allow');
     });
 
+    it('an unattended run asks the run tier, not the reviewer, before reading outside its scope', () => {
+      expect(s.decideFileAccess('read', true, true)).toBe('confirm');
+    });
+
     it('safe command writing outside workspace routes to review', () => {
       expect(s.decideCommand(cmd('safe'), false, 'outside')).toBe('review');
       expect(s.decideCommand(cmd('safe'), false, 'inside')).toBe('allow');
     });
 
-    it('new-path access routes to review', () => {
-      expect(s.decideFileAccess('read', true)).toBe('review');
+    it('a write to a new path routes to review, a read never asks', () => {
+      expect(s.decideFileAccess('read', true)).toBe('allow');
       expect(s.decideFileAccess('write', true)).toBe('review');
     });
 

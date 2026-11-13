@@ -5,12 +5,13 @@
 
 import { appDataDir, homeDir, tempDir } from '@tauri-apps/api/path';
 import { createConversationPaths } from '../session/conversationPaths';
-import { lstat } from '@tauri-apps/plugin-fs';
+import { lstat, readFile, stat } from '@tauri-apps/plugin-fs';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
 import { isMissingPathError } from '../../utils/fsErrors';
 import { normalizeLexicalPath, normalizeSeparators } from '../../utils/pathUtils';
 import { isMacOS, isWindows } from '../../utils/platform';
 import { createLogger } from '../logging/logger';
+import sensitivePaths from './sensitivePaths.json';
 
 const logger = createLogger('pathSafety');
 
@@ -39,41 +40,116 @@ async function getHomeDir(): Promise<string> {
 }
 
 /**
- * Sensitive paths that should NEVER be accessed (relative to home or absolute)
+ * File names that are a private key or a password database wherever they sit.
+ * Compared without case, by the last path component. `.pfx` / `.p12` always
+ * carry a private key; `.ovpn` and `.mobileconfig` profiles carry VPN keys,
+ * passwords and certificates.
+ */
+const BLOCKED_FILE_NAMES = new Set(['id_rsa', 'id_dsa', 'id_ecdsa', 'id_ed25519']);
+const BLOCKED_FILE_EXTENSIONS = [
+  '.kdbx', '.ppk', '.keychain', '.keychain-db', '.pfx', '.p12', '.ovpn', '.mobileconfig',
+  '.jks', '.keystore', '.p8',
+];
+
+/**
+ * An SSH private key saved under a name of its own: `id_rsa_work`,
+ * `id_ed25519_sk`, `deploy_ed25519`. Never a `.pub` file, and never a name with
+ * an extension other than the key type itself (`id_card.png`, `rsa notes.txt`).
+ */
+const SSH_KEY_TYPE = '(?:rsa|dsa|ecdsa|ed25519)(?:[_-]sk)?';
+const SSH_PRIVATE_KEY_NAME = new RegExp(`^id_${SSH_KEY_TYPE}(?:[_-][^.]*)?$|^[^.]*[_-]${SSH_KEY_TYPE}$`);
+
+/**
+ * `.env` and its variants (`.env.local`, `.env.production`, `.env.dev`) hold a
+ * project's keys; the copies made to be shared hold none and stay readable.
+ */
+const ENV_FILE_SHARED_SUFFIXES = new Set(['example', 'sample', 'template']);
+
+function isEnvSecretFile(filename: string): boolean {
+  if (filename === '.env') return true;
+  if (!filename.startsWith('.env.')) return false;
+  return !ENV_FILE_SHARED_SUFFIXES.has(filename.slice('.env.'.length));
+}
+
+/**
+ * Files whose extension alone does not say whether they hold a secret: a
+ * `.pem` / `.key` may be a public certificate or a Keynote deck, a `.conf` is
+ * any configuration. They are closed when their text says so: a PEM private
+ * key, or a WireGuard `[Interface]` with its `PrivateKey`. Read only when
+ * small; a key file is a few kilobytes.
+ */
+const CONTENT_CHECKED_EXTENSIONS = ['.pem', '.key', '.conf'];
+/**
+ * A key bundle is a few kilobytes, but a chain file can be larger and carry its
+ * key after the certificates, so the whole file is scanned up to this size. The
+ * host reads whole files only, so the bound keeps the check cheap. A `.pem`
+ * above it is closed unread (no certificate is that large); a `.key` or `.conf`
+ * above it is a deck or a log, not a key.
+ */
+const CONTENT_CHECK_MAX_BYTES = 16 * 1024 * 1024;
+/** Extension-less files are sniffed only when small: a key saved as `deploy_key`. */
+const CONTENT_CHECK_BARE_NAME_MAX_BYTES = 64 * 1024;
+const PRIVATE_KEY_MARKERS = [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/, /^\s*PrivateKey\s*=/im];
+
+/**
+ * Places a program is started from when the user signs in. Writing there makes
+ * something run on every start without anyone asking, so no mode writes there.
+ * Relative to home; the system-wide ones sit under write-blocked system roots.
+ */
+const AUTOSTART_PATHS_MAC = [
+  'Library/LaunchAgents',
+  'Library/LaunchDaemons',
+  'Library/Application Support/com.apple.backgroundtaskmanagementagent',
+];
+const AUTOSTART_PATHS_WIN = [
+  'AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup',
+];
+/**
+ * The shell login and profile scripts, run at every sign-in or new shell, on
+ * both systems (Git Bash and PowerShell 7 read them on Windows too). Some are
+ * also closed to reads on macOS (`BLOCKED_PATHS`).
+ */
+const LOGIN_SCRIPT_PATHS = [
+  '.zlogin',
+  '.zprofile',
+  '.zshrc',
+  '.zshenv',
+  '.bash_login',
+  '.bash_profile',
+  '.bashrc',
+  '.profile',
+  '.config/fish',
+  '.config/powershell',
+];
+
+/**
+ * A PowerShell profile (`profile.ps1`, `Microsoft.PowerShell_profile.ps1`,
+ * `…ISE_profile.ps1`) in a `WindowsPowerShell` or `PowerShell` folder: found by
+ * name, because Documents may be redirected (OneDrive) away from home.
+ */
+function isPowerShellProfile(foldedPath: string): boolean {
+  const parts = foldedPath.split('/');
+  const name = parts[parts.length - 1] ?? '';
+  const parent = parts[parts.length - 2] ?? '';
+  return (parent === 'windowspowershell' || parent === 'powershell')
+    && (name === 'profile.ps1' || name.endsWith('_profile.ps1'));
+}
+
+/**
+ * Sensitive paths that should NEVER be accessed (relative to home).
+ *
+ * The data is `sensitivePaths.json`, shared with the macOS sandbox's read-deny
+ * list and the preview server's blocked names. Reading a file never asks, so
+ * every place a signed-in session or a stored password lives is named there:
+ * a browser's whole data folder, not one file of its default profile.
+ * Environment files are also caught anywhere by `isEnvSecretFile`.
  */
 const BLOCKED_PATHS = [
-  // SSH keys and config
-  '.ssh',
-  // Cloud credentials
-  '.aws',
-  '.config/gcloud',
-  '.azure',
-  '.kube',
-  // API keys and tokens
-  '.netrc',
-  '.npmrc',
-  '.pypirc',
-  '.docker/config.json',
-  // Shell configs (can be used for injection)
-  '.bashrc',
-  '.bash_profile',
-  '.zshrc',
-  '.zprofile',
-  '.profile',
-  '.zshenv',
-  // Git credentials
-  '.git-credentials',
-  '.gitconfig',
-  // Application sensitive data
-  '.gnupg',
-  '.password-store',
-  'Library/Keychains',
-  'Library/Application Support/Google/Chrome/Default/Login Data',
-  'Library/Application Support/Firefox/Profiles',
-  // Environment files that may contain secrets
-  '.env',
-  '.env.local',
-  '.env.production',
+  ...sensitivePaths.credentials.all,
+  ...sensitivePaths.credentials.mac,
+  // Shell configs and git config can be used for injection.
+  ...sensitivePaths.startupConfigs.all,
+  ...sensitivePaths.startupConfigs.mac,
 ];
 
 /**
@@ -99,6 +175,7 @@ const SYSTEM_PATHS_READ_BLOCKED = [
   '/etc/master.passwd',
   '/private/etc/shadow',
   '/private/etc/master.passwd',
+  '/Library/Keychains',
 ];
 
 const WIN_SYSTEM_PATHS_READ_BLOCKED = [
@@ -138,37 +215,11 @@ const ALLOWED_HOME_PATHS = [
 // ── Windows-specific paths (only used when isWindows() is true) ──
 
 const WIN_BLOCKED_PATHS = [
-  // Windows credential stores
-  'AppData/Local/Microsoft/Credentials',
-  'AppData/Roaming/Microsoft/Credentials',
-  'AppData/Roaming/Microsoft/Protect',
-  'AppData/Local/Microsoft/Vault',
-  'AppData/Roaming/Microsoft/Vault',
-  // PowerShell profiles (can be used for injection)
-  'Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1',
-  'Documents/PowerShell/Microsoft.PowerShell_profile.ps1',
-  // Browser credentials
-  'AppData/Local/Google/Chrome/User Data/Default/Login Data',
-  'AppData/Local/Google/Chrome/User Data/Default/Cookies',
-  'AppData/Local/Microsoft/Edge/User Data/Default/Login Data',
-  'AppData/Roaming/Mozilla/Firefox/Profiles',
-  // Standard dotfile secrets
-  '.ssh',
-  '.aws',
-  '.azure',
-  '.kube',
-  '.gnupg',
-  '.password-store',
-  '.npmrc',
-  '.netrc',
-  '_netrc',
-  '.pypirc',
-  '.docker/config.json',
-  '.git-credentials',
-  '.gitconfig',
-  '.env',
-  '.env.local',
-  '.env.production',
+  ...sensitivePaths.credentials.all,
+  ...sensitivePaths.credentials.win,
+  // PowerShell profiles and git config can be used for injection.
+  ...sensitivePaths.startupConfigs.all,
+  ...sensitivePaths.startupConfigs.win,
 ];
 
 const WIN_SYSTEM_PATHS_WRITE_BLOCKED = [
@@ -198,6 +249,12 @@ interface AuthorizedWorkspaceGrant {
   capabilities: Set<WorkspaceCapability>;
   /** Frozen when the grant is created; authority must not follow a retargeted link. */
   canonicalRoot: Promise<string | null>;
+  /**
+   * Settles once a grant of the home folder (or a folder above it) has lost its
+   * write capability: home is never one unit of a write grant, whoever made the
+   * grant (a picked workspace, a remembered answer, a run's scope).
+   */
+  homeGuard: Promise<void>;
 }
 
 const authorizedWorkspaces: Map<string, AuthorizedWorkspaceGrant> = new Map();
@@ -274,6 +331,7 @@ function addAuthorizedWorkspace(
   const existing = target.get(normalized);
   if (existing) {
     for (const c of caps) existing.capabilities.add(c);
+    existing.homeGuard = dropWriteFromHomeGrant(existing, normalized);
   } else {
     // Start resolution immediately. The promise captures the root at grant
     // time and is reused for the whole scope instead of following later
@@ -291,11 +349,57 @@ function addAuthorizedWorkspace(
         });
         return normalized;
       });
-    target.set(normalized, {
+    const grant: AuthorizedWorkspaceGrant = {
       capabilities: new Set(caps),
       canonicalRoot,
-    });
+      homeGuard: Promise.resolve(),
+    };
+    grant.homeGuard = dropWriteFromHomeGrant(grant, normalized);
+    target.set(normalized, grant);
   }
+}
+
+/**
+ * Whether `root` is the home folder or a folder above it, in its own spelling
+ * or (`canonicalHome`) its real one. Only home itself is judged: a folder below
+ * it is a write unit like any other.
+ */
+function coversHome(root: string, home: string): boolean {
+  return isPathWithin(home, root);
+}
+
+/** Whether `path` is the home folder or a folder above it (see `dropWriteFromHomeGrant`). */
+export async function isHomeOrAncestor(path: string): Promise<boolean> {
+  const home = normalizePath(await getHomeDir());
+  if (coversHome(normalizePath(path), home)) return true;
+  const canonicalHome = await canonicalizePolicyAnchor(home);
+  const resolved = await resolvePathForPolicy(path);
+  return Boolean(canonicalHome && resolved.ok && coversHome(resolved.canonicalPath, canonicalHome));
+}
+
+/**
+ * Take `write` off a grant whose root contains the home folder, so a grant that
+ * a person picked (the folder picker offers `~`) or that was remembered as
+ * "always" reads but never writes. Applied when the grant is made; the part
+ * that needs the real home location finishes asynchronously, and every grant
+ * match waits for it (`homeGuard`). Where home is already known the capability
+ * goes at once, so the sandbox's writable list never holds it.
+ */
+function dropWriteFromHomeGrant(grant: AuthorizedWorkspaceGrant, root: string): Promise<void> {
+  if (cachedHomeDir !== null && coversHome(root, normalizePath(cachedHomeDir))) {
+    grant.capabilities.delete('write');
+  }
+  return (async () => {
+    const home = await getHomeDir();
+    if (coversHome(root, normalizePath(home))) {
+      grant.capabilities.delete('write');
+      return;
+    }
+    const [canonicalRoot, canonicalHome] = await Promise.all([grant.canonicalRoot, canonicalizePolicyAnchor(home)]);
+    if (canonicalRoot && canonicalHome && coversHome(canonicalRoot, canonicalHome)) {
+      grant.capabilities.delete('write');
+    }
+  })().catch(() => undefined);
 }
 
 /**
@@ -400,9 +504,20 @@ export function isInScopedAuthorizedWorkspace(
  * prefix test lets the self-protection red line be stepped over by changing
  * one letter. Folded on every platform on purpose — over-matching a
  * differently-cased `~/.ABU` fails closed, under-matching fails open.
+ *
+ * On Windows the fold also drops what Win32 drops when it opens a name: dots
+ * and spaces at the end of a component (`id_rsa.`, `id_rsa `) and a stream
+ * suffix (`x.pem::$DATA`). The host's canonicalizer does this too, but when it
+ * is absent or fails the name checks would see the raw spelling.
  */
 function foldPath(path: string): string {
-  return normalizeForCompare(path).toLowerCase();
+  const folded = normalizeForCompare(path).toLowerCase();
+  if (!isWindows()) return folded;
+  return folded.split('/').map((component, index) => {
+    if (component === '' || component === '.' || component === '..' || component === '?' || (index === 0 && /^[a-z]:$/.test(component))) return component;
+    const name = component.replace(/:.*$/, '').replace(/[. ]+$/, '');
+    return name === '' ? component : name;
+  }).join('/');
 }
 
 /**
@@ -578,14 +693,17 @@ function relativePathResult(): PathCheckResult {
  */
 async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blocked: boolean; reason?: string }> {
   const home = homeOverride ?? await getHomeDir();
-  const comparePath = normalizeForCompare(path);
+  // Folded on every platform: macOS and Windows open `~/.SSH/id_rsa` and
+  // `~/.ssh/id_rsa` as the same file, so a case-sensitive test would hand a
+  // red line away for one capital letter (see `foldPath`).
+  const comparePath = foldPath(path);
 
   // Check absolute blocked paths for read
   const readBlocked = isWindows()
     ? [...SYSTEM_PATHS_READ_BLOCKED, ...WIN_SYSTEM_PATHS_READ_BLOCKED]
     : SYSTEM_PATHS_READ_BLOCKED;
   for (const blockedPath of readBlocked) {
-    const compareBlocked = normalizeForCompare(blockedPath);
+    const compareBlocked = foldPath(blockedPath);
     if (comparePath === compareBlocked || comparePath.startsWith(compareBlocked + '/')) {
       return { blocked: true, reason: `访问系统敏感文件被禁止: ${blockedPath}` };
     }
@@ -593,24 +711,118 @@ async function isBlockedPath(path: string, homeOverride?: string): Promise<{ blo
 
   // Select blocked list based on platform
   const blockedPaths = isWindows() ? WIN_BLOCKED_PATHS : BLOCKED_PATHS;
+  const filename = comparePath.split('/').pop() ?? '';
 
   // Check home-relative blocked paths
   for (const blockedPath of blockedPaths) {
-    const fullBlockedPath = normalizeForCompare(`${home}/${blockedPath}`);
+    const fullBlockedPath = foldPath(`${home}/${blockedPath}`);
     if (comparePath === fullBlockedPath || comparePath.startsWith(fullBlockedPath + '/')) {
       return { blocked: true, reason: `访问敏感配置文件被禁止: ~/${blockedPath}` };
     }
     // Also check if path ends with blocked filename (e.g., any .env file)
     if (blockedPath.startsWith('.') && !blockedPath.includes('/')) {
-      const filename = comparePath.split('/').pop();
-      const compareBlockedName = isWindows() ? blockedPath.toLowerCase() : blockedPath;
-      if (filename === compareBlockedName) {
+      if (filename === blockedPath.toLowerCase()) {
         return { blocked: true, reason: `访问敏感文件被禁止: ${blockedPath}` };
       }
     }
   }
 
+  // A private key or a password database is one wherever it was saved.
+  if (isBlockedFileName(filename)) {
+    return { blocked: true, reason: `访问敏感文件被禁止: ${filename}` };
+  }
+
   return { blocked: false };
+}
+
+/** A file closed by its name alone, wherever it sits (`filename` folded to lower case). */
+function isBlockedFileName(filename: string): boolean {
+  return BLOCKED_FILE_NAMES.has(filename)
+    || SSH_PRIVATE_KEY_NAME.test(filename)
+    || BLOCKED_FILE_EXTENSIONS.some((ext) => filename.endsWith(ext))
+    || isEnvSecretFile(filename);
+}
+
+/**
+ * Whether a file of a `CONTENT_CHECKED_EXTENSIONS` kind, or a small file with
+ * no extension, holds a private key. A folder (a Keynote package) and a missing
+ * file are not one; a key-like file that cannot be read to tell is treated as one.
+ */
+async function holdsPrivateKey(path: string): Promise<boolean> {
+  const filename = foldPath(path).split('/').pop() ?? '';
+  const checkedExtension = CONTENT_CHECKED_EXTENSIONS.find((ext) => filename.endsWith(ext));
+  const bareName = !filename.includes('.');
+  if (!checkedExtension && !bareName) return false;
+  try {
+    const info = await stat(path);
+    if (info.isDirectory) return false;
+    const size = typeof info.size === 'number' ? info.size : 0;
+    if (checkedExtension) {
+      if (size > CONTENT_CHECK_MAX_BYTES) return checkedExtension === '.pem';
+    } else if (size > CONTENT_CHECK_BARE_NAME_MAX_BYTES) {
+      return false;
+    }
+    const bytes = await readFile(path);
+    const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(0, CONTENT_CHECK_MAX_BYTES));
+    return PRIVATE_KEY_MARKERS.some((marker) => marker.test(text));
+  } catch (error) {
+    return !isMissingPathError(error) && checkedExtension !== undefined;
+  }
+}
+
+/**
+ * Whether a path lies in one of the places a program is started from at sign-in
+ * (`AUTOSTART_PATHS_*`). Writes there are refused in every mode.
+ */
+async function isAutostartPath(path: string, homeOverride?: string): Promise<string | null> {
+  const home = homeOverride ?? await getHomeDir();
+  const comparePath = foldPath(path);
+  const roots = [...(isWindows() ? AUTOSTART_PATHS_WIN : AUTOSTART_PATHS_MAC), ...LOGIN_SCRIPT_PATHS];
+  for (const root of roots) {
+    const full = foldPath(`${home}/${root}`);
+    if (comparePath === full || comparePath.startsWith(`${full}/`)) return `~/${root}`;
+  }
+  if (isPowerShellProfile(comparePath)) return comparePath.split('/').slice(-2).join('/');
+  return null;
+}
+
+
+/**
+ * Whether a path lies in the app's own data folders (the Electron user data and
+ * the `com.abu.*` app data). They hold the secret store, the persisted
+ * settings, the signed-in sessions of the built-in browser and the message
+ * ledgers. Reading them is refused like a credential store; the files of a
+ * conversation that tools hand back (`checkConversationResultRead`) are checked
+ * before this and are the carve-out.
+ */
+async function isAbuAppDataPath(path: string, homeOverride?: string): Promise<boolean> {
+  const home = homeOverride ?? await getHomeDir();
+  const comparePath = foldPath(path);
+  const roots = isWindows()
+    ? [`${home}/AppData/Roaming`, `${home}/AppData/Local`]
+    : [`${home}/Library/Application Support`];
+  for (const root of roots) {
+    const foldedRoot = foldPath(root);
+    if (!comparePath.startsWith(`${foldedRoot}/`)) continue;
+    const segment = comparePath.slice(foldedRoot.length + 1).split('/')[0];
+    if (isAbuAppDataSegment(segment)) return true;
+  }
+  return false;
+}
+
+/** The refusal for a write into a start-at-sign-in location (`isAutostartPath`). */
+function autostartWriteRefusal(location: string): PathCheckResult {
+  return { allowed: false, reason: `禁止写入开机自启动位置: ${location}`, denialKind: 'blocked' };
+}
+
+/** The refusal for a read of a file whose text is a private key (`holdsPrivateKey`). */
+function privateKeyReadRefusal(): PathCheckResult {
+  return { allowed: false, reason: '禁止读取私钥文件', denialKind: 'blocked' };
+}
+
+/** The refusal for a read of the app's own data folders (`isAbuAppDataPath`). */
+function appDataReadRefusal(): PathCheckResult {
+  return { allowed: false, reason: '禁止读取本应用自身的数据目录（密钥、设置和登录状态）', denialKind: 'blocked' };
 }
 
 function pathComponentPrefixes(path: string, trustedRoot?: string): string[] {
@@ -716,7 +928,17 @@ async function canonicalizePolicyAnchor(path: string): Promise<string | null> {
 
 type ResolvedPolicyPath =
   | { ok: true; lexicalPath: string; canonicalPath: string }
-  | { ok: false; reason: string };
+  /** `blocked`: refused as a closed location would be (a short name nobody can expand). */
+  | { ok: false; reason: string; blocked?: true };
+
+function unresolvedPathResult(resolved: { reason: string; blocked?: true }): PathCheckResult {
+  return { allowed: false, reason: resolved.reason, ...(resolved.blocked ? { denialKind: 'blocked' as const } : {}) };
+}
+
+/** A Windows 8.3 short name among the components: `PROGRA~1`, `USERDA~1`. */
+function hasShortNameComponent(path: string): boolean {
+  return path.split('/').some((component) => /^[^~]{1,6}~\d+(?:\.[^.]{0,3})?$/.test(component));
+}
 
 async function resolvePathForPolicy(
   path: string,
@@ -746,6 +968,14 @@ async function resolvePathForPolicy(
   // Legacy Tauri/Web has no canonicalization bridge. Retain the old
   // fail-closed behavior there; the dynamic temp root keeps macOS /var's own
   // symlink from being mistaken for a user-controlled descendant link.
+  //
+  // Without the host's resolver nothing expands a Windows 8.3 short name
+  // (`USERDA~1`, `TESTUS~1`), so the lexical checks cannot tell whether it
+  // names a closed store or home itself: such a path is refused, as a link
+  // nobody can resolve is.
+  if (isWindows() && hasShortNameComponent(lexicalPath)) {
+    return { ok: false, reason: '无法核实短文件名指向的位置，请使用完整路径。', blocked: true };
+  }
   if (await isSymlinkBypass(path, followFinalSymlink)) {
     return { ok: false, reason: '检测到无法安全解析的符号链接路径，请使用实际路径。' };
   }
@@ -779,13 +1009,17 @@ async function matchAuthorizedWorkspaces(
   canonicalPath: string,
   capability: 'read' | 'write',
   scopeId?: AuthorizationScopeId,
+  /** Count only the grants of folders inside this one (a grant of the folder itself included). */
+  grantsWithin?: string,
 ): Promise<CanonicalMatch> {
   const target = getAuthorizationMap(scopeId);
   if (!target) return { lexical: false, canonical: false };
   let lexical = false;
   let canonical = false;
   for (const [workspace, grant] of target) {
+    if (capability === 'write') await grant.homeGuard;
     if (isBlankWorkspaceGrant(workspace) || !grant.capabilities.has(capability)) continue;
+    if (grantsWithin !== undefined && !isPathWithin(workspace, grantsWithin)) continue;
     if (isPathWithin(lexicalPath, workspace)) lexical = true;
     const canonicalRoot = await grant.canonicalRoot;
     if (canonicalRoot && isPathWithin(canonicalPath, canonicalRoot)) {
@@ -803,17 +1037,60 @@ function isAuthorizedWorkspaceMatch(match: CanonicalMatch, scopeId?: Authorizati
   return match.canonical && (scopeId === undefined || match.lexical);
 }
 
-async function getImplicitRoots(): Promise<string[]> {
+async function getImplicitRoots(forWrite = false): Promise<string[]> {
   const roots = [...ALWAYS_ALLOWED_PATHS, await getRuntimeTempDir()];
   if (isWindows()) roots.push(`${await getHomeDir()}/AppData/Local/Temp`);
-  return [...new Set(roots.map((root) => normalizePath(root)))];
+  // `/Applications` is readable so app bundles can be inspected; it is not a
+  // place to write without asking (`isProgramFolder`).
+  return [...new Set(roots.map((root) => normalizePath(root)))]
+    .filter((root) => !forWrite || !isListedProgramFolder(root));
 }
+
+/** The Windows system and program folders on any drive (`D:/Windows`, `E:/Program Files`). */
+const WIN_ANY_DRIVE_SYSTEM_FOLDER = /^([a-z]:)\/(windows|program files|program files \(x86\))(?:\/|$)/;
 
 function getWriteBlockedRoot(path: string): string | null {
   const writeBlocked = isWindows()
     ? [...SYSTEM_PATHS_WRITE_BLOCKED, ...WIN_SYSTEM_PATHS_WRITE_BLOCKED]
     : SYSTEM_PATHS_WRITE_BLOCKED;
-  return writeBlocked.find((root) => isPathWithin(path, root)) ?? null;
+  const root = writeBlocked.find((candidate) => isPathWithin(path, candidate));
+  if (root) return root;
+  if (isWindows()) {
+    const match = WIN_ANY_DRIVE_SYSTEM_FOLDER.exec(normalizePath(path).toLowerCase());
+    if (match) return `${match[1]}/${match[2]}`;
+  }
+  return null;
+}
+
+/**
+ * Folders where programs live that are not closed to writes outright: the
+ * application folders, package-manager prefixes and shared program data. A
+ * write there is asked about for the file each time and an answer is never
+ * remembered across sessions: a "always" on `/opt/homebrew/bin` or
+ * `/Applications` would let any later task replace an installed program.
+ */
+const PROGRAM_FOLDERS_POSIX = ['/Applications', '/opt', '/usr/local', '/Users/Shared'];
+const PROGRAM_FOLDERS_HOME = ['Applications', 'AppData/Local/Programs'];
+const WIN_ANY_DRIVE_PROGRAM_DATA = /^[a-z]:\/programdata(?:\/|$)/;
+
+export function isProgramFolder(path: string): boolean {
+  return isListedProgramFolder(path) || getWriteBlockedRoot(normalizePath(path)) !== null;
+}
+
+/** `isProgramFolder` for the folders named in the lists above (not the write-blocked system roots). */
+function isListedProgramFolder(path: string): boolean {
+  const normalized = normalizePath(path);
+  if (isWindows()) {
+    if (WIN_ANY_DRIVE_PROGRAM_DATA.test(normalized.toLowerCase())) return true;
+    if (WIN_ANY_DRIVE_SYSTEM_FOLDER.test(normalized.toLowerCase())) return true;
+  } else if (PROGRAM_FOLDERS_POSIX.some((root) => isPathWithin(normalized, root))) {
+    return true;
+  }
+  if (cachedHomeDir !== null) {
+    const home = normalizePath(cachedHomeDir);
+    return PROGRAM_FOLDERS_HOME.some((root) => isPathWithin(normalized, `${home}/${root}`));
+  }
+  return false;
 }
 
 function canonicalScopeEscapeResult(): PathCheckResult {
@@ -912,9 +1189,13 @@ async function canRequestPermission(normalizedPath: string): Promise<string | nu
     return null;
   }
 
-  // Block platform-sensitive directories
+  // Block platform-sensitive directories. Compared without case: on Windows
+  // `normalizePath` has already lowercased `firstDir`, so a literal `'AppData'`
+  // never matched and the whole AppData folder was offered (and, where
+  // permission is granted automatically, granted) as one unit; macOS opens
+  // `~/library` as `~/Library` too.
   const sensitiveDirs = isWindows() ? SENSITIVE_HOME_DIRS_WIN : SENSITIVE_HOME_DIRS_MAC;
-  if (sensitiveDirs.includes(firstDir)) {
+  if (sensitiveDirs.some((dir) => dir.toLowerCase() === firstDir.toLowerCase())) {
     return null;
   }
 
@@ -965,7 +1246,7 @@ export async function checkConversationResultRead(path: string, conversationId: 
   const root = createConversationPaths(appData).resultsDir(conversationId);
   if (!isPathWithin(normalizePath(path), normalizePath(root))) return null;
   const resolved = await resolvePathForPolicy(path);
-  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  if (!resolved.ok) return unresolvedPathResult(resolved);
   const canonicalAppData = await canonicalizePolicyAnchor(appData);
   if (!canonicalAppData) return { allowed: false, reason: '无法安全解析会话目录' };
   const expectedRoot = createConversationPaths(canonicalAppData).resultsDir(conversationId);
@@ -991,7 +1272,7 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
   }
 
   const resolved = await resolvePathForPolicy(path);
-  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  if (!resolved.ok) return unresolvedPathResult(resolved);
 
   const home = await getHomeDir();
   const canonicalHome = await canonicalizePolicyAnchor(home);
@@ -1000,6 +1281,13 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
   const canonicalBlock = await isBlockedPath(resolved.canonicalPath, canonicalHome);
   if (canonicalBlock.blocked) {
     return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
+  }
+  if (await holdsPrivateKey(resolved.canonicalPath)) return privateKeyReadRefusal();
+
+  // The app's own data folders hold the secret store, the settings and the
+  // built-in browser's signed-in sessions: closed to reads ahead of every grant.
+  if (await isAbuAppDataPath(resolved.lexicalPath, home) || await isAbuAppDataPath(resolved.canonicalPath, canonicalHome)) {
+    return appDataReadRefusal();
   }
 
   // A lexical grant is only valid when the resolved target is also contained
@@ -1084,7 +1372,12 @@ export async function checkReadPath(path: string, scopeId?: AuthorizationScopeId
 export async function checkWritePath(
   path: string,
   scopeId?: AuthorizationScopeId,
-  options: { followFinalSymlink?: boolean } = {},
+  /**
+   * `purpose: 'delete'`: the write takes the file away. Removing an entry
+   * from an autostart folder undoes an automatic start, so it is asked about
+   * like any other write there instead of being refused.
+   */
+  options: { followFinalSymlink?: boolean; purpose?: 'write' | 'delete' } = {},
 ): Promise<PathCheckResult> {
   // Block UNC network paths
   if (isUNCPath(path)) {
@@ -1108,8 +1401,13 @@ export async function checkWritePath(
     return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
   }
 
+  // Start-at-sign-in locations: no mode and no grant writes there.
+  const deletes = options.purpose === 'delete';
+  const autostart = deletes ? null : await isAutostartPath(normalizedPath);
+  if (autostart) return autostartWriteRefusal(autostart);
+
   const resolved = await resolvePathForPolicy(path, options);
-  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  if (!resolved.ok) return unresolvedPathResult(resolved);
 
   const home = await getHomeDir();
   const canonicalHome = await canonicalizePolicyAnchor(home);
@@ -1122,6 +1420,8 @@ export async function checkWritePath(
   if (await isAbuSelfManagedPath(resolved.canonicalPath, canonicalHome)) {
     return { allowed: false, reason: '禁止写入阿布自身的配置与状态目录' };
   }
+  const canonicalAutostart = deletes ? null : await isAutostartPath(resolved.canonicalPath, canonicalHome);
+  if (canonicalAutostart) return autostartWriteRefusal(canonicalAutostart);
 
   const runtimeTemp = await getRuntimeTempDir();
   const safeRuntimeTemp = await isTrustedMacRuntimeTempWrite(
@@ -1163,7 +1463,7 @@ export async function checkWritePath(
   const implicitMatch = await matchResolvedRoots(
     resolved.lexicalPath,
     resolved.canonicalPath,
-    await getImplicitRoots(),
+    await getImplicitRoots(true),
   );
   if (implicitMatch.lexical && implicitMatch.canonical) {
     return { allowed: true, resolvedPath: resolved.canonicalPath };
@@ -1177,6 +1477,13 @@ export async function checkWritePath(
       permissionPath: resolved.canonicalPath,
       capability: 'write',
     };
+  }
+
+  // The home folder, in any spelling, or a folder above it is never one unit
+  // of a write grant: that grant would reach Library / AppData and the shell
+  // profiles, which every other rule keeps per file or closed.
+  if (isPathWithin(normalizePath(home), normalizedPath) || isPathWithin(canonicalHome, resolved.canonicalPath)) {
+    return { allowed: false, reason: '不能把整个用户文件夹（或它的上级文件夹）授权写入，请指定其中的一个文件夹', denialKind: 'blocked' };
   }
 
   // Check if in home allowed locations — these need permission
@@ -1203,6 +1510,20 @@ export async function checkWritePath(
     };
   }
 
+  // Outside the home folder (another drive, an external volume): the folder
+  // holding the file is the unit, so one answer covers the files written next
+  // to it. Without a safe folder the file itself is the unit, as before.
+  const outsideFolder = await outsideHomeWriteFolder(normalizedPath, resolved.canonicalPath, canonicalHome);
+  if (outsideFolder) {
+    return {
+      allowed: false,
+      needsPermission: true,
+      permissionPath: outsideFolder,
+      permissionIsFolder: true,
+      capability: 'write',
+    };
+  }
+
   // Path passed all security checks but isn't pre-authorized — offer permission dialog
   return {
     allowed: false,
@@ -1210,6 +1531,59 @@ export async function checkWritePath(
     permissionPath: normalizedPath,
     capability: 'write',
   };
+}
+
+/**
+ * The folder a write outside the home folder is granted as: the folder that
+ * holds the target, so writing several files into `D:\工作\报表` asks once
+ * rather than once per file. Never a filesystem or drive root, never the home
+ * folder or a folder that contains it (that grant would reach `AppData` and
+ * `Library`), and never a system folder. Returns null when no such folder
+ * exists; the file itself is then the unit.
+ */
+async function outsideHomeWriteFolder(
+  normalizedPath: string,
+  canonicalPath: string,
+  canonicalHome: string,
+): Promise<string | null> {
+  const home = normalizePath(await getHomeDir());
+  // Inside home the top-level folder is the unit (`canRequestPermission`), and
+  // `Library` / `AppData` stay per file: this rule is for other places only.
+  // Judged on the real location too: an 8.3 name, a junction or a /Volumes
+  // alias spells home as another folder, and a folder grant there would be a
+  // grant of home itself.
+  if (isPathWithin(normalizedPath, home) || isPathWithin(canonicalPath, canonicalHome)) return null;
+  const parent = parentFolder(normalizedPath);
+  const canonicalParent = parentFolder(canonicalPath);
+  if (parent === null || canonicalParent === null) return null;
+  if (isPathWithin(home, parent) || isPathWithin(canonicalHome, canonicalParent)) return null;
+  if (getWriteBlockedRoot(parent) || getWriteBlockedRoot(canonicalParent)) return null;
+  if (isProgramFolder(parent) || isProgramFolder(canonicalParent)) return null;
+  return parent;
+}
+
+/** The folder holding `path`, or null for a filesystem or drive root. */
+function parentFolder(path: string): string | null {
+  const lastSlash = path.lastIndexOf('/');
+  if (lastSlash <= 0) return null;
+  const parent = path.slice(0, lastSlash);
+  return /^[a-zA-Z]:$/.test(parent) ? null : parent;
+}
+
+/**
+ * The system-ish folder of home a listing of `path` lies in (`~/Library`,
+ * `~/.Trash`; `~/AppData`, `~/$Recycle.Bin`), or null. Folded: macOS lists
+ * `~/library` as `~/Library`.
+ */
+function closedListingRoot(path: string, home: string): { root: string; name: string } | null {
+  const names = isWindows() ? ['$Recycle.Bin', 'AppData'] : ['.Trash', 'Library'];
+  const folded = foldPath(path);
+  for (const name of names) {
+    const root = `${home}/${name}`;
+    const foldedRoot = foldPath(root);
+    if (folded === foldedRoot || folded.startsWith(`${foldedRoot}/`)) return { root: normalizePath(root), name };
+  }
+  return null;
 }
 
 /**
@@ -1231,7 +1605,7 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
   }
 
   const resolved = await resolvePathForPolicy(path, options);
-  if (!resolved.ok) return { allowed: false, reason: resolved.reason };
+  if (!resolved.ok) return unresolvedPathResult(resolved);
 
   const home = await getHomeDir();
   const canonicalHome = await canonicalizePolicyAnchor(home);
@@ -1241,12 +1615,21 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
   if (canonicalBlock.blocked) {
     return { allowed: false, reason: canonicalBlock.reason, denialKind: 'blocked' };
   }
+  if (await isAbuAppDataPath(resolved.lexicalPath, home) || await isAbuAppDataPath(resolved.canonicalPath, canonicalHome)) {
+    return appDataReadRefusal();
+  }
 
+  // `~/Library`, `~/AppData` and the trash are not listed through a grant of
+  // a folder above them (reading never asks, so a read of home leaves home
+  // read-granted); a grant of a folder inside them (an iCloud Drive folder)
+  // still lists that folder.
+  const listingClosedRoot = closedListingRoot(normalizedPath, home);
   const workspaceMatch = await matchAuthorizedWorkspaces(
     resolved.lexicalPath,
     resolved.canonicalPath,
     'read',
     scopeId,
+    listingClosedRoot?.root,
   );
   if (isAuthorizedWorkspaceMatch(workspaceMatch, scopeId)) {
     return { allowed: true, resolvedPath: resolved.canonicalPath };
@@ -1262,6 +1645,8 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     return { allowed: true, resolvedPath: resolved.canonicalPath };
   }
   if (scopeId !== undefined && implicitMatch.lexical) return canonicalScopeEscapeResult();
+  // (The Windows temp folder, inside AppData, is an implicit root above.)
+  if (listingClosedRoot) return { allowed: false, reason: `禁止列出目录: ~/${listingClosedRoot.name}` };
 
   if (scopeId === undefined && (workspaceMatch.lexical || implicitMatch.lexical)) {
     return {
@@ -1274,19 +1659,9 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     };
   }
 
-  // For listing under home, require permission (but still block system-ish paths)
+  // For listing under home, require permission (system-ish paths are closed above)
   const normalizedHome = normalizePath(home);
   if (normalizedPath.startsWith(normalizedHome)) {
-    // Block system-ish paths under home
-    const blockedHomePaths = isWindows()
-      ? ['$Recycle.Bin', 'AppData']
-      : ['.Trash', 'Library'];
-    for (const blocked of blockedHomePaths) {
-      const fullBlocked = normalizePath(`${home}/${blocked}`);
-      if (normalizedPath.startsWith(fullBlocked)) {
-        return { allowed: false, reason: `禁止列出目录: ~/${blocked}` };
-      }
-    }
 
     // Home directory itself — need permission
     const permDir = getPermissionDirectory(normalizedPath, normalizedHome);
@@ -1319,4 +1694,18 @@ export async function checkListPath(path: string, scopeId?: AuthorizationScopeId
     permissionIsFolder: true,
     capability: 'read',
   };
+}
+
+/**
+ * Whether the hard blocks close `path` to reads (credential stores, private
+ * keys, the app's own data), judged on the spelling alone. A recursive search
+ * path-checks the folder it starts in and then meets every file below it; it
+ * asks this of each one, so the search reads exactly what `read_file` would.
+ */
+export async function isReadClosed(path: string): Promise<boolean> {
+  if (!isAbsolutePolicyPath(path) || isUNCPath(path)) return true;
+  const normalized = normalizePath(path);
+  return (await isBlockedPath(normalized)).blocked
+    || await isAbuAppDataPath(normalized)
+    || await holdsPrivateKey(path);
 }

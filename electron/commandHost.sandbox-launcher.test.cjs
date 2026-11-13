@@ -902,7 +902,7 @@ test('macOS Seatbelt profile still denies sensitive home paths', () => {
   assert.match(profile, /\(deny file-read\* \(literal "\/usr\/bin\/osascript"\)\)/);
   assert.match(profile, /\(deny appleevent-send\)/);
   assert.match(profile, /deny file-read\* \(subpath "\/Users\/tester\/\.ssh"\)/);
-  assert.match(profile, /deny file-read\* \(subpath "\/Users\/tester\/\.aws\/credentials"\)/);
+  assert.match(profile, /deny file-read\* \(subpath "\/Users\/tester\/\.aws"\)/);
 });
 
 test('macOS commands use the configured temporary directory and keep adjacent paths protected', { skip: process.platform !== 'darwin' }, () => {

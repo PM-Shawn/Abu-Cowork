@@ -267,6 +267,64 @@ describe('search/find file tools — task command scope', () => {
   });
 });
 
+describe('search/find file tools — closed locations are not returned', () => {
+  beforeEach(() => {
+    vi.mocked(invoke).mockReset();
+  });
+
+  it('drops grep hits in credential files and keeps the rest', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      code: 0,
+      stdout: [
+        '/Users/testuser/Documents/a.txt:3:token = 1',
+        '/Users/testuser/.ssh/config:2:token = 2',
+        '/Users/testuser/Library/Application Support/Google/Chrome/Default/Cookies:1:token',
+        '/Users/testuser/proj/.env:1:token=3',
+        '/Users/testuser/proj/.env.example:1:token=',
+      ].join('\n'),
+      stderr: '',
+    });
+    const result = String(await searchFilesTool.execute({ pattern: 'token', path: '/Users/testuser' }, { abortSignal: new AbortController().signal }));
+    expect(result).toContain('/Users/testuser/Documents/a.txt:3');
+    expect(result).toContain('.env.example');
+    expect(result).not.toContain('.ssh');
+    expect(result).not.toContain('Cookies');
+    expect(result).not.toContain('proj/.env:');
+    expect(result).toContain('Found 2 matches');
+  });
+
+  it('says nothing was found when every hit was in a closed file', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ code: 0, stdout: '/Users/testuser/.aws/credentials:2:key\n', stderr: '' });
+    const result = String(await searchFilesTool.execute({ pattern: 'key', path: '/Users/testuser' }, { abortSignal: new AbortController().signal }));
+    expect(result).toBe('No matches found.');
+  });
+
+  it('drops closed files from find_files', async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({
+      code: 0,
+      stdout: '/Users/testuser/Documents/vault.kdbx\n/Users/testuser/Documents/notes.txt\n/Users/testuser/.gnupg/pubring.kbx\n',
+      stderr: '',
+    });
+    const result = String(await findFilesTool.execute({ pattern: '*', path: '/Users/testuser' }, { abortSignal: new AbortController().signal }));
+    expect(result).toContain('notes.txt');
+    expect(result).not.toContain('vault.kdbx');
+    expect(result).not.toContain('.gnupg');
+  });
+
+  it('does not search the content of a closed file the host walker returned', async () => {
+    const searchLines = vi.fn().mockResolvedValue({ matches: [{ lineNumber: 1, line: 'token' }] });
+    async function* walk() {
+      yield { name: 'id_rsa', path: '/Users/testuser/proj/id_rsa' };
+      yield { name: 'a.txt', path: '/Users/testuser/proj/a.txt' };
+    }
+    const files = { walkFiles: walk, searchLines } as never;
+    const result = String(await searchFilesTool.execute({ pattern: 'token', path: '/Users/testuser/proj' }, { files } as never));
+    expect(searchLines).toHaveBeenCalledTimes(1);
+    expect(searchLines.mock.calls[0][0]).toBe('/Users/testuser/proj/a.txt');
+    expect(result).not.toContain('id_rsa');
+  });
+});
+
 // Regression coverage for the CJK-mojibake bug: AI-generated HTML files had no
 // charset declaration, so opening them in a browser (file://, no HTTP header to
 // rely on) or via the in-app preview server fell back to a locale default (GBK on

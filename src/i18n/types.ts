@@ -3201,6 +3201,10 @@ export interface TranslationDict {
       connectorSendReason: string;
       connectorDestructiveReason: string;
       connectorChangeReason: string;
+      /** Appended to the send reason only when the answer is kept as a grant for the task (a named target). */
+      connectorSendGrantNote: string;
+      /** Appended to the change reason only when the answer is kept as a grant for the task (a named target). */
+      connectorChangeGrantNote: string;
       connectorMoneyReason: string;
       /** Refusal when no one can be asked (an unattended run with no approval channel). */
       connectorDenied: string;

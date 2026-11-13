@@ -11,6 +11,7 @@
 import { setMigratedBrowserSettings } from '@/test/migratedBrowserSettings';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { checkToolApproval } from './registry';
+import { setLanguage } from '../../i18n';
 import { mcpManager } from '../mcp/client';
 import { useChatStore } from '../../stores/chatStore';
 import { DEFAULT_BROWSER_OPERATION_POLICY, __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
@@ -227,6 +228,36 @@ describe('connector tools', () => {
     await checkToolApproval('corpmail__send_message', routed('recipient-B'), attended(), cb as never);
     await checkToolApproval('corpmail__send_message', routed('recipient-A'), attended(), cb as never);
     expect(asks).toHaveLength(3);
+  });
+
+  describe.each([
+    ['en-US', /not asked about again|asked once per task/i],
+    ['zh-CN', /不再询问|只问这一次/],
+  ] as const)('what the ask says about asking again (%s)', (locale, promise) => {
+    beforeEach(() => setLanguage(locale));
+    afterEach(() => setLanguage('system'));
+
+    it.each([
+      ['a send', 'corpmail__send_message', { to: 'a@example.com', text: 'hello' }],
+      ['a change', 'drive__update_file', { user_id: 'me', file_id: 'file-A', content: 'hello' }],
+    ] as const)('%s with a target that can be named promises not to ask again, because it saves that grant', async (_label, tool, input) => {
+      const { cb, asks } = recordingConfirm();
+      await checkToolApproval(tool, input, attended(), cb as never);
+      await checkToolApproval(tool, input, attended(), cb as never);
+      expect(asks).toHaveLength(1);
+      expect(asks[0].reason).toMatch(promise);
+    });
+
+    it.each([
+      ['a send', 'corpmail__send_message', { message: { routing_key: 'recipient-A', text: 'hello' } }],
+      ['a change', 'drive__update_file', { user_id: 'me', content: 'hello' }],
+    ] as const)('%s with no target it can identify asks every time and does not promise otherwise', async (_label, tool, input) => {
+      const { cb, asks } = recordingConfirm();
+      await checkToolApproval(tool, input, attended(), cb as never);
+      await checkToolApproval(tool, input, attended(), cb as never);
+      expect(asks).toHaveLength(2);
+      for (const ask of asks) expect(ask.reason).not.toMatch(promise);
+    });
   });
 
   it.each([

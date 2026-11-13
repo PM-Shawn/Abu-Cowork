@@ -2480,10 +2480,15 @@ export async function checkToolApproval(
         { connector },
       );
     const preview = connectorTarget.preview ? format(rules.connectorContentPreview, { preview: connectorTarget.preview }) : '';
+    // Only what the answer really does is promised: a send or a change keeps a
+    // task grant when its target is named (`connectorGrantSubject`) and the run
+    // is not a team's; otherwise it is asked every time and the text says nothing.
+    const savesGrant = connectorGrantSubject !== null && !isTeam;
     const reason = connectorAction === 'send'
-      ? rules.connectorSendReason
+      ? rules.connectorSendReason + (savesGrant ? rules.connectorSendGrantNote : '')
       : connectorAction === 'money' ? rules.connectorMoneyReason
-        : connectorAction === 'change' ? rules.connectorChangeReason : rules.connectorDestructiveReason;
+        : connectorAction === 'change' ? rules.connectorChangeReason + (savesGrant ? rules.connectorChangeGrantNote : '')
+          : rules.connectorDestructiveReason;
     const confirmed = await onRequireConfirmation({
       command: `${action}${preview}`,
       // A sentence about what is about to happen, shown as plain text (the
@@ -2493,7 +2498,7 @@ export async function checkToolApproval(
       level: connectorAction === 'send' || connectorAction === 'change' ? 'warn' : 'danger',
       // One answer here also lets the plugin that serves this tool run for the
       // rest of the conversation (`pluginGrantPending`); the ask says so.
-      reason: pluginGrantPending !== null ? `${reason}${rules.connectorPluginGrantNote}` : reason,
+      reason: pluginGrantPending !== null && !isTeam ? `${reason}${rules.connectorPluginGrantNote}` : reason,
       agentName: toolContext?.agentName,
     }, toolContext?.loopId);
     if (!confirmed) {

@@ -54,6 +54,23 @@ function commandCall(id: string, command: string): MockReplyPlan {
   return { kind: 'tool-call', toolCallId: id, toolName: 'run_command', arguments: { command } };
 }
 
+/**
+ * Long output from `node -e` instead of seq / head / tr / /dev/zero, which PowerShell does not have.
+ * Double quotes outside and single quotes inside read the same in zsh, bash and PowerShell.
+ */
+const COUNT_TO_60 = countTo(60);
+const COUNT_TO_30000 = countTo(30000);
+const ONE_LONG_LINE = 'node -e "process.stdout.write(\'a\'.repeat(3000))"';
+
+function countTo(n: number): string {
+  return `node -e "for(let i=1;i<=${n};i++)console.log(i)"`;
+}
+
+/** The step's title: the command cut to 20 characters, as the work process shows it. */
+function stepTitle(command: string): string {
+  return `执行 ${command.length > 20 ? `${command.slice(0, 20)}...` : command}`;
+}
+
 function finalReply(): MockReplyPlan {
   return { kind: 'complete', responseText: FINAL_TEXT };
 }
@@ -197,14 +214,14 @@ async function reopenConversation(): Promise<Page> {
 test('a long result folds to its first and last lines and shows all of it, a short one shows whole, also after a restart', async () => {
   test.setTimeout(240_000);
   const page = await launchInProject(() => [
-    commandCall('call-sixty', 'seq 1 60'),
+    commandCall('call-sixty', COUNT_TO_60),
     commandCall('call-short', 'echo hi'),
     finalReply(),
   ]);
   await runTurn(page);
   await showSteps(page);
 
-  const long = await openBlock(stepRow(page, '执行 seq 1 60'), '结果');
+  const long = await openBlock(stepRow(page, stepTitle(COUNT_TO_60)), '结果');
   const showAll = long.getByRole('button', { name: '显示全部 60 行', exact: true });
   await expect(showAll).toBeVisible();
   expect(await shownLines(long)).not.toContain('30');
@@ -220,7 +237,7 @@ test('a long result folds to its first and last lines and shows all of it, a sho
 
   const reopened = await reopenConversation();
   await showSteps(reopened);
-  const afterRestart = await openBlock(stepRow(reopened, '执行 seq 1 60'), '结果');
+  const afterRestart = await openBlock(stepRow(reopened, stepTitle(COUNT_TO_60)), '结果');
   await afterRestart.getByRole('button', { name: '显示全部 60 行', exact: true }).click();
   expect(await shownLines(afterRestart)).toContain('30');
   await shot(reopened, '03-all-after-restart');
@@ -229,13 +246,13 @@ test('a long result folds to its first and last lines and shows all of it, a sho
 test('one long line folds by characters and shows all of it', async () => {
   test.setTimeout(180_000);
   const page = await launchInProject(() => [
-    commandCall('call-line', "head -c 3000 /dev/zero | tr '\\0' a"),
+    commandCall('call-line', ONE_LONG_LINE),
     finalReply(),
   ]);
   await runTurn(page);
   await showSteps(page);
 
-  const area = await openBlock(stepRow(page, "执行 head -c 3000 /dev/ze..."), '结果');
+  const area = await openBlock(stepRow(page, stepTitle(ONE_LONG_LINE)), '结果');
   const showAll = area.getByRole('button', { name: /^显示全部 \d+ 个字符$/ });
   await expect(showAll).toBeVisible();
   await shot(page, '04-chars-folded');
@@ -247,13 +264,13 @@ test('where Abu read only the start and end of a long output, the result says ho
   test.setTimeout(180_000);
   // About 170 000 characters: past the one bound a result gets (12 500 tokens), so the middle is cut.
   const page = await launchInProject(() => [
-    commandCall('call-many', 'seq 1 30000'),
+    commandCall('call-many', COUNT_TO_30000),
     finalReply(),
   ]);
   await runTurn(page);
   await showSteps(page);
 
-  const area = await openBlock(stepRow(page, '执行 seq 1 30000'), '结果');
+  const area = await openBlock(stepRow(page, stepTitle(COUNT_TO_30000)), '结果');
   await area.getByRole('button', { name: /^显示全部 \d+ 行$/ }).click();
   await expect(area.getByText(/^内容过长，阿布没有读取中间的 \d+ 个字符$/)).toBeVisible();
   expect(await shownLines(area)).toContain('30000');
@@ -285,14 +302,14 @@ test('a long error folds and shows all of it', async () => {
 test('a finished step shows all of its result while the turn is still running', async () => {
   test.setTimeout(180_000);
   const page = await launchInProject(() => [
-    commandCall('call-sixty', 'seq 1 60'),
+    commandCall('call-sixty', COUNT_TO_60),
     { kind: 'hold-open', partialText: '正在整理结果' },
   ]);
   await send(page);
   await expect(page.getByText('正在整理结果')).toBeVisible({ timeout: REPLY_TIMEOUT });
   await openGroup(page);
 
-  const area = await openBlock(stepRow(page, '执行 seq 1 60'), '结果');
+  const area = await openBlock(stepRow(page, stepTitle(COUNT_TO_60)), '结果');
   await area.getByRole('button', { name: '显示全部 60 行', exact: true }).click();
   expect(await shownLines(area)).toContain('30');
   await shot(page, '07-all-while-running');

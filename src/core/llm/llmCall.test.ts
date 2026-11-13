@@ -127,7 +127,8 @@ describe('llmCall', () => {
     expect(mockChat.mock.calls[0][1]).toMatchObject({
       maxTokens: 300,
       enableThinking: false,
-      declaredCapabilities: { thinkingEffort: 'off' },
+      // The user's own pick for their chats is not rewritten: the adapter reads the off request.
+      declaredCapabilities: { thinkingEffort: 'max' },
     });
   });
 

@@ -66,6 +66,11 @@ export interface ResolveModelProfileInput {
   providerSource?: ProviderSource;
   /** The adapter the provider type selects, for callers that have the type but no provider instance (the settings form). */
   adapter?: AdapterKind;
+  /**
+   * This request asks for no thinking whatever the user picked for their conversations (the app's
+   * own one-shot calls, `internalCall.ts`): `off` where the model's control has it.
+   */
+  thinkingOff?: boolean;
   /** The request URL or its host; the host picks the thinking format and the cache key. */
   baseUrl?: string;
   requestHost?: string;
@@ -189,8 +194,9 @@ export function resolveModelProfile(input: ResolveModelProfileInput): ModelProfi
     reasoningEffortWithTools: wire.reasoningEffortWithTools,
     reasoningStripped: wire.stripReasoningParams,
   });
-  const pick = declared?.thinkingEffort;
-  if (isThinkingEffort(pick) && offeredThinkingEfforts(wire.thinkingControl).includes(pick)) {
+  const offered = offeredThinkingEfforts(wire.thinkingControl);
+  const pick = input.thinkingOff && offered.includes('off') ? 'off' : declared?.thinkingEffort;
+  if (isThinkingEffort(pick) && offered.includes(pick)) {
     wire.thinkingEffort = pick;
   }
 

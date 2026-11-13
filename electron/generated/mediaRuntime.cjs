@@ -53122,6 +53122,11 @@ var zhCN = {
       updated: "性格设定已更新，下次新对话生效。",
       updateFailed: "更新失败: {error}"
     },
+    fileRead: {
+      pdfPasswordProtected: "Error: 这份 PDF 设有打开密码，读不到它的页面。要读它，需要一份没有密码的版本。",
+      pdfDamaged: "Error: 这份 PDF 打不开（{detail}），可能已损坏，或者并不是 PDF。",
+      tooLarge: "Error: {name} 太大了（{size}，文档读取器最多处理 {limit}），读不了。小一些的版本可以读，比如少几页，或者扫描分辨率低一些。"
+    },
     file: {
       imageSkipNoVision: "[图片文件 {path}（{mediaType}）：当前模型无视觉能力，未读取图像内容。如需分析图片，请切换到支持视觉的模型（如 Claude / GPT-4o）。]",
       errFileHeldByAnotherApp: "Error: {path} 正被另一个程序打开并锁定，本次没有写入。这不是临时故障，重试不会成功——如果文件开在 Office/WPS 里，请让用户保存并关闭它；或者改为在那个程序里直接完成这次修改。",
@@ -57690,6 +57695,11 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
       errContentEmpty: "Error: personality configuration content cannot be empty.",
       updated: "Personality configuration updated; takes effect in the next new conversation.",
       updateFailed: "Update failed: {error}"
+    },
+    fileRead: {
+      pdfPasswordProtected: "Error: This PDF is password-protected, so its pages cannot be read. Reading it needs a copy without the password.",
+      pdfDamaged: "Error: The PDF could not be opened ({detail}). It may be damaged or not a PDF.",
+      tooLarge: "Error: {name} is too large for the document reader ({size}; the limit is {limit}). A smaller copy can be read: fewer pages, or scanned at a lower resolution."
     },
     file: {
       imageSkipNoVision: "[Image file {path} ({mediaType}): the current model has no vision capability; image content was not read. To analyse images, switch to a vision-capable model (e.g. Claude / GPT-4o).]",

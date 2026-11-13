@@ -7,10 +7,12 @@ import { tempDir } from '@tauri-apps/api/path';
 import { canonicalizeElectronPathForPolicy } from '../../utils/electronHost';
 import { setPlatformForTest } from '../../test/helpers';
 import { TOOL_NAMES } from './toolNames';
-import { getI18n } from '../../i18n';
+import { format, getI18n } from '../../i18n';
 import { useChatStore } from '../../stores/chatStore';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useTeamStore } from '../../stores/teamStore';
+import { useScheduleStore } from '../../stores/scheduleStore';
+import { useTriggerStore } from '../../stores/triggerStore';
 import type { PermissionMode } from '../permissions/permissionMode';
 import { __resetBrowserGrantsForTests } from '../permissions/browserToolPolicy';
 import { setPluginServerNames, forgetPluginGrants } from '../permissions/pluginToolPolicy';
@@ -623,6 +625,129 @@ describe('self-extension approval gate', () => {
     expect(asked[0]).toContain('helper');
   });
 
+  it.each(['standard', 'autonomous'] as const)('asks before installing a skill from a web address in %s mode', async (mode) => {
+    setMigratedBrowserSettings({ permissionMode: mode });
+    const asked: string[] = [];
+    const decision = await checkToolApproval(
+      'skill_manage', { action: 'install', name: 'summarize', source: 'https://skills.example.com/summarize.zip?token=abc' },
+      { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+    );
+    expect(decision.decision).toBe('allow');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain('summarize');
+    expect(asked[0]).toContain('https://skills.example.com/summarize.zip');
+    // A query string is often a token: it is not shown.
+    expect(asked[0]).not.toContain('token');
+  });
+
+  it('does not ask before a skill is created', async () => {
+    const asked: string[] = [];
+    await checkToolApproval(
+      'skill_manage', { action: 'create', name: 'x', content: 'y' },
+      { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+    );
+    expect(asked).toEqual([]);
+  });
+
+  // The dialog shows `command` as the sentence about what is about to happen and
+  // `reason` as the one line under it. Both come from the kind of call, so a user
+  // who asked for a weekly task never reads the name of an internal tool.
+  describe('what the dialog is told', () => {
+    const collectingRequests = (asked: Array<{ command: string; reason: string; kind?: string }>) =>
+      (async (info: { command: string; reason: string; kind?: string }) => { asked.push(info); return true; }) as never;
+    const c = () => getI18n().commandConfirm;
+
+    it.each([
+      ['save_agent', { name: 'helper', systemPrompt: 'p' }, () => c().selfExtensionReasonAgent],
+      ['save_team', { name: '数据小队', leader: 'a', members: [] }, () => c().selfExtensionReasonTeam],
+      ['update_soul', { content: 'new persona' }, () => c().selfExtensionReasonSoul],
+      ['manage_mcp_server', { action: 'install', name: 'github' }, () => c().selfExtensionReasonMcp],
+      ['manage_scheduled_task', { action: 'create', name: '每周一检查库存', frequency: 'weekly' }, () => c().selfExtensionReasonTask],
+      ['manage_trigger', { action: 'create', name: '收到发票', prompt: 'p' }, () => c().selfExtensionReasonTrigger],
+      ['manage_file_watch', { action: 'add', path: '/Users/me/Downloads', prompt: 'p' }, () => c().selfExtensionReasonFileWatch],
+    ] as const)('gives %s its own reason, as a self-extension request', async (name, input, reason) => {
+      const asked: Array<{ command: string; reason: string; kind?: string }> = [];
+      await checkToolApproval(name, input as Record<string, unknown>, { conversationId: 'conv-1' } as never, collectingRequests(asked));
+
+      expect(asked).toHaveLength(1);
+      expect(asked[0].kind).toBe('self-extension');
+      expect(asked[0].reason).toBe(reason());
+      expect(asked[0].command).not.toMatch(/manage_|save_|update_soul/);
+    });
+
+    it('words a new weekly task as a task, with its name, time and what it will do', async () => {
+      const asked: Array<{ command: string; reason: string }> = [];
+      await checkToolApproval(
+        'manage_scheduled_task',
+        { action: 'create', name: '每周一检查库存', prompt: '提醒我检查‮凿岩机\n库存', frequency: 'weekly', day_of_week: 1, time_hour: 9 },
+        { conversationId: 'conv-1' } as never, collectingRequests(asked),
+      );
+
+      const s = getI18n().schedule;
+      expect(asked[0].command).toBe(format(c().selfExtensionRuns, {
+        summary: format(c().selfExtensionDetail, {
+          summary: format(c().selfExtensionNamed, {
+            what: format(c().selfExtensionAction, { verb: c().selfExtensionVerbCreate, thing: c().selfExtensionNounTask }),
+            name: '每周一检查库存',
+          }),
+          detail: `${s.frequencyWeekly} ${s.monday} 09:00`,
+        }),
+        // On one line, without the invisible right-to-left override.
+        prompt: '提醒我检查凿岩机 库存',
+      }));
+    });
+
+    describe('a delete that carries only an id', () => {
+      beforeEach(() => {
+        useScheduleStore.setState({ tasks: {} });
+        useTriggerStore.setState({ triggers: {} });
+      });
+
+      const verb = () => c().selfExtensionVerbDelete;
+
+      it('names the stored scheduled task, not anything the call says', async () => {
+        const taskId = useScheduleStore.getState().createTask({
+          name: '库存日报', prompt: 'p', schedule: { frequency: 'daily', time: { hour: 9, minute: 0 } },
+        });
+        const asked: string[] = [];
+        await checkToolApproval(
+          'manage_scheduled_task', { action: 'delete', task_id: taskId, name: '别的名字' },
+          { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+        );
+        expect(asked).toEqual([format(c().selfExtensionNamed, {
+          what: format(c().selfExtensionAction, { verb: verb(), thing: c().selfExtensionNounTask }),
+          name: '库存日报',
+        })]);
+      });
+
+      it('names the stored trigger', async () => {
+        const triggerId = useTriggerStore.getState().createTrigger({
+          name: '收到发票', source: { type: 'http' }, filter: { type: 'always' }, action: { prompt: 'p' },
+          debounce: { enabled: true, windowSeconds: 300 },
+        });
+        const asked: string[] = [];
+        await checkToolApproval(
+          'manage_trigger', { action: 'pause', trigger_id: triggerId },
+          { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+        );
+        expect(asked).toEqual([format(c().selfExtensionNamed, {
+          what: format(c().selfExtensionAction, { verb: c().selfExtensionVerbPause, thing: c().selfExtensionNounTrigger }),
+          name: '收到发票',
+        })]);
+      });
+
+      it.each(['no-such-id', 'constructor', '__proto__'])('still asks, naming nothing, for the id %s', async (id) => {
+        const asked: string[] = [];
+        const decision = await checkToolApproval(
+          'manage_scheduled_task', { action: 'delete', task_id: id },
+          { conversationId: 'conv-1' } as never, collectingConfirm(asked),
+        );
+        expect(decision.decision).toBe('allow');
+        expect(asked).toEqual([format(c().selfExtensionAction, { verb: verb(), thing: c().selfExtensionNounTask })]);
+      });
+    });
+  });
+
   it.each([
     [true, undefined, 'selfExtensionSaveAgentReplace'],
     [true, true, 'selfExtensionSaveAgentReplace'],
@@ -639,7 +764,7 @@ describe('self-extension approval gate', () => {
       { conversationId: 'conv-1' } as never, collectingConfirm(asked),
     );
 
-    expect(asked).toEqual([`save_agent (${getI18n().commandConfirm[label]}): helper`]);
+    expect(asked).toEqual([format(getI18n().commandConfirm.selfExtensionNamed, { what: getI18n().commandConfirm[label], name: 'helper' })]);
   });
 
   it.each([
@@ -760,7 +885,7 @@ describe('self-extension approval gate', () => {
       );
 
       expect(decision.decision).toBe('allow');
-      expect(asked).toEqual([`save_team (${getI18n().commandConfirm[label]}): 数据小队`]);
+      expect(asked).toEqual([format(getI18n().commandConfirm.selfExtensionNamed, { what: getI18n().commandConfirm[label], name: '数据小队' })]);
     });
 
     it('denies when the user declines, so nothing is written', async () => {

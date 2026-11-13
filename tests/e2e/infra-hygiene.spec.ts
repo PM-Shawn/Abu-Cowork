@@ -547,8 +547,8 @@ test.describe.serial('Electron infra hygiene batch', () => {
     await expect(page.getByRole('heading', { name: /^(文件写入权限|File Write Permission)$/ })).toBeVisible({
       timeout: READY_TIMEOUT,
     });
-    await pressWhenSettled(page.getByRole('radio', { name: /^(本次会话|This session)$/ }));
-    await pressWhenSettled(page.getByRole('button', { name: /^(允许本次会话|Allow for Session)$/ }));
+    await pressWhenSettled(page.getByRole('radio', { name: /^(直到关闭应用|Until I quit)$/ }));
+    await pressWhenSettled(page.getByRole('button', { name: /^(允许到关闭应用|Allow Until I Quit)$/ }));
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(6);
     expectToolResultMatches(taskRequests(mock)[5].body, 'write_file', /Successfully wrote|成功/);
     await expect.poll(() => fs.existsSync(grantTarget), { timeout: READY_TIMEOUT }).toBe(true);
@@ -570,7 +570,7 @@ test.describe.serial('Electron infra hygiene batch', () => {
     // makes every non-`list` action pass the self-extension confirmation before
     // it runs. Approve it — the claim under test is that even a user-approved
     // create cannot pick its own capability tier, not that the gate is absent.
-    await expect(page.getByRole('heading', { name: /^(新增能力确认|Confirm new capability)$/ }))
+    await expect(page.getByRole('heading', { name: /^(需要你确认|Your confirmation needed)$/ }))
       .toBeVisible({ timeout: READY_TIMEOUT });
     await pressWhenSettled(page.getByRole('button', { name: /^(确认执行|Confirm)$/ }));
     await expect.poll(() => taskRequests(mock!).length, { timeout: READY_TIMEOUT }).toBe(10);

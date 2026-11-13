@@ -88,12 +88,9 @@ function createLongTaskFiles(runId: string) {
   });
 }
 
-async function allowFixtureDirectory(page: Page, directory: string) {
-  const dialog = page.getByRole('alertdialog', { name: '文件读取权限' });
-  await expect(dialog).toBeVisible({ timeout: READY_TIMEOUT });
-  await expect(dialog).toContainText(directory);
-  await dialog.getByRole('button', { name: '允许本次会话', exact: true }).click();
-  await expect(dialog).toBeHidden();
+/** Reading never asks, not even for a folder outside the workspace: the run goes on with no dialog. */
+async function expectNoReadDialog(page: Page) {
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
 }
 
 function toolResultText(body: unknown, toolName: string): string {
@@ -145,8 +142,8 @@ test('summarizes earlier steps in the middle of one task and finishes it', async
   const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
   await input.fill(prompt);
   await input.press('Enter');
-  await allowFixtureDirectory(page, fixtureDir);
   await expect(page.getByText(finalAnswer, { exact: true })).toBeVisible({ timeout: 120_000 });
+  await expectNoReadDialog(page);
   await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
 
   const divider = page.locator('[data-compact-status="done"]').last();
@@ -216,8 +213,8 @@ for (const ending of ['stopped', 'failed'] as const) {
     const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
     await input.fill(`abu-e2e-compaction-${ending}-${runId}: read the eight files one by one`);
     await input.press('Enter');
-    await allowFixtureDirectory(page, fixtureDir);
     await expect.poll(() => compressionRequests(mock!).length, { timeout: 120_000 }).toBeGreaterThan(0);
+    await expectNoReadDialog(page);
 
     const stopButton = page.getByLabel(/^(停止|Stop)$/);
     if (ending === 'stopped') {
@@ -288,8 +285,8 @@ test('writes a long tool result and reads its omitted content through read_file'
   const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
   await input.fill(`abu-e2e-long-result-${runId}: search the haystack`);
   await input.press('Enter');
-  await allowFixtureDirectory(page, fixtureDir);
   await expect(page.getByText(finalAnswer, { exact: true })).toBeVisible({ timeout: 120_000 });
+  await expectNoReadDialog(page);
 
   // The request after the search carries a bounded result that names its file.
   const requests = taskRequests(mock);

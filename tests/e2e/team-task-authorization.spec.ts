@@ -359,7 +359,7 @@ async function startTeamMock(app: () => ElectronApplication, fixture: FixturePag
 // ─────────────────────────────────────────────────────────────────────────
 
 /** 桌面确认对话框（CommandConfirmDialog）可能出现的全部标题。 */
-const CONFIRM_DIALOG_TITLES = ['浏览器操作确认', '新增能力确认', '操作确认', '危险操作确认', '操作已阻止'];
+const CONFIRM_DIALOG_TITLES = ['浏览器操作确认', '需要你确认', '操作确认', '危险操作确认', '操作已阻止'];
 
 /** 从现在起记录出现过的每个 <h2>，页面重新加载前一直有效。 */
 async function watchDialogTitles(page: Page): Promise<void> {

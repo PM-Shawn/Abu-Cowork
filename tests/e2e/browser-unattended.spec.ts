@@ -829,7 +829,7 @@ async function waitForApp(page: Page): Promise<void> {
  *  browser/command/self-extension confirmation dialogs use. */
 const CONFIRM_DIALOG_TITLES = [
   '浏览器操作确认', 'Confirm browser action',       // commandConfirm.browserTitle
-  '新增能力确认', 'Confirm new capability',          // commandConfirm.selfExtensionTitle
+  '需要你确认', 'Your confirmation needed',          // commandConfirm.selfExtensionTitle
   '操作确认', 'Confirm Action',                      // commandConfirm.title
   '危险操作确认', 'Dangerous Action',                // commandConfirm.titleDanger
   '操作已阻止', 'Action Blocked',                    // commandConfirm.titleBlock

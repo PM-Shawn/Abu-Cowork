@@ -112,7 +112,7 @@ describe('WorkspaceFilesSection', () => {
     expect(useWorkspaceStore.getState().currentPath).toBeNull();
 
     await passSettleInterval();
-    await user.click(screen.getByRole('button', { name: 'Allow for Session' }));
+    await user.click(screen.getByRole('button', { name: 'Always Allow' }));
 
     expect(await screen.findByRole('button', { name: 'notes.txt' })).toBeInTheDocument();
     expect(useWorkspaceStore.getState().currentPath).toBe(BETA);
@@ -208,7 +208,7 @@ describe('WorkspaceFilesSection', () => {
       expect(screen.getByRole('button', { name: 'Deny' })).toHaveFocus();
     });
 
-    it('records a grant for the session and lists the folder on Allow for Session', async () => {
+    it('records a grant for good and lists the folder on Always Allow, the default', async () => {
       const user = userEvent.setup();
       renderSection();
       await openChangeList(user);
@@ -216,12 +216,12 @@ describe('WorkspaceFilesSection', () => {
       await screen.findByRole('heading', { name: PERMISSION_TITLE });
       await passSettleInterval();
 
-      await user.click(screen.getByRole('button', { name: 'Allow for Session' }));
+      await user.click(screen.getByRole('button', { name: 'Always Allow' }));
 
-      expect(grants().session[GAMMA]).toEqual(expect.objectContaining({
-        path: GAMMA, capabilities: ['read', 'write', 'execute'], duration: 'session', expiresAt: null,
+      expect(grants().persisted[GAMMA]).toEqual(expect.objectContaining({
+        path: GAMMA, capabilities: ['read', 'write', 'execute'], duration: 'always', expiresAt: null,
       }));
-      expect(grants().persisted).toEqual({});
+      expect(Object.keys(grants().session)).toEqual([BETA]);
       expect(useWorkspaceStore.getState().currentPath).toBe(GAMMA);
       expect(await screen.findByRole('button', { name: 'gamma.md' })).toBeInTheDocument();
     });
@@ -260,7 +260,8 @@ describe('WorkspaceFilesSection', () => {
       expect(useWorkspaceStore.getState().currentPath).toBe(ALPHA);
 
       await passSettleInterval();
-      await user.click(screen.getByRole('button', { name: 'Allow for Session' }));
+      await user.click(screen.getByRole('radio', { name: 'Until I quit' }));
+      await user.click(screen.getByRole('button', { name: 'Allow Until I Quit' }));
       expect(useWorkspaceStore.getState().currentPath).toBe(GAMMA);
       expect(Object.keys(grants().session)).toEqual([BETA, GAMMA]);
     });

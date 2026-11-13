@@ -3169,17 +3169,18 @@ export interface TranslationDict {
     rememberChoiceDescription: string;
     forgetAfterSession: string;
     // Duration options
-    durationOnce: string;
     durationSession: string;
-    duration24h: string;
     durationAlways: string;
-    durationAlwaysConfirm: string;
     // Button labels per duration
     durationLabel: string;
-    allowOnceButton: string;
     allowSessionButton: string;
-    allow24hButton: string;
     allowAlwaysButton: string;
+    /** Sentences the approval dialog shows for actions that ask in every mode. */
+    rules: {
+      /** Summary of a skill install; the skill's name follows through `commandConfirm.selfExtensionNamed`. */
+      skillInstall: string;
+      skillInstallReason: string;
+    };
   };
 
   // Panels
@@ -4059,16 +4060,55 @@ export interface TranslationDict {
     browserAction: string;
     browserReason: string;
     browserDenied: string;
-    selfExtensionReason: string;
     selfExtensionDenied: string;
-    /** save_agent approval summary mode: no AGENT.md on disk under that name — a new expert. */
+    // The self-extension dialog says in plain words what is about to happen.
+    // `classifySelfExtension` builds the summary from the pieces below, so a
+    // user who asked for a weekly task reads 「新建定时任务「…」」 rather than the
+    // name of an internal tool. `{name}`, `{detail}` and `{path}` come from the
+    // call and are shown as given; the other placeholders are pieces of this family.
+    /** Puts a name after a phrase. `{what}` `{name}` */
+    selfExtensionNamed: string;
+    /** Puts a side detail (schedule, address, pattern) after a summary. `{summary}` `{detail}` */
+    selfExtensionDetail: string;
+    /** Joins an automation verb and its noun. `{verb}` `{thing}` */
+    selfExtensionAction: string;
+    /** Detail of a trigger that listens to a path. `{path}` */
+    selfExtensionWatching: string;
+    selfExtensionRuns: string;
+    /** save_agent summary: no AGENT.md on disk under that name, so this creates an expert. */
     selfExtensionSaveAgentNew: string;
-    /** save_agent approval summary mode: an AGENT.md is already on disk under that name — it will be replaced. */
+    /** save_agent summary: an AGENT.md is already on disk under that name (or the caller could not tell), so it is rewritten. */
     selfExtensionSaveAgentReplace: string;
-    /** save_team summary label: this call creates a team that does not exist yet. */
+    /** save_team summary: this call creates a team that does not exist yet. */
     selfExtensionSaveTeamNew: string;
-    /** save_team summary label: this call overwrites a team of the same name. */
+    /** save_team summary: this call overwrites a team of the same name (or the caller could not tell). */
     selfExtensionSaveTeamReplace: string;
+    /** update_soul summary. */
+    selfExtensionUpdateSoul: string;
+    /** manage_mcp_server install / ensure summary. */
+    selfExtensionMcpInstall: string;
+    /** manage_mcp_server add_custom summary (the URL is added as a detail). */
+    selfExtensionMcpAddCustom: string;
+    /** Automation verbs; `Other` is the fail-closed line for an action nobody described. */
+    selfExtensionVerbCreate: string;
+    selfExtensionVerbUpdate: string;
+    selfExtensionVerbDelete: string;
+    selfExtensionVerbPause: string;
+    selfExtensionVerbResume: string;
+    selfExtensionVerbToggle: string;
+    selfExtensionVerbOther: string;
+    /** What the automation verbs act on. */
+    selfExtensionNounTask: string;
+    selfExtensionNounTrigger: string;
+    selfExtensionNounFileWatch: string;
+    /** One plain sentence per kind: why this needs the user's say-so. */
+    selfExtensionReasonAgent: string;
+    selfExtensionReasonTeam: string;
+    selfExtensionReasonSoul: string;
+    selfExtensionReasonMcp: string;
+    selfExtensionReasonTask: string;
+    selfExtensionReasonTrigger: string;
+    selfExtensionReasonFileWatch: string;
     browserTitle: string;
     browserDescription: string;
     browserSiteDenied: string;
@@ -5558,6 +5598,10 @@ export interface TranslationDict {
       injWinPsNoProfile: string;
       injWinCmdDel: string;
       // getDangerLevelLabel — danger level display labels
+      /** Writing to a place a program starts from at sign-in (autostart) is refused in every mode. */
+      blockAutostart: string;
+      /** Taking an autostart entry away is asked about, not refused. */
+      warnRemoveAutostart: string;
       levelBlock: string;
       levelDanger: string;
       levelWarn: string;

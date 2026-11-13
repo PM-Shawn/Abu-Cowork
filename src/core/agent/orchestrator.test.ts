@@ -74,6 +74,9 @@ vi.mock('../mcp/client', () => ({
   },
 }));
 
+const pythonMocks = vi.hoisted(() => ({ hasEmbeddedPython: vi.fn() }));
+vi.mock('../../utils/pythonRuntime', () => ({ hasEmbeddedPython: pythonMocks.hasEmbeddedPython }));
+
 vi.mock('../skill/preprocessor', () => ({
   substituteVariables: vi.fn((content: string) => content),
   executeInlineCommands: vi.fn((content: string) => content),
@@ -98,6 +101,35 @@ beforeEach(() => {
   mockScanMemoryFiles.mockResolvedValue([]);
   browserMocks.hasElectronCommandHost.mockReturnValue(true);
   browserMocks.isConnected.mockImplementation((name: string) => name === 'abu-browser');
+  pythonMocks.hasEmbeddedPython.mockResolvedValue(false);
+});
+
+describe('buildSystemPromptSections - python-runtime section', () => {
+  const pythonText = async () => {
+    const sections = await buildSystemPromptSections({ type: 'general', cleanInput: 'hi' } as Parameters<typeof buildSystemPromptSections>[0], 'Assistant', 'test-conv');
+    return sections.find((section) => section.name === 'python-runtime')?.text;
+  };
+
+  it('names the bundled libraries and says pip is not available', async () => {
+    pythonMocks.hasEmbeddedPython.mockResolvedValue(true);
+    const text = await pythonText();
+    for (const library of ['python-docx', 'openpyxl', 'python-pptx', 'pandas', 'matplotlib', 'pypdfium2', 'pdfplumber', 'pypdf', 'reportlab', 'xlrd']) {
+      expect(text).toContain(library);
+    }
+    expect(text).toContain('pip is not available');
+  });
+
+  // Without this pointer the model rarely loads the office skills on its own, so it never runs their check script.
+  it('points the model at the four office skills and says once to check a file before it is called done', async () => {
+    pythonMocks.hasEmbeddedPython.mockResolvedValue(true);
+    const text = (await pythonText()) ?? '';
+    for (const skill of ['docx', 'xlsx', 'pptx', 'pdf']) expect(text).toContain(skill);
+    expect(text.match(/Before you tell the user a file is done/g)).toHaveLength(1);
+  });
+
+  it('is left out without an embedded Python', async () => {
+    expect(await pythonText()).toBeUndefined();
+  });
 });
 
 describe('routeInput expert entry', () => {
@@ -128,6 +160,29 @@ describe('buildSystemPromptSections compaction purpose', () => {
     } finally {
       vi.mocked(useSettingsStore.getState).mockReturnValue(original);
     }
+  });
+});
+
+describe('buildSystemPromptSections - ask rule', () => {
+  const route = { type: 'general', cleanInput: 'hi' } as Parameters<typeof buildSystemPromptSections>[0];
+  const names = async (toolContext?: Parameters<typeof buildSystemPromptSections>[5], im?: Parameters<typeof buildSystemPromptSections>[3]) =>
+    (await buildSystemPromptSections(route, 'Assistant', 'test-conv', im, 0, toolContext)).map((s) => s.name);
+
+  it('carries the ask rule in a foreground run and no unattended note', async () => {
+    const got = await names({ interactionMode: 'foreground' });
+    expect(got).toContain('ask-rule');
+    expect(got).toContain('user-facing-rules');
+    expect(got).not.toContain('unattended-run');
+  });
+
+  it('adds the unattended note for a background run with nobody present', async () => {
+    expect(await names({ interactionMode: 'background' })).toContain('unattended-run');
+  });
+
+  it('does not call an IM run unattended: the person there can answer by text', async () => {
+    const got = await names({ interactionMode: 'background' }, { platform: 'dingtalk', chatId: 'c' } as never);
+    expect(got).toContain('ask-rule');
+    expect(got).not.toContain('unattended-run');
   });
 });
 

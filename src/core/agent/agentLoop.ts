@@ -29,6 +29,7 @@ import { getCapsPort } from './ports/capsPort';
 import { getExecutionPort } from './ports/executionPort';
 import { getAbortRegistry } from './ports/abortRegistry';
 import { getScratchpadPort } from './ports/scratchpadPort';
+import { withUnattendedBlockedTools } from './unattendedTools';
 import { createEventRouter } from './eventRouter';
 // Type-only import — the runtime routeInput/buildSystemPromptSections calls
 // moved to entryOrchestration.ts (P1-3B-3A item 1, dynamically imported from
@@ -1191,9 +1192,12 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // send_file only makes sense with an IM reply target; keep it off the roster
   // for every other run (desktop / scheduled / trigger) instead of letting the
   // model discover it and hit the runtime refusal.
-  const effectiveBlockedTools = toolContext.imReplyTarget
-    ? options?.blockedTools
-    : [...(options?.blockedTools ?? []), TOOL_NAMES.SEND_FILE];
+  const effectiveBlockedTools = withUnattendedBlockedTools(
+    toolContext.imReplyTarget
+      ? options?.blockedTools
+      : [...(options?.blockedTools ?? []), TOOL_NAMES.SEND_FILE],
+    toolContext.interactionMode,
+  );
   let computerUseTaskEndPromise: Promise<void> | null = null;
   let computerUseTurnStopPromise: Promise<void> | null = null;
   const endComputerUseTaskLease = (): Promise<void> => {
@@ -2120,7 +2124,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         ),
         { ...toolContext, abortSignal: abortController.signal },
       );
-      // Summarize everything before the newest `retainTokens` of steps. The
+      // Summarize everything before the newest `retainShare` of the room left for the conversation. The
       // summary request is held to `budgetWindowSize` and uses the output and
       // reasoning budgets of the request it makes room for; it fails loudly,
       // and a failed attempt leaves a failed divider behind (unless the user
@@ -2128,7 +2132,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const compactBeforeRequest = async (
         budgetWindowSize: number,
         requestOptions: Pick<typeof baseChatOptions, 'maxTokens' | 'enableThinking' | 'thinkingBudget' | 'reasoningEffort'>,
-        retainTokens: number,
+        retainShare: number,
       ): Promise<boolean> => {
         const reserveForOutput = requestOptions.maxTokens;
         const budget = computeInputBudget(budgetWindowSize, reserveForOutput).inputBudget;
@@ -2138,7 +2142,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           marker = await compactHistory({
             history: historyMessages,
             inputBudget: budget,
-            retainTokens,
+            fixedTokens: fixedPartOf(requestEstimate),
+            retainShare,
             source: 'auto',
             loopId,
             summary: {
@@ -2189,7 +2194,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (
         fixedPartOf(requestEstimate) < inputBudget
         && measureInputTokens(requestEstimate.total, measurementContext(), usageAnchor) >= inputBudget * COMPACTION_TRIGGER_RATIO
-        && await compactBeforeRequest(contextWindowSize, baseChatOptions, Math.floor(inputBudget * RETAINED_TAIL_RATIO))
+        && await compactBeforeRequest(contextWindowSize, baseChatOptions, RETAINED_TAIL_RATIO)
       ) {
         requestEstimate = measureView();
       }

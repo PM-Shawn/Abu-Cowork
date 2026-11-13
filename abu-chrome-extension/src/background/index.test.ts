@@ -84,6 +84,7 @@ const browserState: {
   tabs: FakeTab[];
   updated: { tabId: number; props: Record<string, unknown> }[];
   reloaded: number[];
+  removed: number[];
   injected: { tabId: number; files?: string[]; world?: string; args?: unknown[] }[];
   captured: number[];
   sessionStore: Record<string, number>;
@@ -123,7 +124,7 @@ const browserState: {
   /** The `stitch` messages the offscreen document was asked to composite. */
   stitchRequests: Record<string, unknown>[];
 } = {
-  windows: [], tabs: [], updated: [], reloaded: [], injected: [], captured: [], sessionStore: {},
+  windows: [], tabs: [], updated: [], reloaded: [], removed: [], injected: [], captured: [], sessionStore: {},
   pageDialogState: { installed: false, armed: null, last: null },
   pageIsFrozen: false,
   frames: {},
@@ -160,6 +161,7 @@ function fakeChrome(): Record<string, unknown> {
     },
     tabs: {
       onActivated: slot('tabs.onActivated'),
+      onCreated: slot('tabs.onCreated'),
       onRemoved: slot('tabs.onRemoved'),
       onUpdated: slot('tabs.onUpdated'),
       query: async (q: { active?: boolean; windowId?: number }, cb?: (tabs: typeof browserState.tabs) => void) => {
@@ -187,6 +189,19 @@ function fakeChrome(): Record<string, unknown> {
         return browserState.tabs.find((t) => t.id === tabId);
       },
       reload: async (tabId: number) => { browserState.reloaded.push(tabId); },
+      create: async (props: { url: string; active?: boolean; windowId?: number }) => {
+        const id = 900 + browserState.tabs.length;
+        const windowId = props.windowId ?? browserState.windows[0]?.id ?? 1;
+        if (props.active) for (const t of browserState.tabs) if (t.windowId === windowId) t.active = false;
+        const tab = { id, windowId, url: props.url, title: '', active: props.active === true };
+        browserState.tabs.push(tab);
+        return tab;
+      },
+      remove: async (tabId: number) => {
+        browserState.removed.push(tabId);
+        browserState.tabs = browserState.tabs.filter((t) => t.id !== tabId);
+        fire('tabs.onRemoved', tabId);
+      },
       captureVisibleTab: async (windowId: number) => {
         browserState.captured.push(windowId);
         return 'data:image/png;base64,AAAA';
@@ -209,6 +224,11 @@ function fakeChrome(): Record<string, unknown> {
       WINDOW_ID_NONE: -1,
       onFocusChanged: slot('windows.onFocusChanged'),
       getAll: async () => browserState.windows,
+      get: async (windowId: number) => {
+        const win = browserState.windows.find((w) => w.id === windowId);
+        if (!win) throw new Error(`No window with id: ${windowId}`);
+        return win;
+      },
       getLastFocused: (opts: unknown, cb?: (w: unknown) => void) => {
         const win = browserState.windows.find((w) => w.focused) ?? browserState.windows[0]
           ?? { id: 1, type: 'normal', focused: true };
@@ -385,6 +405,117 @@ beforeAll(async () => {
   globals.__ABU_ELECTRON_BROWSER_RUNTIME__ = contentRuntime;
   await import('../content/index.js');
   if (!contentRuntime.handleAction) throw new Error('content runtime did not register handleAction');
+});
+
+describe('tabs a task opens in the user\'s Chrome', () => {
+  it('opens a claimed tab and closes only a tab this conversation opened', async () => {
+    twoTabWindow();
+    browserState.removed.length = 0;
+    const owner = { ownerId: 'conv-open', runId: 'run-1' };
+
+    const opened = await request('create_tab', { url: 'https://canvas.example.edu/courses', ...owner });
+    expect(opened.success).toBe(true);
+    const tabId = (opened.data as { tabId: number }).tabId;
+    expect(browserState.tabs.find((t) => t.id === tabId)).toMatchObject({ url: 'https://canvas.example.edu/courses', active: true, windowId: 1 });
+
+    // Another conversation sees it as taken, and cannot close it.
+    const listing = await request('get_tabs', { ownerId: 'conv-other' });
+    const listed = (listing.data as { windows: { tabs: { tabId: number; ownedByOther?: boolean }[] }[] }).windows[0].tabs;
+    expect(listed.find((t) => t.tabId === tabId)?.ownedByOther).toBe(true);
+    const refused = await request('close_tab', { tabId, ownerId: 'conv-other' });
+    expect(refused.data).toMatchObject({ status: 'requires_user_action' });
+
+    // The user's own tab is never closed, even by a task that drove it.
+    const userTab = await request('close_tab', { tabId: 11, ...owner });
+    expect(userTab.data).toMatchObject({ status: 'requires_user_action' });
+    expect(browserState.removed).toEqual([]);
+
+    // A later run of the same conversation may close what it opened.
+    const closed = await request('close_tab', { tabId, ownerId: 'conv-open', runId: 'run-2' });
+    expect(closed.data).toMatchObject({ status: 'closed', tabId });
+    expect(browserState.removed).toEqual([tabId]);
+  });
+
+  it('does not close a tab another conversation holds now, even though this one opened it', async () => {
+    twoTabWindow();
+    browserState.removed.length = 0;
+
+    const opened = await request('create_tab', { url: 'https://canvas.example.edu/inbox', ownerId: 'conv-A', runId: 'run-1' });
+    const tabId = (opened.data as { tabId: number }).tabId;
+
+    // A's run ends and the bridge releases what A held; B then drives the tab.
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'release', ownerId: 'conv-A' }) });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    sockets[0].sent.length = 0;
+    expect((await request('click', { tabId, locator: { css: '.primary' }, ownerId: 'conv-B', runId: 'run-1' })).success).toBe(true);
+
+    const refused = await request('close_tab', { tabId, ownerId: 'conv-A', runId: 'run-2' });
+    expect(refused.data).toMatchObject({ status: 'requires_user_action' });
+    expect(browserState.removed).toEqual([]);
+    expect(browserState.tabs.some((t) => t.id === tabId)).toBe(true);
+
+    // B's run ends too, so its claim does not leak into the next test's tab ids.
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'release', ownerId: 'conv-B' }) });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    sockets[0].sent.length = 0;
+  });
+
+  it('lets a later run close a tab it opened once nobody else holds it', async () => {
+    twoTabWindow();
+    browserState.removed.length = 0;
+
+    const opened = await request('create_tab', { url: 'https://canvas.example.edu/grades', ownerId: 'conv-A', runId: 'run-1' });
+    const tabId = (opened.data as { tabId: number }).tabId;
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'release', ownerId: 'conv-A' }) });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    sockets[0].sent.length = 0;
+
+    const closed = await request('close_tab', { tabId, ownerId: 'conv-A', runId: 'run-2' });
+    expect(closed.data).toMatchObject({ status: 'closed', tabId });
+    expect(browserState.removed).toEqual([tabId]);
+  });
+
+  it('owns a tab its own click opened, and leaves a tab the user opened alone', async () => {
+    twoTabWindow();
+    browserState.removed.length = 0;
+    const owner = { ownerId: 'conv-spawn', runId: 'run-1' };
+
+    // The task drives the user's tab 11; the page opens its next step in a new tab.
+    await request('click', { tabId: 11, locator: { css: '.primary' }, ...owner });
+    const spawned = { id: 950, windowId: 1, url: 'https://console.example.com/tickets', title: '', active: true, openerTabId: 11 };
+    browserState.tabs.push(spawned);
+    fire('tabs.onCreated', spawned);
+
+    // A tab opened from tab 12, which no task touched, is the user's.
+    const usersOwn = { id: 951, windowId: 1, url: 'https://news.example.com/', title: '', active: false, openerTabId: 12 };
+    browserState.tabs.push(usersOwn);
+    fire('tabs.onCreated', usersOwn);
+
+    const listing = await request('get_tabs', owner);
+    const listed = (listing.data as { windows: { tabs: { tabId: number; ownedByYou?: boolean }[] }[] }).windows[0].tabs;
+    expect(listed.find((t) => t.tabId === 950)?.ownedByYou).toBe(true);
+    expect(listed.find((t) => t.tabId === 951)?.ownedByYou).toBeUndefined();
+
+    expect((await request('close_tab', { tabId: 951, ...owner })).data).toMatchObject({ status: 'requires_user_action' });
+    expect((await request('close_tab', { tabId: 11, ...owner })).data).toMatchObject({ status: 'requires_user_action' });
+    expect((await request('close_tab', { tabId: 950, ...owner })).data).toMatchObject({ status: 'closed', tabId: 950 });
+    expect(browserState.removed).toEqual([950]);
+
+    // The run ends: the bridge releases what it held (tab 11 included).
+    sockets[0].onmessage?.({ data: JSON.stringify({ type: 'release', ownerId: 'conv-spawn' }) });
+    for (let i = 0; i < 20; i += 1) await Promise.resolve();
+    sockets[0].sent.length = 0;
+  });
+
+  it('refuses a destination other than the approved one, and a non-web address', async () => {
+    twoTabWindow();
+    const before = browserState.tabs.length;
+    const wrong = await request('create_tab', { url: 'https://evil.example/', ownerId: 'c', expectedOrigin: 'https://canvas.example.edu' });
+    expect(wrong.success).toBe(false);
+    const scheme = await request('create_tab', { url: 'file:///etc/passwd', ownerId: 'c' });
+    expect(scheme.success).toBe(false);
+    expect(browserState.tabs.length).toBe(before);
+  });
 });
 
 describe('every content-script action the bridge registers is routed', () => {

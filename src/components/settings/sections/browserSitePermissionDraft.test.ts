@@ -29,18 +29,28 @@ describe('analyzeBrowserSitePermissionDraft', () => {
     });
   });
 
-  it('checks high-risk paths before their path is removed by normalization', () => {
+  it('checks a high-risk address before its path is removed by normalization', () => {
     expect(analyzeBrowserSitePermissionDraft(
-      'https://shop.example.com/account/checkout',
+      'https://www.paypal.com/myaccount/transfer',
       'allowed',
       {},
     )).toMatchObject({
       issue: 'high-risk',
-      normalizedOrigin: 'https://shop.example.com',
+      normalizedOrigin: 'https://www.paypal.com',
     });
     expect(analyzeBrowserSitePermissionDraft(
-      'https://shop.example.com/account/checkout',
+      'https://www.paypal.com/myaccount/transfer',
       'denied',
+      {},
+    )).toMatchObject({ issue: null, normalizedOrigin: 'https://www.paypal.com' });
+  });
+
+  // A money word in the path of an ordinary site (a company OA's payment
+  // report) does not make it high-risk.
+  it('lets an ordinary site with a checkout or payment path be allowed', () => {
+    expect(analyzeBrowserSitePermissionDraft(
+      'https://shop.example.com/account/checkout',
+      'allowed',
       {},
     )).toMatchObject({ issue: null, normalizedOrigin: 'https://shop.example.com' });
   });

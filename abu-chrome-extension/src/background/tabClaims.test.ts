@@ -18,6 +18,7 @@ import { describe, expect, it } from 'vitest';
 import {
   NO_ACTIVE_TAB_MESSAGE,
   NO_CLAIMED_TAB_MESSAGE,
+  SPAWN_ADOPT_WINDOW_MS,
   classifyInbound,
   createTabClaimStore,
   makeOwner,
@@ -431,5 +432,88 @@ describe('get_tabs listing', () => {
     // ownership marks at all — its response shape is untouched.
     expect(listing.currentTabId).toBe(USER_TAB);
     expect(listing.ownership.size).toBe(0);
+  });
+});
+
+describe('tabs a task opened itself', () => {
+  it('remembers the opener across a run release and forgets it when the tab closes', () => {
+    const store = createTabClaimStore();
+    const owner = makeOwner('conv-a', 'run-1');
+    store.claim(5, owner, 1);
+    store.markOpened(5, owner);
+    expect(store.openedBy(5)?.conversationId).toBe('conv-a');
+    store.releaseOwner('conv-a');
+    expect(store.holderOf(5)).toBeNull();
+    expect(store.openedBy(5)?.conversationId).toBe('conv-a');
+    store.releaseTab(5);
+    expect(store.openedBy(5)).toBeNull();
+  });
+
+  it('keeps the opener and the current holder apart once another conversation claims the tab', () => {
+    const store = createTabClaimStore();
+    const ownerA = makeOwner('conversation-A');
+    const ownerB = makeOwner('conversation-B');
+    store.claim(42, ownerA, 1000);
+    store.markOpened(42, ownerA);
+    store.releaseOwner(ownerA.conversationId);
+    store.claim(42, ownerB, 2000);
+    expect(store.holderOf(42)?.conversationId).toBe('conversation-B');
+    expect(store.openedBy(42)?.conversationId).toBe('conversation-A');
+  });
+
+  it('never marks a tab for a caller without an owner, and forgets everything when the bridge goes away', () => {
+    const store = createTabClaimStore();
+    store.markOpened(3, makeOwner(undefined));
+    expect(store.openedBy(3)).toBeNull();
+    store.markOpened(4, makeOwner('conv-b'));
+    store.releaseAll();
+    expect(store.openedBy(4)).toBeNull();
+  });
+
+  it('adopts a tab spawned from a tab the task was just driving, and only then', () => {
+    const store = createTabClaimStore();
+    const owner = makeOwner('conv-a', 'run-1');
+    store.noteDriven(10, owner, 1_000);
+
+    expect(store.adoptSpawned(20, 10, 1_000 + 2_000)?.key).toBe(owner.key);
+    expect(store.openedBy(20)?.key).toBe(owner.key);
+    expect(store.holderOf(20)?.key).toBe(owner.key);
+
+    // Long after the task last acted on the opener: the user opened it.
+    expect(store.adoptSpawned(21, 10, 1_000 + SPAWN_ADOPT_WINDOW_MS + 1)).toBeNull();
+    // From a tab no task drove.
+    expect(store.adoptSpawned(22, 11, 1_500)).toBeNull();
+    expect(store.openedBy(21)).toBeNull();
+    expect(store.openedBy(22)).toBeNull();
+
+    // Once the run is released, nothing it does can still be spawning tabs.
+    store.noteDriven(10, owner, 5_000);
+    store.releaseOwner('conv-a', 'run-1');
+    expect(store.adoptSpawned(23, 10, 5_500)).toBeNull();
+    // A caller without an owner never drives anything.
+    store.noteDriven(12, makeOwner(undefined), 6_000);
+    expect(store.adoptSpawned(24, 12, 6_100)).toBeNull();
+  });
+
+  it('does not count reading a page as driving it', async () => {
+    const store = createTabClaimStore();
+    const owner = { ownerId: 'conv-a', runId: 'run-1' };
+    const deps = { tabExists: async () => true, lastActiveTabId: () => null, now: () => 42_000 };
+    for (const action of ['snapshot', 'extract_text', 'screenshot', 'find', 'wait_for', 'get_html']) {
+      await resolveTargetTab(store, action, { tabId: 7, ...owner }, deps);
+    }
+    // The user opens a link from the page the task just read: still theirs.
+    expect(store.adoptSpawned(8, 7, 43_000)).toBeNull();
+  });
+
+  it('records a drive when a request resolves its tab', async () => {
+    const store = createTabClaimStore();
+    const owner = { ownerId: 'conv-a', runId: 'run-1' };
+    await resolveTargetTab(store, 'click', { tabId: 7, ...owner }, {
+      tabExists: async () => true,
+      lastActiveTabId: () => null,
+      now: () => 42_000,
+    });
+    expect(store.adoptSpawned(8, 7, 43_000)?.conversationId).toBe('conv-a');
   });
 });

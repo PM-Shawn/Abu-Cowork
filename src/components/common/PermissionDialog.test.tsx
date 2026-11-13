@@ -12,8 +12,8 @@ import { TextField } from '@/components/ds/text-field';
 import { getI18n, initLanguage } from '@/i18n';
 import { passSettleInterval } from '@/test/dsWindows';
 
-// The grant window for a path or a folder: a grant lets Abu read or write there for a session,
-// for a day or for good. These cases pin what each control answers; the stores that record a
+// The grant window for a path or a folder: a grant lets Abu read or write there for good (the
+// default since permissions batch 1, 2026-11) or until the app is quit. These cases pin what each control answers; the stores that record a
 // grant are exercised where the window is mounted (ChatView, ChatInput, WorkspaceFilesSection).
 //
 // The window takes no pointer press for a moment after it appears; the keyboard is never held.
@@ -35,7 +35,7 @@ function open(request: PermissionRequest) {
 }
 const button = (name: string) => screen.getByRole('button', { name });
 const buttonNames = () => screen.getAllByRole('button').map((element) => element.textContent).filter((name) => name !== '');
-// One of the four durations.
+// One of the two durations.
 const duration = (name: string) => screen.getByRole('radio', { name });
 // The allowing button. With 「始终允许」 chosen it carries the same words as that duration.
 const allow = (name: string) => screen.getByRole('button', { name });
@@ -69,77 +69,32 @@ describe('path and folder grants: what each control answers', () => {
       expect(calls.onDeny).not.toHaveBeenCalled();
     });
 
-    it('offers the session by default: 「允许本次会话」 allows for the session, once', async () => {
+    it('offers a grant for good by default: one press on 「始终允许」 allows for good, once', async () => {
       const calls = open(request);
-      await userEvent.setup().click(allow('允许本次会话'));
-      expect(calls.onAllow.mock.calls).toEqual([['session']]);
-      expect(calls.onDeny).not.toHaveBeenCalled();
-    });
-
-    it.each([
-      ['仅本次', '允许本次', 'once'],
-      ['本次会话', '允许本次会话', 'session'],
-      ['24小时内', '允许24小时', '24h'],
-    ] as const)('allows for the duration chosen: %s', async (option, label, value) => {
-      const user = userEvent.setup();
-      const calls = open(request);
-      await user.click(duration(option));
-      expect(calls.onAllow).not.toHaveBeenCalled();
-      await user.click(allow(label));
-      expect(calls.onAllow.mock.calls).toEqual([[value]]);
-      expect(calls.onDeny).not.toHaveBeenCalled();
-    });
-
-    it('asks once more before a grant for good: the first press on allow grants nothing', async () => {
-      const user = userEvent.setup();
-      const calls = open(request);
-      await user.click(duration('始终允许'));
-      expect(screen.queryByText('确定始终允许？这将永久记住此授权。')).toBeNull();
-
-      await user.click(allow('始终允许'));
-      expect(calls.onAllow).not.toHaveBeenCalled();
-      expect(calls.onDeny).not.toHaveBeenCalled();
-      expect(screen.getByText('确定始终允许？这将永久记住此授权。')).toBeInTheDocument();
-      expect(buttonNames()).toContain('确认');
-      expect(buttonNames()).toContain('取消');
-      expect(buttonNames()).not.toContain('拒绝');
-
-      // 「确认」 is where the allowing button was: the window holds pointer presses again for a moment.
-      passSettleInterval();
-      await user.click(button('确认'));
+      await userEvent.setup().click(allow('始终允许'));
       expect(calls.onAllow.mock.calls).toEqual([['always']]);
       expect(calls.onDeny).not.toHaveBeenCalled();
-    });
-
-    it('takes the question back on 「取消」: nothing is granted and nothing is denied', async () => {
-      const user = userEvent.setup();
-      const calls = open(request);
-      await user.click(duration('始终允许'));
-      await user.click(allow('始终允许'));
-      passSettleInterval();
-      await user.click(button('取消'));
-
+      // No second question: the folder is asked about once and remembered.
       expect(screen.queryByText('确定始终允许？这将永久记住此授权。')).toBeNull();
-      expect(calls.onAllow).not.toHaveBeenCalled();
-      expect(calls.onDeny).not.toHaveBeenCalled();
-      expect(buttonNames()).toContain('拒绝');
-
-      // The question is asked again the next time.
-      passSettleInterval();
-      await user.click(allow('始终允许'));
-      expect(calls.onAllow).not.toHaveBeenCalled();
-      expect(screen.getByText('确定始终允许？这将永久记住此授权。')).toBeInTheDocument();
     });
 
-    it('grants the duration that is chosen when 「确认」 is pressed, also after the choice moved off 「始终允许」', async () => {
+    it('allows until the app is quit when that is chosen', async () => {
       const user = userEvent.setup();
       const calls = open(request);
+      await user.click(duration('直到关闭应用'));
+      expect(calls.onAllow).not.toHaveBeenCalled();
+      await user.click(allow('允许到关闭应用'));
+      expect(calls.onAllow.mock.calls).toEqual([['session']]);
+      expect(calls.onDeny).not.toHaveBeenCalled();
+    });
+
+    it('grants the duration chosen last', async () => {
+      const user = userEvent.setup();
+      const calls = open(request);
+      await user.click(duration('直到关闭应用'));
       await user.click(duration('始终允许'));
       await user.click(allow('始终允许'));
-      passSettleInterval();
-      await user.click(duration('本次会话'));
-      await user.click(button('确认'));
-      expect(calls.onAllow.mock.calls).toEqual([['session']]);
+      expect(calls.onAllow.mock.calls).toEqual([['always']]);
     });
 
     it('denies from 「拒绝」, once', async () => {
@@ -159,16 +114,6 @@ describe('path and folder grants: what each control answers', () => {
     it('denies once on Escape and never allows', async () => {
       const calls = open(request);
       await userEvent.setup().keyboard('{Escape}');
-      expect(calls.onDeny).toHaveBeenCalledTimes(1);
-      expect(granted(calls)).toEqual([]);
-    });
-
-    it('denies on Escape while it asks about a grant for good, and grants nothing', async () => {
-      const user = userEvent.setup();
-      const calls = open(request);
-      await user.click(duration('始终允许'));
-      await user.click(allow('始终允许'));
-      await user.keyboard('{Escape}');
       expect(calls.onDeny).toHaveBeenCalledTimes(1);
       expect(granted(calls)).toEqual([]);
     });
@@ -212,11 +157,11 @@ describe('path and folder grants: what each control answers', () => {
       expect(screen.getByText(FOLDER)).toBeInTheDocument();
     });
 
-    it('allows for the session from its default and denies from 「拒绝」', async () => {
+    it('allows for good from its default and denies from 「拒绝」', async () => {
       const user = userEvent.setup();
       const calls = open({ type, path: FOLDER });
-      await user.click(allow('允许本次会话'));
-      expect(calls.onAllow.mock.calls).toEqual([['session']]);
+      await user.click(allow('始终允许'));
+      expect(calls.onAllow.mock.calls).toEqual([['always']]);
       await user.click(button('拒绝'));
       expect(calls.onDeny).toHaveBeenCalledTimes(1);
     });
@@ -327,7 +272,6 @@ describe('path and folder grants as an approval layer', () => {
   const approval = (name: string) => screen.getByRole('alertdialog', { name });
   const radio = (name: string) => screen.getByRole('radio', { name });
   const checked = () => screen.getAllByRole('radio').filter((item) => item.getAttribute('aria-checked') === 'true').map((item) => item.textContent);
-  const CONFIRM_WORDS = '确定始终允许？这将永久记住此授权。';
 
   it('is an alert dialog named by its title and described by its explanation, with a named close button', () => {
     open(fileWrite);
@@ -421,17 +365,17 @@ describe('path and folder grants as an approval layer', () => {
       seen.push(document.activeElement?.textContent || document.activeElement?.getAttribute('aria-label') || null);
     }
     // From 「拒绝」: the allowing button, the corner button, the chosen duration, and round again.
-    expect(seen).toEqual(['允许本次会话', '关闭', '本次会话', '拒绝', '允许本次会话']);
+    expect(seen).toEqual(['始终允许', '关闭', '始终允许', '拒绝', '始终允许']);
   });
 
   describe('the duration', () => {
-    it('is four radio buttons under the name of the choice, with the session chosen', () => {
+    it('is two radio buttons under the name of the choice, with the grant for good chosen', () => {
       open(fileWrite);
       const group = screen.getByRole('group', { name: '授权时效' });
       expect(Array.from(group.querySelectorAll('[role="radio"]')).map((item) => item.textContent))
-        .toEqual(['仅本次', '本次会话', '24小时内', '始终允许']);
+        .toEqual(['始终允许', '直到关闭应用']);
       expect(screen.getByText('授权时效')).toBeInTheDocument();
-      expect(checked()).toEqual(['本次会话']);
+      expect(checked()).toEqual(['始终允许']);
     });
 
     it('fills the width of the window, each duration on one line', () => {
@@ -456,25 +400,20 @@ describe('path and folder grants as an approval layer', () => {
       const calls = open(fileWrite);
       // Shift+Tab from 「拒绝」 reaches the chosen duration.
       await user.tab({ shift: true });
-      expect(radio('本次会话')).toHaveFocus();
-
-      await user.keyboard('{ArrowRight}');
-      expect(radio('24小时内')).toHaveFocus();
-      await user.keyboard('{ArrowRight}');
       expect(radio('始终允许')).toHaveFocus();
-      await user.keyboard('{ArrowDown}');
-      expect(radio('仅本次')).toHaveFocus();
-      await user.keyboard('{ArrowLeft}{ArrowUp}{End}{Home}');
-      expect(radio('仅本次')).toHaveFocus();
 
-      expect(checked()).toEqual(['本次会话']);
-      expect(screen.queryByText(CONFIRM_WORDS)).toBeNull();
+      await user.keyboard('{ArrowRight}');
+      expect(radio('直到关闭应用')).toHaveFocus();
+      await user.keyboard('{ArrowLeft}{End}{Home}');
+      expect(radio('始终允许')).toHaveFocus();
+
+      expect(checked()).toEqual(['始终允许']);
       expect(granted(calls)).toEqual([]);
       expect(calls.onDeny).not.toHaveBeenCalled();
 
       // The allowing button still grants what was chosen before the arrow keys.
-      await user.click(allow('允许本次会话'));
-      expect(calls.onAllow.mock.calls).toEqual([['session']]);
+      await user.click(allow('始终允许'));
+      expect(calls.onAllow.mock.calls).toEqual([['always']]);
     });
 
     it.each([['Space', ' '], ['Enter', '{Enter}']] as const)('chooses the focused duration on %s, which grants nothing', async (_name, key) => {
@@ -483,127 +422,52 @@ describe('path and folder grants as an approval layer', () => {
       await user.tab({ shift: true });
       await user.keyboard('{ArrowRight}');
       await user.keyboard(key);
-      expect(checked()).toEqual(['24小时内']);
-      expect(allow('允许24小时')).toBeInTheDocument();
+      expect(checked()).toEqual(['直到关闭应用']);
+      expect(allow('允许到关闭应用')).toBeInTheDocument();
       expect(granted(calls)).toEqual([]);
       expect(calls.onDeny).not.toHaveBeenCalled();
 
       // Pressing the chosen one again leaves it chosen.
       await user.keyboard(key);
-      expect(checked()).toEqual(['24小时内']);
-      expect(granted(calls)).toEqual([]);
-    });
-
-    it('chooses a grant for good from the keyboard without granting it: the allowing button still asks', async () => {
-      const user = userEvent.setup();
-      const calls = open(fileWrite);
-      await user.tab({ shift: true });
-      await user.keyboard('{End}{Enter}');
-      expect(checked()).toEqual(['始终允许']);
-      expect(screen.queryByText(CONFIRM_WORDS)).toBeNull();
+      expect(checked()).toEqual(['直到关闭应用']);
       expect(granted(calls)).toEqual([]);
     });
   });
 
   describe('a grant for good', () => {
-    async function askForGood(user: ReturnType<typeof userEvent.setup>) {
-      const calls = open(fileWrite);
-      await user.click(radio('始终允许'));
-      await user.click(allow('始终允许'));
-      expect(screen.getByText(CONFIRM_WORDS)).toBeInTheDocument();
-      return calls;
-    }
-
-    it('moves the focus to 「取消」 when it asks: the button that would grant for good does not hold it', async () => {
-      const user = userEvent.setup();
-      const calls = await askForGood(user);
-      expect(button('取消')).toHaveFocus();
-      expect(button('确认')).not.toHaveFocus();
-      expect(calls.onAllow).not.toHaveBeenCalled();
-    });
-
-    it('grants nothing on Enter or Space pressed while it asks: the question is taken back', async () => {
-      const user = userEvent.setup();
-      const calls = await askForGood(user);
-      await user.keyboard('{Enter}');
-      expect(screen.queryByText(CONFIRM_WORDS)).toBeNull();
-      expect(calls.onAllow).not.toHaveBeenCalled();
-      expect(calls.onDeny).not.toHaveBeenCalled();
-      // The same button reads 「拒绝」 again and keeps the focus: the next press denies.
-      expect(button('拒绝')).toHaveFocus();
-      await user.keyboard(' ');
-      expect(calls.onDeny).toHaveBeenCalledTimes(1);
-      expect(calls.onAllow).not.toHaveBeenCalled();
-    });
-
-    it('asks from the keyboard as well: Enter on the allowing button grants nothing and the focus leaves it', async () => {
-      const user = userEvent.setup();
-      const calls = open(fileWrite);
-      await user.click(radio('始终允许'));
-      allow('始终允许').focus();
-      await user.keyboard('{Enter}');
-      expect(screen.getByText(CONFIRM_WORDS)).toBeInTheDocument();
-      expect(button('取消')).toHaveFocus();
-      await user.keyboard('{Enter}');
-      await user.keyboard('{Enter}');
-      expect(calls.onAllow).not.toHaveBeenCalled();
-    });
-
-    it('grants for good from a press on 「确认」, reached on purpose', async () => {
-      const user = userEvent.setup();
-      const calls = await askForGood(user);
-      await user.tab();
-      expect(button('确认')).toHaveFocus();
-      await user.keyboard('{Enter}');
-      expect(calls.onAllow.mock.calls).toEqual([['always']]);
-      expect(calls.onDeny).not.toHaveBeenCalled();
-    });
-
-    // The allowing button turns into 「确认」 at the same spot. The second press of a double
-    // press on it arrives before anyone could read what the button now says.
-    it('grants nothing for good with the second press of a double press on the allowing button, and takes a press on 「确认」 made after it could be read', async () => {
-      const user = userEvent.setup();
-      const calls = open(fileWrite);
-      await user.click(radio('始终允许'));
+    it('takes no pointer press made while the window was still settling, and takes one made after', () => {
+      const calls = { onAllow: vi.fn(), onDeny: vi.fn() };
+      renderBare(<PermissionDialog request={fileWrite} {...calls} />, { wrapper: DesignSystemProvider });
       fireEvent.pointerDown(allow('始终允许'));
       fireEvent.click(allow('始终允许'), { detail: 1 });
-      expect(screen.getByText(CONFIRM_WORDS)).toBeInTheDocument();
-      expect(screen.getByRole('alertdialog')).toHaveAttribute('data-ds-settling', '');
-      fireEvent.pointerDown(button('确认'));
-      fireEvent.click(button('确认'), { detail: 2 });
       expect(calls.onAllow).not.toHaveBeenCalled();
-      expect(screen.getByText(CONFIRM_WORDS)).toBeInTheDocument();
-      expect(button('取消')).toHaveFocus();
 
       passSettleInterval();
-      fireEvent.pointerDown(button('确认'));
-      fireEvent.click(button('确认'), { detail: 1 });
+      fireEvent.pointerDown(allow('始终允许'));
+      fireEvent.click(allow('始终允许'), { detail: 1 });
       expect(calls.onAllow.mock.calls).toEqual([['always']]);
       expect(calls.onDeny).not.toHaveBeenCalled();
     });
 
-    it('asks in an alert, and keeps one filled button', async () => {
-      await askForGood(userEvent.setup());
-      expect(screen.getByRole('alert')).toHaveTextContent(CONFIRM_WORDS);
-      expect(screen.getByRole('alert')).toHaveClass('bg-danger-soft');
-      expect(button('确认')).toHaveClass('bg-emphasis');
-      expect(button('取消')).not.toHaveClass('bg-emphasis');
+    it('is never given by Enter or Space pressed as the window appears: the focus is on 「拒绝」', async () => {
+      const user = userEvent.setup();
+      const calls = open(fileWrite);
+      await user.keyboard('{Enter}');
+      expect(calls.onAllow).not.toHaveBeenCalled();
+      expect(calls.onDeny).toHaveBeenCalledTimes(1);
     });
   });
 
   describe('a window per request', () => {
-    it('starts again for another path: the default duration, no question about a grant for good, the focus on 「拒绝」', async () => {
+    it('starts again for another path: the default duration and the focus on 「拒绝」', async () => {
       const user = userEvent.setup();
       const calls = open(fileWrite);
-      await user.click(radio('始终允许'));
-      await user.click(allow('始终允许'));
-      await user.tab();
-      expect(button('确认')).toHaveFocus();
+      await user.click(radio('直到关闭应用'));
+      allow('允许到关闭应用').focus();
 
       calls.view.rerender(<PermissionDialog request={{ type: 'file-write', path: '/fake/elsewhere/report.txt' }} {...calls} />);
       expect(screen.getByText('/fake/elsewhere/report.txt')).toBeInTheDocument();
-      expect(screen.queryByText(CONFIRM_WORDS)).toBeNull();
-      expect(checked()).toEqual(['本次会话']);
+      expect(checked()).toEqual(['始终允许']);
       expect(button('拒绝')).toHaveFocus();
 
       await user.keyboard('{Enter}');
@@ -614,11 +478,11 @@ describe('path and folder grants as an approval layer', () => {
     it('starts again for another kind of grant on the same path', async () => {
       const user = userEvent.setup();
       const calls = open({ type: 'file-read', path: FOLDER });
-      await user.click(radio('仅本次'));
-      allow('允许本次').focus();
+      await user.click(radio('直到关闭应用'));
+      allow('允许到关闭应用').focus();
 
       calls.view.rerender(<PermissionDialog request={{ type: 'file-write', path: FOLDER }} {...calls} />);
-      expect(checked()).toEqual(['本次会话']);
+      expect(checked()).toEqual(['始终允许']);
       expect(button('拒绝')).toHaveFocus();
       expect(granted(calls)).toEqual([]);
     });
@@ -626,9 +490,9 @@ describe('path and folder grants as an approval layer', () => {
     it('keeps its state while the same request is rendered again', async () => {
       const user = userEvent.setup();
       const calls = open(fileWrite);
-      await user.click(radio('仅本次'));
+      await user.click(radio('直到关闭应用'));
       calls.view.rerender(<PermissionDialog request={{ type: 'file-write', path: FILE }} {...calls} />);
-      expect(checked()).toEqual(['仅本次']);
+      expect(checked()).toEqual(['直到关闭应用']);
     });
   });
 
@@ -654,7 +518,7 @@ describe('path and folder grants as an approval layer', () => {
     });
 
     it.each([
-      ['a file write grant', fileWrite, '允许本次会话'],
+      ['a file write grant', fileWrite, '始终允许'],
       ['a workspace request that names a folder', namedFolder, '允许访问'],
       ['a workspace request that names no folder', noFolder, '选择文件夹'],
     ] as const)('has one filled button: %s', (_name, request, name) => {

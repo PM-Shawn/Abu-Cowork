@@ -1,7 +1,8 @@
 import { useState, useCallback, useSyncExternalStore } from 'react';
 import { useSettingsStore } from '@/stores/settingsStore';
+import { usePermissionStore } from '@/stores/permissionStore';
 import type { PermissionMode } from '@/core/permissions/permissionMode';
-import { getAuthorizedWritablePaths, revokeWorkspace } from '@/core/tools/pathSafety';
+import { getAuthorizedWritablePaths } from '@/core/tools/pathSafety';
 import { useI18n } from '@/i18n';
 import { isWindows } from '@/utils/platform';
 import { IconButton } from '@/components/ds/button';
@@ -357,7 +358,8 @@ function AuthorizedPathsList() {
             icon={AppIcons.delete}
             label={t.sandbox.revoke}
             onClick={() => {
-              revokeWorkspace(path);
+              // The stored grant too, or it is authorized again at the next start.
+              usePermissionStore.getState().revokePermission(path);
               notifyPathsChanged();
             }}
           />

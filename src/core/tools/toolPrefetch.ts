@@ -53,7 +53,7 @@ export const BUILTIN_BROWSER_TOOL_SUFFIXES = [...BROWSER_TOOL_SUFFIXES, 'list_ta
 const BUILTIN_BROWSER_TOOLS = BUILTIN_BROWSER_TOOL_SUFFIXES.map(
   (name) => `abu-browser__${name}`,
 );
-const CHROME_BRIDGE_TOOLS = BROWSER_TOOL_SUFFIXES.map(
+const CHROME_BRIDGE_TOOLS = [...BROWSER_TOOL_SUFFIXES, 'create_tab', 'close_tab'].map(
   (name) => `abu-browser-bridge__${name}`,
 );
 

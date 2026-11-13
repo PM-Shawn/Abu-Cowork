@@ -237,6 +237,19 @@ function browserToolNameOf(namespacedName: string): string | null {
   return BROWSER_SERVER_NAMES.has(parsed.serverName) ? parsed.toolName : null;
 }
 
+/**
+ * Tools that open, keep or close a page without acting on it. They are
+ * `'interactive'` (they move the browser), but going to an address is not an
+ * action taken on the site: a bank or a government page opened and read asks
+ * nothing, while a click or a fill there does (`registry.ts`).
+ */
+const NAVIGATION_TOOLS = new Set(['navigate', 'create_tab', 'close_tab', 'retain_tab']);
+
+export function navigatesOnly(namespacedName: string): boolean {
+  const toolName = browserToolNameOf(namespacedName);
+  return toolName !== null && NAVIGATION_TOOLS.has(toolName);
+}
+
 export function isScriptingBrowserTool(namespacedName: string): boolean {
   const toolName = browserToolNameOf(namespacedName);
   if (toolName === null) return false;

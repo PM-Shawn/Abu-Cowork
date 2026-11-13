@@ -100,7 +100,7 @@ export type BrowserSignalEvent =
    * empty. The read is allowed anyway (a human is watching it, and failing
    * closed on a screenshot would break the path that runs constantly), so
    * without this event the miss would leave no trace at all — the gate hands
-   * `evaluateBrowserGate` a `'default'` verdict, which cannot say whether it
+   * `evaluateBrowserPermissionGate` a `'default'` verdict, which cannot say whether it
    * means "not blocked" or "could not check".
    *
    * Carries no origin, because there is none — that is the whole event.

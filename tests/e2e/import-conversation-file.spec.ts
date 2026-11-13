@@ -46,22 +46,22 @@ test.afterEach(async () => {
   senderFolder = undefined;
 });
 
-test('a conversation file is imported without its workspace, and a read under that folder asks first', async () => {
+test('a conversation file is imported without its workspace, and a write under that folder asks first', async () => {
   test.setTimeout(180_000);
   // A folder under the user's Documents stands in for the folder the file
-  // names: outside every always-allowed location, so a read there needs a grant.
+  // names: outside every always-allowed location, so a write there needs a grant
+  // (a read would not ask: reading never opens a dialog).
   senderFolder = fs.mkdtempSync(path.join(os.homedir(), 'Documents', 'abu-e2e-imported-'));
   const targetFile = path.join(senderFolder, 'notes.txt');
-  fs.writeFileSync(targetFile, 'from the sender\n');
 
   mock = await startOpenAiMock([
     {
       kind: 'tool-call',
-      toolName: 'read_file',
-      toolCallId: `call-read-imported-${randomUUID()}`,
-      arguments: { path: targetFile },
+      toolName: 'write_file',
+      toolCallId: `call-write-imported-${randomUUID()}`,
+      arguments: { path: targetFile, content: 'from the receiver\n' },
     },
-    { kind: 'complete', responseText: `imported read complete ${randomUUID()}` },
+    { kind: 'complete', responseText: `imported write complete ${randomUUID()}` },
   ]);
 
   dataRoot = createElectronDataRoot();
@@ -98,10 +98,10 @@ test('a conversation file is imported without its workspace, and a read under th
 
   const input = page.getByPlaceholder(CHAT_PLACEHOLDER);
   await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
-  await input.fill(`read the notes ${randomUUID()}`);
+  await input.fill(`write the notes ${randomUUID()}`);
   await input.press('Enter');
 
-  await expect(page.getByRole('heading', { name: /^(文件读取权限|File Read Permission)$/ })).toBeVisible({
+  await expect(page.getByRole('heading', { name: /^(文件写入权限|File Write Permission)$/ })).toBeVisible({
     timeout: READY_TIMEOUT,
   });
   // The grant is asked for the top-level folder of the request, under the user's Documents.
@@ -113,5 +113,5 @@ test('a conversation file is imported without its workspace, and a read under th
   const toolResult = secondRequest.messages?.find((message) => message.role === 'tool');
   expect(toolResult).toBeDefined();
   expect(String(toolResult?.content)).toMatch(/用户拒绝|denied/i);
-  expect(String(toolResult?.content)).not.toContain('from the sender');
+  expect(fs.existsSync(targetFile)).toBe(false);
 });

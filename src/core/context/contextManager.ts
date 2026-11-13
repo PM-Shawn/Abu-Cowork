@@ -17,6 +17,7 @@ import type { Message, ToolResultContent } from '../../types';
 import { estimateTokens, estimateMessageTokens } from './tokenEstimator';
 import { getMessageText } from './contextUtils';
 import { createLogger } from '../logging/logger';
+import { dropOldImages } from '../llm/imageBudget';
 
 const logger = createLogger('contextManager');
 
@@ -81,117 +82,14 @@ function getMaxScreenshots(usagePercent?: number): number {
 }
 
 /**
- * Tell the model, in the text it actually receives, that this tool call's
- * screenshots were dropped from history. Count comes from the recorded result,
- * so the same history always renders the same string.
- *
- * Silent when the call had no images.
- */
-function appendScreenshotRemovedNote(result: string | undefined, imageCount: number): string {
-  if (imageCount <= 0) return result ?? '';
-  const note = `[${imageCount} screenshot(s) removed from history to save context]`;
-  return result === undefined || result === '' ? note : `${result}\n\n${note}`;
-}
-
-/**
- * Strip old screenshot images from messages, keeping only the N most recent.
- * This prevents context overflow from accumulated screenshot base64 data.
- * Modifies messages in-place for efficiency (called before LLM send).
+ * Keep the screenshots of only the newest few tool calls, by context usage
+ * (the one pass that thins old pictures is `dropOldImages`, which also bounds
+ * their bytes at send time and leaves one stand-in note for both).
  *
  * @param usagePercent - optional context usage percent for dynamic retention
  */
 export function trimOldScreenshots(messages: Message[], usagePercent?: number): Message[] {
-  const maxScreenshots = getMaxScreenshots(usagePercent);
-  // Collect all screenshot image locations (message index + tool_call id).
-  // `toolCallsForContext` is completion-ordered, so its indices cannot be used.
-  const imageLocations: { msgIdx: number; tcIdx: number; toolCallId: string }[] = [];
-
-  for (let i = 0; i < messages.length; i++) {
-    const msg = messages[i];
-    if (msg.role !== 'assistant' || !msg.toolCalls) continue;
-    for (let j = 0; j < msg.toolCalls.length; j++) {
-      const tc = msg.toolCalls[j];
-      // Subagent-recorded entries never reach the LLM (no toolCallsForContext
-      // counterpart), so they neither count against the screenshot budget nor
-      // need stripping — and skipping them keeps the tcIdx↔toolCallsForContext
-      // index sharing below aligned on real entries only.
-      if (tc.fromSubagent) continue;
-      if (tc.resultContent && Array.isArray(tc.resultContent) && tc.resultContent.some((b: ToolResultContent) => b.type === 'image')) {
-        imageLocations.push({ msgIdx: i, tcIdx: j, toolCallId: tc.id });
-      }
-    }
-  }
-
-  if (imageLocations.length <= maxScreenshots) return messages;
-
-  // Strip images from older screenshots, keep only the most recent N
-  const toStrip = imageLocations.slice(0, -maxScreenshots);
-  const result = messages.map((msg, i) => {
-    const strippedToolCallIds = new Set(
-      toStrip.filter(loc => loc.msgIdx === i).map(loc => loc.toolCallId),
-    );
-    const strippedTcIndices = new Set(
-      toStrip.filter(loc => loc.msgIdx === i).map(loc => loc.tcIdx),
-    );
-    if (strippedTcIndices.size === 0) return msg;
-
-    // Clone message and strip images from old tool calls.
-    //
-    // The note goes on `result`, NOT into resultContent. normalizeMessages
-    // builds the `tool` wire message from the `result` string and reads
-    // resultContent only through extractImages, so a text block placed there
-    // reaches nobody. That mattered here more than anywhere: computer-use
-    // results carry "Examine the screenshot to verify the action result" in
-    // their text, and that instruction survives untouched — so dropping the
-    // image without a reachable note left the model told to inspect a picture
-    // that was no longer in the request.
-    //
-    // Codex does the same thing structurally: its normalize pass swaps
-    // InputImage for InputText **in place**, inside the content items that ARE
-    // the wire, so the notice sits exactly where the picture was. (Where it
-    // instead drops a whole message group, as compaction does, no note is
-    // needed — nothing is left dangling.)
-    const newToolCalls = msg.toolCalls!.map((tc, j) => {
-      if (!strippedTcIndices.has(j)) return tc;
-      const textParts = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'text') || [];
-      const imageCount = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'image').length || 0;
-      return {
-        ...tc,
-        result: appendScreenshotRemovedNote(tc.result, imageCount),
-        resultContent: textParts,
-      };
-    });
-
-    // Also strip from toolCallsForContext if present — this is the canonical
-    // send representation when set, so it is the one that must carry the note.
-    // Old persisted entries predate tool_use ids. Do not risk trimming the
-    // wrong completion-order call: retain every context image for this message.
-    const hasToolUseId = (toolCall: { id?: string }) =>
-      typeof toolCall.id === 'string' && toolCall.id.length > 0;
-    const canMatchContextCalls = msg.toolCallsForContext
-      && msg.toolCalls!.every(hasToolUseId)
-      && msg.toolCallsForContext.every(hasToolUseId);
-    const newToolCallsForContext = canMatchContextCalls
-      ? msg.toolCallsForContext?.map((tc) => {
-        if (!strippedToolCallIds.has(tc.id!)) return tc;
-        const textParts = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'text') || [];
-        const imageCount = tc.resultContent?.filter((b: ToolResultContent) => b.type === 'image').length || 0;
-        return {
-          ...tc,
-          result: appendScreenshotRemovedNote(tc.result, imageCount),
-          resultContent: textParts,
-        };
-      })
-      : msg.toolCallsForContext;
-
-    if (msg.toolCallsForContext && !canMatchContextCalls) {
-      logger.info('Skipped trimming tool call context without tool_use ids', { messageId: msg.id });
-    }
-
-    return { ...msg, toolCalls: newToolCalls, toolCallsForContext: newToolCallsForContext || msg.toolCallsForContext };
-  });
-
-  return result;
+  return dropOldImages(messages, { keepToolCalls: getMaxScreenshots(usagePercent) });
 }
 
 /**

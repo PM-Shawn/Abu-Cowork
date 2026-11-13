@@ -29,6 +29,7 @@ import { useSettingsStore, PROVIDER_CONFIGS } from '@/stores/settingsStore';
 import { useDiscoveredCapsStore } from '@/stores/discoveredCapabilitiesStore';
 import { resolveCapabilities } from '@/core/llm/modelCapabilities';
 import { resolveRequestBudget } from '@/core/llm/requestBudget';
+import { resolveModelDeclared } from '@/core/llm/resolveModelDeclared';
 import { getI18n, setLanguage } from '@/i18n';
 import type { ProviderInstance } from '@/types/provider';
 
@@ -2035,6 +2036,192 @@ describe('AddProviderModal — behaviour pins', () => {
           ],
         })],
       ]);
+    });
+  });
+
+  // 思考强度 is offered for every provider. A curated built-in such as DeepSeek has no advanced
+  // section, so each model picked from its list carries its own control, and the pick is stored on
+  // that model alone: the rest of the advanced fields stay hidden and undeclared.
+  describe('thinking effort on a built-in provider', () => {
+    const FLASH = 'DeepSeek V4.1 Flash';
+    const PRO = 'DeepSeek V4 Pro';
+    /** DeepSeek documents its default (thinking on, effort high), so 「默认」 reads 「默认（高）」. */
+    const defaultHigh = () =>
+      `${t().settings.thinkingEffortDefault}${t().settings.thinkingEffortDefaultIs.replace('{effort}', t().settings.effortHigh)}`;
+    const effortSelect = (model: string) =>
+      screen.getByRole('combobox', { name: `${model} ${t().settings.capThinkingEffort}` });
+    const queryEffortSelect = (model: string) =>
+      screen.queryByRole('combobox', { name: `${model} ${t().settings.capThinkingEffort}` });
+    async function chooseEffort(model: string, label: string) {
+      await userEvent.click(effortSelect(model));
+      await userEvent.click(screen.getByRole('option', { name: label }));
+    }
+    /** Opens the model list, ticks the given models, and leaves the list open as the app does. */
+    function tick(...labels: string[]) {
+      fireEvent.click(screen.getByRole('button', { name: t().settings.selectModel }));
+      for (const label of labels) fireEvent.click(screen.getByRole('checkbox', { name: label }));
+    }
+    function startDeepSeek() {
+      seed([seededDeepSeek]);
+      const view = open();
+      ui.pickProvider('DeepSeek');
+      fireEvent.change(ui.keyInput(), { target: { value: FAKE_KEY } });
+      return view;
+    }
+    const savedModels = () => useSettingsStore.getState().providers.find((p) => p.id === 'deepseek')!.models;
+
+    it('shows no control until a model is picked, then one per picked model, named after it', () => {
+      startDeepSeek();
+      expect(screen.queryByRole('combobox', { name: new RegExp(t().settings.capThinkingEffort) })).not.toBeInTheDocument();
+
+      tick(FLASH);
+      expect(effortSelect(FLASH)).toHaveTextContent(t().settings.thinkingEffortDefault);
+      expect(queryEffortSelect(PRO)).not.toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('checkbox', { name: PRO }));
+      expect(effortSelect(PRO)).toHaveTextContent(t().settings.thinkingEffortDefault);
+
+      fireEvent.click(screen.getByRole('checkbox', { name: FLASH }));
+      expect(queryEffortSelect(FLASH)).not.toBeInTheDocument();
+    });
+
+    it('keeps the other advanced fields hidden exactly as before', () => {
+      startDeepSeek();
+      tick(FLASH);
+
+      expect(screen.queryByText(t().settings.advancedConfig)).not.toBeInTheDocument();
+      expect(screen.queryByRole('checkbox', { name: t().settings.capTools })).not.toBeInTheDocument();
+      expect(screen.queryByRole('checkbox', { name: t().settings.capReasoning })).not.toBeInTheDocument();
+      expect(screen.queryByText(t().settings.capRawUrl)).not.toBeInTheDocument();
+      expect(screen.queryByText(t().settings.capContextLength)).not.toBeInTheDocument();
+    });
+
+    it('offers 默认 / 关闭 / 低 / 高 / 最高', async () => {
+      startDeepSeek();
+      tick(FLASH);
+      await userEvent.click(effortSelect(FLASH));
+      expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+        defaultHigh(), t().settings.thinkingEffortOff, t().settings.effortLow,
+        t().settings.effortHigh, t().settings.thinkingEffortMax,
+      ]);
+    });
+
+    it('says what 默认 means for DeepSeek: 默认（高）, shown on the closed control too', () => {
+      startDeepSeek();
+      tick(FLASH);
+      expect(effortSelect(FLASH)).toHaveTextContent(defaultHigh());
+    });
+
+    it('saves the pick on that model, nothing else declared, and it reaches the request resolution', async () => {
+      startDeepSeek();
+      tick(FLASH);
+      await chooseEffort(FLASH, t().settings.thinkingEffortMax);
+      expect(effortSelect(FLASH)).toHaveTextContent(t().settings.thinkingEffortMax);
+      ui.save();
+
+      expect(log).toEqual([
+        ['updateProvider', 'deepseek', expect.objectContaining({
+          models: [toModelInfo('deepseek-flash', { declaredCapabilities: { thinkingEffort: 'max' } })],
+          // Provider level stays undeclared: the pick belongs to the model.
+          declaredCapabilities: undefined,
+        })],
+        ['selectModel', 'deepseek', 'deepseek-flash'],
+      ]);
+      // Persisted with the model in the store, and resolved for the request the way the agent loop does it.
+      expect(savedModels()[0].declaredCapabilities).toEqual({ thinkingEffort: 'max' });
+      const provider = useSettingsStore.getState().providers.find((p) => p.id === 'deepseek');
+      expect(resolveModelDeclared(provider, 'deepseek-flash')?.thinkingEffort).toBe('max');
+    });
+
+    it('stores each model\'s own pick', async () => {
+      startDeepSeek();
+      tick(FLASH, PRO);
+      await chooseEffort(FLASH, t().settings.thinkingEffortOff);
+      await chooseEffort(PRO, t().settings.effortLow);
+      ui.save();
+
+      expect(savedModels().map((m) => [m.id, m.declaredCapabilities])).toEqual([
+        ['deepseek-flash', { thinkingEffort: 'off' }],
+        ['deepseek-v4-pro', { thinkingEffort: 'low' }],
+      ]);
+    });
+
+    it('declares nothing for a model left on 默认, as before the setting existed', async () => {
+      startDeepSeek();
+      tick(FLASH, PRO);
+      await chooseEffort(PRO, t().settings.effortHigh);
+      ui.save();
+
+      expect(savedModels().map((m) => [m.id, m.declaredCapabilities])).toEqual([
+        ['deepseek-flash', undefined],
+        ['deepseek-v4-pro', { thinkingEffort: 'high' }],
+      ]);
+      expect('declaredCapabilities' in savedModels()[0]).toBe(false);
+    });
+
+    it('goes back to declaring nothing when the pick is changed back to 默认', async () => {
+      startDeepSeek();
+      tick(FLASH);
+      await chooseEffort(FLASH, t().settings.effortHigh);
+      await chooseEffort(FLASH, defaultHigh());
+      ui.save();
+
+      expect('declaredCapabilities' in savedModels()[0]).toBe(false);
+      expect(log[0]).toEqual(['updateProvider', 'deepseek', expect.objectContaining({ models: [toModelInfo('deepseek-flash')] })]);
+    });
+
+    it('counts a pick as unsaved input', async () => {
+      startDeepSeek();
+      tick(FLASH);
+      await chooseEffort(FLASH, t().settings.thinkingEffortOff);
+      expect(windowRenders.dialogs.at(-1)?.dirty).toBe(true);
+    });
+
+    describe('when editing the saved provider', () => {
+      const pickedProvider = (): ProviderInstance => ({
+        ...seededDeepSeek,
+        enabled: true,
+        apiKey: FAKE_KEY,
+        userAdded: true,
+        models: [
+          { id: 'deepseek-flash', label: FLASH, declaredCapabilities: { thinkingEffort: 'max' } },
+          { id: 'deepseek-v4-pro', label: PRO },
+        ],
+      });
+
+      it('shows the saved pick and keeps it when saved unchanged', () => {
+        const provider = pickedProvider();
+        seed([provider], 'deepseek');
+        open(provider);
+
+        expect(effortSelect(FLASH)).toHaveTextContent(t().settings.thinkingEffortMax);
+        expect(effortSelect(PRO)).toHaveTextContent(t().settings.thinkingEffortDefault);
+        ui.save();
+
+        expect(savedModels().map((m) => m.declaredCapabilities)).toEqual([{ thinkingEffort: 'max' }, undefined]);
+      });
+
+      it('changes the saved pick', async () => {
+        const provider = pickedProvider();
+        seed([provider], 'deepseek');
+        open(provider);
+
+        await chooseEffort(FLASH, t().settings.thinkingEffortOff);
+        ui.save();
+
+        expect(savedModels()[0].declaredCapabilities).toEqual({ thinkingEffort: 'off' });
+      });
+
+      it('drops a stale advanced declaration on save, as a save always did for a built-in', () => {
+        const provider = pickedProvider();
+        provider.models[1] = { id: 'deepseek-v4-pro', label: PRO, declaredCapabilities: { supportsTools: false, thinkingEffort: 'low' } };
+        seed([provider], 'deepseek');
+        open(provider);
+        ui.save();
+
+        // Only the effort is the built-in model's to declare.
+        expect(savedModels()[1].declaredCapabilities).toEqual({ thinkingEffort: 'low' });
+      });
     });
   });
 

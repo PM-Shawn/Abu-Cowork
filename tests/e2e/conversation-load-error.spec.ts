@@ -25,6 +25,7 @@ import {
   type ElectronDataRoot,
   type LaunchedApp,
 } from './electronHelpers';
+import { answerTitleRequest } from './openAiMock';
 
 const READY_TIMEOUT = 45_000;
 const PROMPT = 'E2E记录读取任务';
@@ -52,6 +53,8 @@ async function startMock() {
     let raw = '';
     for await (const part of req) raw += part;
     const body = JSON.parse(raw || '{}') as { messages?: MockMessage[] };
+    // The title call that follows a first reply is not a task turn (src/core/session/titleGen.ts).
+    if (answerTitleRequest(body, res)) return;
     const lastUser = (body.messages ?? []).filter((m) => m.role === 'user').at(-1);
     const reply = lastUser && textOf(lastUser).includes(OTHER_PROMPT) ? OTHER_REPLY : REPLY;
     res.writeHead(200, { 'content-type': 'text/event-stream' });

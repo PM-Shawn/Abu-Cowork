@@ -306,6 +306,11 @@ const drainSystemQueuedInputsMock = vi.fn().mockReturnValue([]);
 const pauseUserInputQueueMock = vi.fn();
 const dequeueNextUserInputMock = vi.fn().mockReturnValue(undefined);
 const restoreDequeuedUserInputMock = vi.fn();
+const takeSteeringInputsNowMock = vi.fn().mockReturnValue([]);
+const restoreSteeringInputsMock = vi.fn();
+const beginSteeringRunMock = vi.fn();
+const endSteeringRunMock = vi.fn();
+const requeueUserInputMock = vi.fn();
 let capturedQueueCb: (() => void) | undefined;
 const queueUnsubMock = vi.fn();
 const subscribeToInputQueueMock = vi.fn((cb: () => void) => {
@@ -320,7 +325,13 @@ vi.mock('./userInputQueue', () => ({
   pauseUserInputQueue: (...a: unknown[]) => pauseUserInputQueueMock(...a),
   dequeueNextUserInput: (...a: unknown[]) => dequeueNextUserInputMock(...a),
   restoreDequeuedUserInput: (...a: unknown[]) => restoreDequeuedUserInputMock(...a),
+  requeueUserInput: (...a: unknown[]) => requeueUserInputMock(...a),
   subscribeToInputQueue: (...a: [() => void]) => subscribeToInputQueueMock(...a),
+  takeSteeringInputsNow: (...a: unknown[]) => takeSteeringInputsNowMock(...a),
+  restoreSteeringInputs: (...a: unknown[]) => restoreSteeringInputsMock(...a),
+  beginSteeringRun: (...a: unknown[]) => beginSteeringRunMock(...a),
+  endSteeringRun: (...a: unknown[]) => endSteeringRunMock(...a),
+  steeredMessageId: (id: string) => `steer-${id}`,
 }));
 
 vi.mock('./subagentRunner', () => ({
@@ -733,6 +744,12 @@ describe('agentLoopRunner', () => {
     dequeueNextUserInputMock.mockReset();
     dequeueNextUserInputMock.mockReturnValue(undefined);
     restoreDequeuedUserInputMock.mockReset();
+    takeSteeringInputsNowMock.mockReset();
+    takeSteeringInputsNowMock.mockReturnValue([]);
+    restoreSteeringInputsMock.mockReset();
+    beginSteeringRunMock.mockReset();
+    endSteeringRunMock.mockReset();
+    requeueUserInputMock.mockReset();
     subscribeToInputQueueMock.mockClear();
     queueUnsubMock.mockReset();
     capturedQueueCb = undefined;
@@ -813,25 +830,25 @@ describe('agentLoopRunner', () => {
       ensureHandlersRegistered();
       ensureHandlersRegistered();
 
-      // 12 notifications (including the ordered agent.terminal fact and
-      // hook.notify via the
+      // 13 notifications (including the ordered agent.terminal fact,
+      // input.steeringEnded and hook.notify via the
       // shared hookBridge) and 7 requests (native.invoke/tool.list/
       // approval.check — P1-3d-3 — /
       // snapshot.beforeAiEdit — P1-3d A-write — /
       // fileReads.record / fileReads.get /
       // workspace.authorizedWritablePaths — P1-3d-5 slice 2a — /
       // tool.invoke via the router / hook.emit via the shared hookBridge).
-      expect(onSidecarNotification).toHaveBeenCalledTimes(12);
-      expect(onSidecarRequest).toHaveBeenCalledTimes(10);
+      expect(onSidecarNotification).toHaveBeenCalledTimes(13);
+      expect(onSidecarRequest).toHaveBeenCalledTimes(11);
       expect(onSidecarConnectionState).toHaveBeenCalledTimes(1);
 
       const notifiedMethods = onSidecarNotification.mock.calls.map((c) => c[0]);
       expect(notifiedMethods).toEqual(
-        expect.arrayContaining(['agent.delta', 'agent.terminal', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'input.consumed', 'workspace.bindFromWrite', 'shell.sandboxBlocked', 'hook.notify']),
+        expect.arrayContaining(['agent.delta', 'agent.terminal', 'approval.drain', 'plan.clear', 'caps.record', 'shell.notifyTask', 'cu.setState', 'skillHooks.clearAll', 'input.consumed', 'input.steeringEnded', 'workspace.bindFromWrite', 'shell.sandboxBlocked', 'hook.notify']),
       );
       const requestedMethods = onSidecarRequest.mock.calls.map((c) => c[0]);
       expect(requestedMethods).toEqual(
-        expect.arrayContaining(['native.invoke', 'tool.list', 'approval.check', 'snapshot.beforeAiEdit', 'fileReads.record', 'fileReads.get', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit']),
+        expect.arrayContaining(['native.invoke', 'tool.list', 'approval.check', 'snapshot.beforeAiEdit', 'fileReads.record', 'fileReads.get', 'workspace.authorizedWritablePaths', 'tool.invoke', 'hook.emit', 'input.takeSteering']),
       );
     });
 
@@ -2630,6 +2647,102 @@ describe('agentLoopRunner', () => {
     });
   });
 
+  describe('input.takeSteering handler (steering)', () => {
+    it('takes the conversation\'s steering entries, answers with id/text/timestamp only, and remembers them', async () => {
+      const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      takeSteeringInputsNowMock
+        .mockReturnValueOnce([{ id: 'q1', text: '改成蓝色', timestamp: 5, delivery: 'steer' }])
+        .mockReturnValueOnce([{ id: 'q2', text: '再加一页', timestamp: 6, delivery: 'steer' }]);
+      const handler = handlerFor(onSidecarRequest, 'input.takeSteering');
+
+      expect(await handler({ runId: 'run-1' })).toEqual({ items: [{ id: 'q1', text: '改成蓝色', timestamp: 5 }] });
+      expect(await handler({ runId: 'run-1' })).toEqual({ items: [{ id: 'q2', text: '再加一页', timestamp: 6 }] });
+      expect(takeSteeringInputsNowMock).toHaveBeenCalledWith('conv-1', 'run-1');
+      expect(getRunSession('run-1')?.steeringTaken?.map((item) => item.id)).toEqual(['q1', 'q2']);
+    });
+
+    it('an empty take records nothing', async () => {
+      const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      expect(await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: 'run-1' })).toEqual({ items: [] });
+      expect(getRunSession('run-1')?.steeringTaken).toBeUndefined();
+    });
+
+    it('gives nothing to an unknown run or a run that is stopping or stopped, and takes nothing for it', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-stop', { ...makeSession({ conversationId: 'conv-1' }), abortRequested: true });
+      registerRunSession('run-fenced', { ...makeSession({ conversationId: 'conv-2' }), dropFrames: true });
+      const handler = handlerFor(onSidecarRequest, 'input.takeSteering');
+
+      expect(await handler({ runId: 'no-such-run' })).toEqual({ items: [] });
+      expect(await handler({ runId: 'run-stop' })).toEqual({ items: [] });
+      expect(await handler({ runId: 'run-fenced' })).toEqual({ items: [] });
+      expect(takeSteeringInputsNowMock).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed params', async () => {
+      const { ensureHandlersRegistered } = await importFresh();
+      ensureHandlersRegistered();
+      const handler = handlerFor(onSidecarRequest, 'input.takeSteering');
+      await expect(handler(null)).rejects.toThrow(/runId/);
+      await expect(handler({ runId: 7 })).rejects.toThrow(/runId/);
+      expect(takeSteeringInputsNowMock).not.toHaveBeenCalled();
+    });
+
+    it('gives nothing to a run nobody watches (scheduled, triggered, IM), and takes nothing for it', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-sched', makeSession({ conversationId: 'conv-1', scheduledTaskId: 'task-1' }));
+      expect(await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: 'run-sched' })).toEqual({ items: [] });
+      expect(takeSteeringInputsNowMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('which run reads steering (the run a typed message is bound to)', () => {
+    it('a watched run reads steering from its registration; a run nobody watches never does', async () => {
+      const { registerRunSession } = await importFresh();
+      registerRunSession('run-user', makeSession({ conversationId: 'conv-user' }));
+      registerRunSession('run-trigger', makeSession({ conversationId: 'conv-trigger', triggerId: 'trig-1' }));
+      registerRunSession('run-sched', makeSession({ conversationId: 'conv-sched', scheduledTaskId: 'task-1' }));
+
+      expect(beginSteeringRunMock.mock.calls).toEqual([['conv-user', 'run-user']]);
+    });
+
+    it('an @expert turn the shell routed reads no steering from its registration', async () => {
+      const { registerRunSession } = await importFresh();
+      const expertTurn = makeSession({ conversationId: 'conv-expert' });
+      expertTurn.options.directDelegateAgent = { filePath: '__preset__' };
+      registerRunSession('run-expert', expertTurn);
+      expect(beginSteeringRunMock).not.toHaveBeenCalled();
+    });
+
+    it('a run that leaves the registry reads steering no more', async () => {
+      const { registerRunSession, unregisterRunSession } = await importFresh();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      unregisterRunSession('run-1');
+      unregisterRunSession('run-unknown');
+      expect(endSteeringRunMock.mock.calls).toEqual([['conv-1', 'run-1']]);
+    });
+
+    it('input.steeringEnded from the loop ends the run\'s steering at once; an unknown run or malformed params change nothing', async () => {
+      const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+      ensureHandlersRegistered();
+      registerRunSession('run-1', makeSession({ conversationId: 'conv-1' }));
+      const handler = handlerFor(onSidecarNotification, 'input.steeringEnded');
+
+      handler({ runId: 'run-1' });
+      handler({ runId: 'no-such-run' });
+      handler({ runId: 7 });
+      handler(null);
+
+      expect(endSteeringRunMock.mock.calls).toEqual([['conv-1', 'run-1']]);
+    });
+  });
+
   describe('input.consumed handler', () => {
     it('removes exactly the consumed ids from the shell userInputQueue', async () => {
       const { ensureHandlersRegistered, registerRunSession } = await importFresh();
@@ -3936,6 +4049,571 @@ describe('agentLoopRunner', () => {
       getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', messages: [], status: 'idle' });
       getIndexEntryMock.mockReturnValue(undefined);
       getSettingsSnapshotMock.mockReturnValue(dispatchSettingsSnapshot());
+    });
+
+    describe('steering: entries taken by the run but never delivered', () => {
+      it('a completed run whose steered message arrived restores nothing', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const d = deferred<unknown>();
+        sidecarRequestMock.mockReturnValue(d.promise);
+        const running = runAgentLoopDispatched('conv-1', 'hello');
+        await waitForCall(sidecarRequestMock);
+        const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+        takeSteeringInputsNowMock.mockReturnValueOnce([{ id: 'q1', text: '改成蓝色', timestamp: 5, delivery: 'steer' }]);
+        handlerFor(onSidecarRequest, 'input.takeSteering')({ runId });
+        getConversationMock.mockReturnValue({
+          id: 'conv-1', title: 't', status: 'running',
+          messages: [{ id: 'steer-q1', role: 'user', content: '改成蓝色', timestamp: 5, steered: true }],
+        });
+
+        d.resolve({ reason: 'completed' });
+        await running;
+
+        expect(restoreSteeringInputsMock).not.toHaveBeenCalled();
+      });
+
+      it('a completed run whose steered message never arrived puts it back for the hand-off', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const d = deferred<unknown>();
+        sidecarRequestMock.mockReturnValue(d.promise);
+        const running = runAgentLoopDispatched('conv-1', 'hello');
+        await waitForCall(sidecarRequestMock);
+        const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+        const taken = { id: 'q1', text: '改成蓝色', timestamp: 5, delivery: 'steer' as const };
+        takeSteeringInputsNowMock.mockReturnValueOnce([taken]);
+        handlerFor(onSidecarRequest, 'input.takeSteering')({ runId });
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+
+        d.resolve({ reason: 'completed' });
+        await running;
+
+        expect(restoreSteeringInputsMock).toHaveBeenCalledExactlyOnceWith('conv-1', [taken]);
+        // Restored before the hand-off looks for the next queued message.
+        expect(restoreSteeringInputsMock.mock.invocationCallOrder[0])
+          .toBeLessThan(dequeueNextUserInputMock.mock.invocationCallOrder.at(-1)!);
+        // ... and the run's steering ended after the restore and before the
+        // hand-off, so the hand-off starts it as its own turn.
+        const endAfterRestore = endSteeringRunMock.mock.invocationCallOrder
+          .find((order, i) => order > restoreSteeringInputsMock.mock.invocationCallOrder[0]
+            && endSteeringRunMock.mock.calls[i][1] === runId);
+        expect(endAfterRestore).toBeDefined();
+        expect(endAfterRestore!).toBeLessThan(dequeueNextUserInputMock.mock.invocationCallOrder.at(-1)!);
+      });
+
+      it('Stop after a take restores the undelivered entry before the queue is paused', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const shellController = new AbortController();
+        getAbortControllerMock.mockReturnValue(shellController);
+        sidecarRequestMock.mockImplementation((method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => {
+          if (method === 'agent.abort') return Promise.resolve({ accepted: true, state: 'aborting' });
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        });
+        const running = runAgentLoopDispatched('conv-1', 'hello');
+        await waitForCall(sidecarRequestMock);
+        const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+        const taken = { id: 'q1', text: '先别发邮件', timestamp: 5, delivery: 'steer' as const };
+        takeSteeringInputsNowMock.mockReturnValueOnce([taken]);
+        handlerFor(onSidecarRequest, 'input.takeSteering')({ runId });
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+
+        shellController.abort('user');
+        await expect(running).resolves.toEqual({ reason: 'aborted' });
+
+        expect(restoreSteeringInputsMock).toHaveBeenCalledExactlyOnceWith('conv-1', [taken]);
+        expect(restoreSteeringInputsMock.mock.invocationCallOrder[0])
+          .toBeLessThan(pauseUserInputQueueMock.mock.invocationCallOrder[0]);
+        // The Stop ends the run's steering at once, and again after the
+        // restore, before the pause: the entry waits paused for after the task.
+        expect(endSteeringRunMock.mock.calls.every((call) => call[0] === 'conv-1' && call[1] === runId)).toBe(true);
+        expect(endSteeringRunMock.mock.invocationCallOrder[0])
+          .toBeLessThan(restoreSteeringInputsMock.mock.invocationCallOrder[0]);
+        expect(endSteeringRunMock.mock.invocationCallOrder.some((order) => (
+          order > restoreSteeringInputsMock.mock.invocationCallOrder[0]
+          && order < pauseUserInputQueueMock.mock.invocationCallOrder[0]
+        ))).toBe(true);
+        // The message the frame fence dropped is not added by the shell either.
+        expect(chatDeltaAddMessageMock).not.toHaveBeenCalled();
+      });
+
+      // ── Tester additions (P7) ──
+
+      /** Route the mocked queue through the real module, so takes, hand-offs and restores share one queue. */
+      async function useRealQueue() {
+        const real = await vi.importActual<typeof import('./userInputQueue')>('./userInputQueue');
+        takeSteeringInputsNowMock.mockImplementation(real.takeSteeringInputsNow);
+        restoreSteeringInputsMock.mockImplementation(real.restoreSteeringInputs);
+        beginSteeringRunMock.mockImplementation(real.beginSteeringRun);
+        endSteeringRunMock.mockImplementation(real.endSteeringRun);
+        dequeueNextUserInputMock.mockImplementation(real.dequeueNextUserInput);
+        restoreDequeuedUserInputMock.mockImplementation(real.restoreDequeuedUserInput);
+        requeueUserInputMock.mockImplementation(real.requeueUserInput);
+        pauseUserInputQueueMock.mockImplementation(real.pauseUserInputQueue);
+        getQueuedInputsMock.mockImplementation(real.getQueuedInputs);
+        return real;
+      }
+
+      /** Each `agent.run` gets its own deferred; `runs[i]` is the i-th run's id and its settle. */
+      function deferredRuns() {
+        const runs: Array<{ runId: string; settle: (v: unknown) => void }> = [];
+        sidecarRequestMock.mockImplementation((method: string, params: { runId: string }) => {
+          if (method !== 'agent.run') return Promise.resolve({ accepted: true, state: 'aborting' });
+          return new Promise((resolve) => { runs.push({ runId: params.runId, settle: resolve }); });
+        });
+        return runs;
+      }
+
+      async function waitForRuns(runs: unknown[], count: number): Promise<void> {
+        for (let i = 0; i < 200 && runs.length < count; i++) await Promise.resolve();
+        expect(runs).toHaveLength(count);
+      }
+
+      it('a Stop after the steered message arrived restores nothing: the message is not shown twice', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const shellController = new AbortController();
+        getAbortControllerMock.mockReturnValue(shellController);
+        sidecarRequestMock.mockImplementation((method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => {
+          if (method === 'agent.abort') return Promise.resolve({ accepted: true, state: 'aborting' });
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        });
+        const running = runAgentLoopDispatched('conv-1', 'hello');
+        await waitForCall(sidecarRequestMock);
+        const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+        takeSteeringInputsNowMock.mockReturnValueOnce([{ id: 'q1', text: '只要华东区', timestamp: 5, delivery: 'steer' }]);
+        handlerFor(onSidecarRequest, 'input.takeSteering')({ runId });
+        getConversationMock.mockReturnValue({
+          id: 'conv-1', title: 't', status: 'running',
+          messages: [{ id: 'steer-q1', role: 'user', content: '只要华东区', timestamp: 5, steered: true }],
+        });
+
+        shellController.abort('user');
+        await expect(running).resolves.toEqual({ reason: 'aborted' });
+
+        expect(restoreSteeringInputsMock).not.toHaveBeenCalled();
+      });
+
+      it('a run that fails after a take (the sidecar went away) puts the undelivered entry back, then the queue pauses', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const d = deferred<unknown>();
+        sidecarRequestMock.mockReturnValue(d.promise);
+        const running = runAgentLoopDispatched('conv-1', 'hello');
+        await waitForCall(sidecarRequestMock);
+        const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+        const taken = { id: 'q1', text: '改成蓝色', timestamp: 5, delivery: 'steer' as const };
+        takeSteeringInputsNowMock.mockReturnValueOnce([taken]);
+        handlerFor(onSidecarRequest, 'input.takeSteering')({ runId });
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+        getQueuedInputsMock.mockReturnValue([taken]);
+
+        d.reject(new Error('sidecar exited'));
+        await running.catch(() => undefined);
+
+        expect(restoreSteeringInputsMock).toHaveBeenCalledExactlyOnceWith('conv-1', [taken]);
+        if (pauseUserInputQueueMock.mock.calls.length > 0) {
+          expect(restoreSteeringInputsMock.mock.invocationCallOrder[0])
+            .toBeLessThan(pauseUserInputQueueMock.mock.invocationCallOrder[0]);
+        }
+      });
+
+      // Found by the tester: deleting a conversation aborts its run and clears
+      // its input queue (chatStore.deleteConversation), but the run's settle
+      // then found none of the taken entries in the (gone) conversation and
+      // restored them into the queue of the deleted conversation, where they
+      // leaked and, after the sidebar's undo, came back as paused chips.
+      it('a run of a conversation deleted after a take restores nothing into the deleted conversation', async () => {
+        const { runAgentLoopDispatched } = await importFresh();
+        const shellController = new AbortController();
+        getAbortControllerMock.mockReturnValue(shellController);
+        sidecarRequestMock.mockImplementation((method: string, _params: unknown, _timeout: number, signal?: AbortSignal) => {
+          if (method === 'agent.abort') return Promise.resolve({ accepted: true, state: 'aborting' });
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        });
+        const running = runAgentLoopDispatched('conv-1', 'hello');
+        await waitForCall(sidecarRequestMock);
+        const runId = (sidecarRequestMock.mock.calls[0][1] as { runId: string }).runId;
+        takeSteeringInputsNowMock.mockReturnValueOnce([{ id: 'q1', text: '先别发', timestamp: 5, delivery: 'steer' }]);
+        handlerFor(onSidecarRequest, 'input.takeSteering')({ runId });
+        // deleteConversation: the record is gone, then the controller aborts.
+        getConversationMock.mockReturnValue(undefined);
+        shellController.abort('conversation-deleted');
+        await running.catch(() => undefined);
+
+        expect(restoreSteeringInputsMock).not.toHaveBeenCalled();
+        // The run's steering still ends, so nothing stays bound to it.
+        expect(endSteeringRunMock).toHaveBeenCalledWith('conv-1', runId);
+      });
+
+      it('a message typed into another conversation is never handed to this run', async () => {
+        const real = await useRealQueue();
+        const { ensureHandlersRegistered, registerRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        registerRunSession('run-a', makeSession({ conversationId: 'conv-a' }));
+        try {
+          const forB = real.enqueueUserInput('conv-b', '这是给另一个任务的')!;
+          expect(await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: 'run-a' })).toEqual({ items: [] });
+          expect(real.getQueuedInputs('conv-b').map((item) => item.id)).toEqual([forB.id]);
+        } finally {
+          real.clearInputQueue('conv-a');
+          real.clearInputQueue('conv-b');
+        }
+      });
+
+      it('a team run delivers the steer to the lead\'s run; a member\'s run id gets nothing', async () => {
+        const real = await useRealQueue();
+        const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        registerRunSession('run-lead', { ...makeSession({ conversationId: 'conv-team' }), teamSnapshot: { teamId: 'team-1' } } as never);
+        try {
+          const steer = real.enqueueUserInput('conv-team', '让财务同事只看第三季度')!;
+          const handler = handlerFor(onSidecarRequest, 'input.takeSteering');
+          // A member runs as a subagent of the lead's step; its run id is no main-loop run.
+          expect(await handler({ runId: 'member-run-1' })).toEqual({ items: [] });
+          expect(await handler({ runId: 'run-lead' })).toEqual({
+            items: [{ id: steer.id, text: '让财务同事只看第三季度', timestamp: steer.timestamp }],
+          });
+          expect(getRunSession('run-lead')?.steeringTaken?.map((item) => item.id)).toEqual([steer.id]);
+        } finally {
+          real.clearInputQueue('conv-team');
+        }
+      });
+
+      it('a message typed while the take is in flight is handed out once, at the next take', async () => {
+        const real = await useRealQueue();
+        const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        registerRunSession('run-1', makeSession({ conversationId: 'conv-race' }));
+        try {
+          const handler = handlerFor(onSidecarRequest, 'input.takeSteering');
+          const early = real.enqueueUserInput('conv-race', 'early')!;
+          const first = handler({ runId: 'run-1' }) as Promise<{ items: Array<{ id: string }> }>;
+          // Typed after the shell answered, while the reply travels to the sidecar.
+          const late = real.enqueueUserInput('conv-race', 'late')!;
+          const second = handler({ runId: 'run-1' }) as Promise<{ items: Array<{ id: string }> }>;
+
+          expect((await first).items.map((item) => item.id)).toEqual([early.id]);
+          expect((await second).items.map((item) => item.id)).toEqual([late.id]);
+          expect(await handler({ runId: 'run-1' })).toEqual({ items: [] });
+          expect(getRunSession('run-1')?.steeringTaken?.map((item) => item.id)).toEqual([early.id, late.id]);
+        } finally {
+          real.clearInputQueue('conv-race');
+        }
+      });
+
+      it('a message sent while the final answer streams starts its own turn after the run', async () => {
+        const real = await useRealQueue();
+        const { runAgentLoopDispatched } = await importFresh();
+        const runs = deferredRuns();
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+        try {
+          const running = runAgentLoopDispatched('conv-1', '写一份报告');
+          await waitForRuns(runs, 1);
+          // The run is writing its final answer: it reaches no step boundary again.
+          real.enqueueUserInput('conv-1', '最后再总结三句话');
+          runs[0].settle({ reason: 'completed' });
+          await waitForRuns(runs, 2);
+
+          const starts = agentStartRequestMock.mock.calls.map((call) => (call[0] as unknown as { userMessage: string }).userMessage);
+          expect(starts).toEqual(['写一份报告', '最后再总结三句话']);
+          runs[1].settle({ reason: 'completed' });
+          await running;
+          expect(real.getQueuedInputs('conv-1')).toEqual([]);
+        } finally {
+          real.clearInputQueue('conv-1');
+        }
+      });
+
+      // Found by the tester: two messages sent while the final answer
+      // streams. Each becomes a queued follow-up (its own turn). The
+      // dispatcher started the first as its own run, but the second kept
+      // `delivery: 'steer'`, so that new run took it at its first tool step.
+      // A steering entry is bound to the run it was typed into, and the end of
+      // that run turns what it never took into entries for after the run.
+      it('two messages sent while the final answer streams each start their own turn', async () => {
+        const real = await useRealQueue();
+        const { runAgentLoopDispatched } = await importFresh();
+        const runs = deferredRuns();
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+        try {
+          const running = runAgentLoopDispatched('conv-1', '写一份报告');
+          await waitForRuns(runs, 1);
+          real.enqueueUserInput('conv-1', '加一个表格');
+          real.enqueueUserInput('conv-1', '再翻译成英文');
+          runs[0].settle({ reason: 'completed' });
+          await waitForRuns(runs, 2);
+
+          // The hand-off run of the first message reaches its first tool step.
+          const take = await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: runs[1].runId });
+          runs[1].settle({ reason: 'completed' });
+          for (let i = 0; i < 200 && runs.length < 3; i++) await Promise.resolve();
+          runs[2]?.settle({ reason: 'completed' });
+          await running;
+
+          expect(take).toEqual({ items: [] });
+          const starts = agentStartRequestMock.mock.calls.map((call) => (call[0] as unknown as { userMessage: string }).userMessage);
+          expect(starts).toEqual(['写一份报告', '加一个表格', '再翻译成英文']);
+        } finally {
+          real.clearInputQueue('conv-1');
+        }
+      });
+
+      // ── Re-review additions (P7, after the run-binding fix) ──
+
+      /** Like `deferredRuns`, but a run whose transport is aborted (Stop) rejects, as the real transport does. */
+      function stoppableRuns() {
+        const runs: Array<{ runId: string; settle: (v: unknown) => void }> = [];
+        sidecarRequestMock.mockImplementation((method: string, params: { runId: string }, _timeout: number, signal?: AbortSignal) => {
+          if (method !== 'agent.run') return Promise.resolve({ accepted: true, state: 'aborting' });
+          return new Promise((resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+            runs.push({ runId: params.runId, settle: resolve });
+          });
+        });
+        return runs;
+      }
+
+      const queueShape = (real: typeof import('./userInputQueue'), conversationId: string) =>
+        real.getQueuedInputs(conversationId).map((qi) => [qi.text, qi.delivery ?? 'after-run']);
+
+      it('sidecar: Stop A, steer-type into C, C ends without taking it, 「继续队列」 starts D: D is handed nothing of C\'s, and C\'s message runs after D', async () => {
+        const real = await useRealQueue();
+        const { runAgentLoopDispatched, ensureHandlersRegistered } = await importFresh();
+        ensureHandlersRegistered();
+        const runs = stoppableRuns();
+        const controllerOfA = new AbortController();
+        getAbortControllerMock.mockReturnValueOnce(controllerOfA);
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+        const take = handlerFor(onSidecarRequest, 'input.takeSteering');
+        try {
+          // A: a correction is typed into it, then the user stops it.
+          const runningA = runAgentLoopDispatched('conv-1', '发邮件', { initiatedBy: 'user' });
+          await waitForRuns(runs, 1);
+          expect(real.enqueueUserInput('conv-1', '先别发邮件')).toMatchObject({ delivery: 'steer', runId: runs[0].runId });
+          controllerOfA.abort('user');
+          await expect(runningA).resolves.toEqual({ reason: 'aborted' });
+          expect(queueShape(real, 'conv-1')).toEqual([['先别发邮件', 'after-run']]);
+          expect(real.isUserInputQueuePaused('conv-1')).toBe(true);
+
+          // C: a new task; the user types into it while it writes its final answer.
+          const runningC = runAgentLoopDispatched('conv-1', '写周报', { initiatedBy: 'user' });
+          await waitForRuns(runs, 2);
+          const typedIntoC = real.enqueueUserInput('conv-1', '标题改成周报')!;
+          expect(typedIntoC).toMatchObject({ delivery: 'steer', runId: runs[1].runId });
+          // A's run id gets nothing, the paused queue does not hold C's entry back.
+          expect(await take({ runId: runs[0].runId })).toEqual({ items: [] });
+          runs[1].settle({ reason: 'completed' });
+          await expect(runningC).resolves.toMatchObject({ reason: 'completed' });
+          // What C never took waits, paused behind A's message, as an entry for after the task.
+          expect(queueShape(real, 'conv-1')).toEqual([['先别发邮件', 'after-run'], ['标题改成周报', 'after-run']]);
+
+          // 「继续队列」: A's message starts D; D's first tool step is handed nothing.
+          real.resumeUserInputQueue('conv-1');
+          const next = real.dequeueNextUserInput('conv-1')!;
+          expect(next.text).toBe('先别发邮件');
+          const runningD = runAgentLoopDispatched('conv-1', next.text, { initiatedBy: 'user' });
+          await waitForRuns(runs, 3);
+          expect(await take({ runId: runs[2].runId })).toEqual({ items: [] });
+          runs[2].settle({ reason: 'completed' });
+          // D's dispatcher then starts C's message as its own turn E.
+          await waitForRuns(runs, 4);
+          runs[3].settle({ reason: 'completed' });
+          await runningD;
+
+          const starts = agentStartRequestMock.mock.calls.map((call) => (call[0] as unknown as { userMessage: string }).userMessage);
+          expect(starts).toEqual(['发邮件', '写周报', '先别发邮件', '标题改成周报']);
+          expect(real.getQueuedInputs('conv-1')).toEqual([]);
+        } finally {
+          real.clearInputQueue('conv-1');
+        }
+      });
+
+      it('a take that reaches the shell after input.steeringEnded hands out nothing, and the entry waits for after the run', async () => {
+        const real = await useRealQueue();
+        const { ensureHandlersRegistered, registerRunSession, getRunSession } = await importFresh();
+        ensureHandlersRegistered();
+        registerRunSession('run-1', makeSession({ conversationId: 'conv-late' }));
+        try {
+          const typed = real.enqueueUserInput('conv-late', '只要华东区')!;
+          expect(typed).toMatchObject({ delivery: 'steer', runId: 'run-1' });
+          handlerFor(onSidecarNotification, 'input.steeringEnded')({ runId: 'run-1' });
+          expect(await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: 'run-1' })).toEqual({ items: [] });
+          expect(queueShape(real, 'conv-late')).toEqual([['只要华东区', 'after-run']]);
+          expect(getRunSession('run-1')?.steeringTaken).toBeUndefined();
+          // Typed after the end: it waits for after the run as well.
+          expect(real.enqueueUserInput('conv-late', '按月排序')?.delivery).toBeUndefined();
+        } finally {
+          real.clearInputQueue('conv-late');
+        }
+      });
+
+      it('a second dispatch while a watched run works (the pet, another surface) steers that run; while a scheduled run works it waits for the end', async () => {
+        const real = await useRealQueue();
+        enqueueUserInputMock.mockImplementation(real.enqueueUserInput);
+        const { runAgentLoopDispatched } = await importFresh();
+        const runs = deferredRuns();
+        try {
+          getConversationMock.mockReturnValue({ id: 'conv-pet', title: 't', status: 'running', messages: [] });
+          const watched = runAgentLoopDispatched('conv-pet', '整理销售表', { initiatedBy: 'user' });
+          await waitForRuns(runs, 1);
+          await expect(runAgentLoopDispatched('conv-pet', '只要华东区', { initiatedBy: 'user' })).resolves.toEqual({ reason: 'enqueued' });
+          const [staged] = real.getQueuedInputs('conv-pet');
+          expect([staged.text, staged.delivery, staged.runId]).toEqual(['只要华东区', 'steer', runs[0].runId]);
+          expect((await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: runs[0].runId }) as { items: unknown[] }).items).toHaveLength(1);
+          // The steered message reached the conversation.
+          getConversationMock.mockReturnValue({
+            id: 'conv-pet', title: 't', status: 'running',
+            messages: [{ id: `steer-${staged.id}`, role: 'user', content: '只要华东区', timestamp: staged.timestamp, steered: true }],
+          });
+          runs[0].settle({ reason: 'completed' });
+          await watched;
+
+          getConversationMock.mockReturnValue({ id: 'conv-sched', title: 't', status: 'running', messages: [], scheduledTaskId: 'task-1' });
+          const scheduled = runAgentLoopDispatched('conv-sched', '每日汇总', { initiatedBy: 'automation' });
+          await waitForRuns(runs, 2);
+          await expect(runAgentLoopDispatched('conv-sched', '顺便发我一份', { initiatedBy: 'user' })).resolves.toEqual({ reason: 'enqueued' });
+          expect(queueShape(real, 'conv-sched')).toEqual([['顺便发我一份', 'after-run']]);
+          expect(await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: runs[1].runId })).toEqual({ items: [] });
+          runs[1].settle({ reason: 'completed' });
+          await waitForRuns(runs, 3);
+          runs[2].settle({ reason: 'completed' });
+          await scheduled;
+          const starts = agentStartRequestMock.mock.calls.map((call) => (call[0] as unknown as { userMessage: string }).userMessage);
+          expect(starts).toEqual(['整理销售表', '每日汇总', '顺便发我一份']);
+        } finally {
+          real.clearInputQueue('conv-pet');
+          real.clearInputQueue('conv-sched');
+        }
+      });
+
+      // Found by the tester (re-review): the fixer's stated known limit,
+      // reproduced. Run A ends with a message typed during its final answer
+      // (an entry for after the task). A's dispatcher hands it off only after
+      // A's turn change record settles (`endTurnChanges`), and A has already
+      // left the registry by then. A run B started in that gap from a surface
+      // the composer's send guard does not cover (the pet, 重试 on an earlier
+      // turn, a recovery card) is live when the hand-off reaches the
+      // concurrency guard, which staged the text again as a new entry bound
+      // to B. The hand-off is marked (`queuedHandoff`): it goes back under its
+      // own id as an entry for after the task and starts its own turn when B
+      // ends.
+      it('a hand-off that meets a run started before the dispatcher reached it waits for that run\'s end; it never steers it', async () => {
+        const real = await useRealQueue();
+        enqueueUserInputMock.mockImplementation(real.enqueueUserInput);
+        const { runAgentLoopDispatched } = await importFresh();
+        const runs = deferredRuns();
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+        let releaseTurnOfA: (() => void) | undefined;
+        endTurnMock.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseTurnOfA = resolve; }));
+        try {
+          const runningA = runAgentLoopDispatched('conv-1', '写一份报告', { initiatedBy: 'user' });
+          await waitForRuns(runs, 1);
+          const typedIntoA = real.enqueueUserInput('conv-1', '最后再总结三句话')!;
+          expect(typedIntoA).toMatchObject({ delivery: 'steer', runId: runs[0].runId });
+          runs[0].settle({ reason: 'completed' });
+          for (let i = 0; i < 400 && !releaseTurnOfA; i++) await Promise.resolve();
+          expect(releaseTurnOfA).toBeDefined();
+          // A has left the registry; its message waits for after the task.
+          expect(queueShape(real, 'conv-1')).toEqual([['最后再总结三句话', 'after-run']]);
+
+          // B starts in the gap (the pet sends into the open conversation).
+          const runningB = runAgentLoopDispatched('conv-1', '另外做一张图表', { initiatedBy: 'user' });
+          await waitForRuns(runs, 2);
+          releaseTurnOfA!();
+          await runningA;
+
+          // B reaches its first tool step: A's message is not B's to take.
+          expect(await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: runs[1].runId })).toEqual({ items: [] });
+          expect(queueShape(real, 'conv-1')).toEqual([['最后再总结三句话', 'after-run']]);
+          // The same entry, not a copy, and the queue is not paused.
+          expect(real.getQueuedInputs('conv-1').map((qi) => qi.id)).toEqual([typedIntoA.id]);
+          expect(real.isUserInputQueuePaused('conv-1')).toBe(false);
+          runs[1].settle({ reason: 'completed' });
+          for (let i = 0; i < 400 && runs.length < 3; i++) await Promise.resolve();
+          runs[2]?.settle({ reason: 'completed' });
+          await runningB;
+          const starts = agentStartRequestMock.mock.calls.map((call) => (call[0] as unknown as { userMessage: string }).userMessage);
+          expect(starts).toEqual(['写一份报告', '另外做一张图表', '最后再总结三句话']);
+        } finally {
+          releaseTurnOfA?.();
+          real.clearInputQueue('conv-1');
+        }
+      });
+
+      it('an image edit sent while a watched run works is staged for after the run, never taken as a step message, and then starts its own turn', async () => {
+        const real = await useRealQueue();
+        enqueueUserInputMock.mockImplementation(real.enqueueUserInput);
+        const { runAgentLoopDispatched } = await importFresh();
+        const runs = deferredRuns();
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+        const request = {
+          schemaVersion: 1, id: 'request-1', messageId: 'message-1', scope: 'local', conversationId: 'conv-1',
+          sourceArtifactId: 'source-1', sourceCaptureId: 'capture-1', sourceDigest: 'a'.repeat(64), prompt: '',
+          comments: [{ id: 'comment-1', point: { x: 0.5, y: 0.5 }, text: '改成蓝色' }], markup: [], region: [],
+          attachmentRefs: [], backendId: 'images', capabilityVersion: '1',
+        } as unknown as NonNullable<Parameters<typeof runAgentLoopDispatched>[2]>['imageEditRequest'];
+        const onMessageTaken = vi.fn();
+        try {
+          const running = runAgentLoopDispatched('conv-1', '写一份报告', { initiatedBy: 'user' });
+          await waitForRuns(runs, 1);
+          await expect(runAgentLoopDispatched('conv-1', '改成蓝色', { initiatedBy: 'user', imageEditRequest: request, onMessageTaken }))
+            .resolves.toEqual({ reason: 'enqueued' });
+          expect(onMessageTaken).toHaveBeenCalledWith('message-1');
+          // Plain words would steer; an image edit carries its own pictures and never does.
+          expect(queueShape(real, 'conv-1')).toEqual([['改成蓝色', 'after-run']]);
+          expect(real.getQueuedInputs('conv-1')[0].imageEditRequest).toEqual(request);
+          expect(await handlerFor(onSidecarRequest, 'input.takeSteering')({ runId: runs[0].runId })).toEqual({ items: [] });
+          expect(real.getQueuedInputs('conv-1')).toHaveLength(1);
+
+          runs[0].settle({ reason: 'completed' });
+          await waitForRuns(runs, 2);
+          // The dispatcher started it as its own turn, with the request.
+          expect(real.getQueuedInputs('conv-1')).toEqual([]);
+          runs[1].settle({ reason: 'completed' });
+          await running;
+        } finally {
+          real.clearInputQueue('conv-1');
+        }
+      });
+
+      it('a marked hand-off never crosses to the sidecar, and one that meets a live in-process run goes back for after it', async () => {
+        const real = await useRealQueue();
+        enqueueUserInputMock.mockImplementation(real.enqueueUserInput);
+        const { runAgentLoopDispatched } = await importFresh();
+        const runs = deferredRuns();
+        getConversationMock.mockReturnValue({ id: 'conv-1', title: 't', status: 'running', messages: [] });
+        try {
+          const running = runAgentLoopDispatched('conv-1', '写一份报告', { initiatedBy: 'user' });
+          await waitForRuns(runs, 1);
+          const typed = real.enqueueUserInput('conv-1', '最后再总结三句话')!;
+          runs[0].settle({ reason: 'completed' });
+          await waitForRuns(runs, 2);
+          // No run was live: the hand-off starts its own run, and the mark
+          // (a renderer-only option) is not part of what the sidecar gets.
+          const handoffParams = agentStartRequestMock.mock.calls[1][0] as unknown as { userMessage: string };
+          expect(handoffParams.userMessage).toBe('最后再总结三句话');
+          expect(JSON.stringify(handoffParams)).not.toContain('queuedHandoff');
+          expect(requeueUserInputMock).not.toHaveBeenCalled();
+          runs[1].settle({ reason: 'completed' });
+          await running;
+          expect(real.getQueuedInputs('conv-1')).toEqual([]);
+
+          // The in-process guard: a live renderer-hosted run, and a marked hand-off.
+          getAbortControllerMock.mockReturnValue(new AbortController());
+          hasAbortControllerMock.mockReturnValue(true);
+          const item = { id: typed.id, text: typed.text, timestamp: typed.timestamp, delivery: 'steer' as const, runId: 'run-old' };
+          await expect(runAgentLoopDispatched('conv-1', item.text, { initiatedBy: 'user', queuedHandoff: item }))
+            .resolves.toEqual({ reason: 'enqueued' });
+          expect(enqueueUserInputMock).not.toHaveBeenCalled(); // not staged as a message typed into the live run
+          expect(real.getQueuedInputs('conv-1')).toEqual([{ id: typed.id, text: typed.text, timestamp: typed.timestamp }]);
+          expect(real.isUserInputQueuePaused('conv-1')).toBe(false);
+        } finally {
+          real.clearInputQueue('conv-1');
+        }
+      });
     });
 
     it('freezes the turn target before an in-process model run and reuses the same loop ID', async () => {

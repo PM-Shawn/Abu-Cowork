@@ -6,6 +6,8 @@
  * a right-aligned "user message" style bubble where each question is shown as
  * two lines — `Q: <question>` / `A: <selected>` — with a blank line between
  * questions. Multi-select answers join with "、"; "Other" shows the custom text.
+ * A card the user answered by writing in the chat instead (`chatReply`) shows
+ * that text once.
  *
  * If a tool call reaches this component without `userQuestionAnswers` (e.g.
  * drained / timed out after the dock unmounted), a minimal cancelled marker is
@@ -35,7 +37,21 @@ export default function UserQuestionCard({ toolCall }: Props) {
   }
 
   // ── Settled: left-aligned, integrated "your choices" card (agent side) ──
-  const { answers } = toolCall.userQuestionAnswers;
+  const { answers, chatReply } = toolCall.userQuestionAnswers;
+
+  if (chatReply !== undefined) {
+    return (
+      <div className="my-2 flex w-full justify-start">
+        <div className="w-full max-w-115 rounded-panel border border-separator bg-surface px-4 py-3">
+          <div className="mb-2 flex items-center gap-2 text-ui-sm font-medium text-label-tertiary">
+            <Icon icon={AppIcons.conversation} size="sm" className="text-label-secondary" />
+            {t.userQuestion.repliedInChatLabel}
+          </div>
+          <p className="whitespace-pre-wrap break-words text-ui text-label">{chatReply}</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="my-2 flex w-full justify-start">

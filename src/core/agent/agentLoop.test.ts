@@ -922,6 +922,12 @@ describe('isVisionUnsupportedError', () => {
 // bytes (which precede the history and would re-bill the whole conversation
 // on every change) and never persisted to chatStore.
 describe('buildVolatileContextTail', () => {
+  it('carries the step-budget note inside the envelope, and alone makes a tail', () => {
+    const tail = buildVolatileContextTail({ stepBudgetNote: '[Only 20 steps are left in this run.]' });
+    expect(tail).toContain('<runtime-context>');
+    expect(tail).toContain('Only 20 steps are left');
+  });
+
   it('returns undefined when there is nothing to inject', () => {
     expect(buildVolatileContextTail({})).toBeUndefined();
     expect(buildVolatileContextTail({ todoState: '', relevantMemoriesSection: '' })).toBeUndefined();
@@ -1749,8 +1755,8 @@ describe('服务说内容太长后按真实上限恢复', () => {
       caps: { thinking: 'anthropic' as const, maxOutputTokens: 64000, contextWindow: 200000 },
       probed: 200000,
       learned: 32768,
-      // Claude 的回答预算最少 16384（思考预算 10000 计入其中）
-      expectedMaxTokens: Math.max(32768 / 4, 16384),
+      // 回答预算同样不超过学到窗口的四分之一；思考预算（默认 10000）让位于它
+      expectedMaxTokens: 32768 / 4,
       expectedEnableThinking: true,
     },
   ])('$label：重试请求的思考预算按学到的窗口重新计算', async ({ caps, probed, learned, expectedMaxTokens, expectedEnableThinking }) => {

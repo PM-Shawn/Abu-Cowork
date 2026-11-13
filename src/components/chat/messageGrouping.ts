@@ -2,10 +2,12 @@ import type { Message } from '@/types';
 
 /**
  * Group one agent run into a visual block, while treating every user message
- * as a hard boundary. The latter is a compatibility guard for transcripts
- * written by older queue behavior that injected a follow-up into the current
- * loopId: no persisted user message may disappear merely because the loopId
- * was reused.
+ * as a hard boundary — except a message steered into the run (`steered`),
+ * which stays inside its run's block, where MessageGroup shows it at the step
+ * it followed. The boundary is a compatibility guard for transcripts written
+ * by older queue behavior that injected a follow-up into the current loopId
+ * without marking it: no persisted user message may disappear merely because
+ * the loopId was reused.
  */
 export function groupMessagesByLoop(messages: Message[]): Message[][] {
   const groups: Message[][] = [];
@@ -14,7 +16,7 @@ export function groupMessagesByLoop(messages: Message[]): Message[][] {
 
   for (const message of messages) {
     const loopChanged = !message.loopId || message.loopId !== currentLoopId;
-    const startsAnotherUserTurn = message.role === 'user' && currentGroup.length > 0;
+    const startsAnotherUserTurn = message.role === 'user' && currentGroup.length > 0 && !message.steered;
 
     if (loopChanged || startsAnotherUserTurn) {
       if (currentGroup.length > 0) groups.push(currentGroup);

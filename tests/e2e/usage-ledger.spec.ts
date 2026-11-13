@@ -18,6 +18,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { answerTitleRequest } from './openAiMock';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -47,6 +48,8 @@ async function startUsageMock(): Promise<UsageMock> {
     let raw = '';
     for await (const chunk of req) raw += String(chunk);
     const body = JSON.parse(raw) as { messages?: Array<{ role?: unknown; content?: unknown }>; stream?: unknown };
+    // The title call that follows a first reply is not the usage under test (src/core/session/titleGen.ts).
+    if (answerTitleRequest(body, res)) return;
     userAgents.push(String(req.headers['user-agent'] ?? ''));
     const system = (body.messages ?? [])
       .filter((m) => m.role === 'system')

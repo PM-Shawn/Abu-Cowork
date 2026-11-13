@@ -3,7 +3,7 @@ import { resolveCapabilities } from './modelCapabilities';
 
 /**
  * Resolve the effective DeclaredCapabilities for one model on a provider.
- * - Model-varying fields (tools/images/reasoning/efforts/maxInput/maxOutput): the model's
+ * - Model-varying fields (tools/images/reasoning/efforts/thinkingEffort/maxInput/maxOutput): the model's
  *   own override wins; falls back to the provider-level value (legacy / shared default).
  * - Endpoint/protocol-level fields (useRawUrl/thinkingFormat/maxTokensField/
  *   requiresToolResultName/reasoningReplay/toolSchemaDialect/sendTemperature/
@@ -24,6 +24,7 @@ export function resolveModelDeclared(
     supportsImages: m?.supportsImages ?? p?.supportsImages,
     supportsReasoning: m?.supportsReasoning ?? p?.supportsReasoning,
     supportedEfforts: m?.supportedEfforts ?? p?.supportedEfforts,
+    thinkingEffort: m?.thinkingEffort ?? p?.thinkingEffort,
     maxInputTokens: m?.maxInputTokens ?? p?.maxInputTokens,
     maxOutputTokens: m?.maxOutputTokens ?? p?.maxOutputTokens,
     parallelToolCalls: m?.parallelToolCalls ?? p?.parallelToolCalls,

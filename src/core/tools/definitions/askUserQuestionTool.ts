@@ -149,6 +149,11 @@ export const askUserQuestionTool: ToolDefinition = {
     if (result === null) {
       return t.cancelled;
     }
+    // Written in the chat instead of chosen on the card: the text once, and
+    // the model decides whether it answers the card or asks for something new.
+    if (result.chatReply !== undefined) {
+      return format(t.repliedInChat, { text: result.chatReply });
+    }
 
     const sep = getI18n().toolResult.listSeparator;
     const lines: string[] = [t.answersHeader];

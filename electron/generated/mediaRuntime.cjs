@@ -49150,7 +49150,7 @@ var zhCN = {
     inputPlaceholderBusy: "阿布在努力中～",
     inputPlaceholderWithSkill: "输入参数...",
     inputPlaceholderWithAgent: "输入任务描述...",
-    inputPlaceholderMidTask: "追加指令（阿布会在下轮读取）...",
+    inputPlaceholderMidTask: "追加指令（阿布会在下一步读取）...",
     sendTooltipEnterSends: "发送（Enter）· 换行（Shift + Enter）",
     sendTooltipModifierSends: "发送（{modifier} + Enter）· 换行（Enter）",
     start: "开始",
@@ -50380,6 +50380,13 @@ var zhCN = {
     effortLow: "低",
     effortMedium: "中",
     effortHigh: "高",
+    capThinkingEffort: "思考强度",
+    capThinkingEffortHint: "默认沿用阿布对该模型的内置设置。只列出该模型在当前接口上真正生效的档位。",
+    thinkingEffortDefault: "默认",
+    thinkingEffortDefaultIs: "（{effort}）",
+    thinkingEffortOff: "关闭",
+    thinkingEffortOn: "开启",
+    thinkingEffortMax: "最高",
     capContextLength: "上下文长度",
     capContextLengthHint: "阿布每次处理的内容上限",
     capContextLengthDetected: "模型支持 {size}",
@@ -52283,7 +52290,16 @@ var zhCN = {
     queuedHint: "已排队 · 阿布会在下轮读取",
     cancel: "取消排队",
     paused: "当前回复已停止，队列已暂停",
-    resume: "继续队列"
+    resume: "继续队列",
+    steerLabel: "下一步加入",
+    steerHint: "任务做完当前这一步后会读到这条消息",
+    afterRunLabel: "结束后发送",
+    sendAfterRun: "任务结束后再发",
+    steerLabelTeam: "交给队长",
+    steerHintTeam: "队长做完手头这一步后会读到这条消息；它正在等成员干活时，要等成员做完",
+    pausedLabel: "已暂停",
+    pausedHint: "点「继续队列」后作为新的一轮发送",
+    pausedWhileRunning: "队列已暂停，当前任务结束后可以继续"
   },
   reference: {
     commentToChat: "评论到对话",
@@ -52298,6 +52314,7 @@ var zhCN = {
   },
   userQuestion: {
     cardTitle: "请选择",
+    repliedInChatLabel: "你在对话里回复了",
     singleSelectHint: "单选",
     multiSelectHint: "可多选",
     otherOptionLabel: "其他…",
@@ -53115,7 +53132,8 @@ var zhCN = {
       errOptionLabelEmpty: "参数错误：第 {idx} 题 options[{j}].label 不能为空。",
       errNoToolCallId: "内部错误：toolCallId 未注入，无法挂起等待用户作答。",
       cancelled: "用户未作答（已取消或超时）。请基于已知信息继续，或用更明确的方式再次询问。",
-      answersHeader: "用户已作答："
+      answersHeader: "用户已作答：",
+      repliedInChat: "用户没有在卡片上选择，而是在对话里回复了：\n{text}\n\n这可能是对上面问题的回答，也可能是一个新的要求，请按它的意思继续。"
     },
     updateSoul: {
       errContentEmpty: "错误：性格设定内容不能为空。",
@@ -53719,7 +53737,7 @@ var enUS = {
     inputPlaceholderBusy: "Abu is working...",
     inputPlaceholderWithSkill: "Enter parameters...",
     inputPlaceholderWithAgent: "Enter task description...",
-    inputPlaceholderMidTask: "Add instructions (Abu reads next turn)...",
+    inputPlaceholderMidTask: "Add instructions (Abu reads it at the next step)...",
     sendTooltipEnterSends: "Send (Enter) · New line (Shift + Enter)",
     sendTooltipModifierSends: "Send ({modifier} + Enter) · New line (Enter)",
     start: "Start",
@@ -54948,6 +54966,13 @@ var enUS = {
     effortLow: "Low",
     effortMedium: "Medium",
     effortHigh: "High",
+    capThinkingEffort: "Thinking effort",
+    capThinkingEffortHint: "Default keeps Abu's built-in setting for this model. Only the levels this model takes on this endpoint are listed.",
+    thinkingEffortDefault: "Default",
+    thinkingEffortDefaultIs: " ({effort})",
+    thinkingEffortOff: "Off",
+    thinkingEffortOn: "On",
+    thinkingEffortMax: "Max",
     capContextLength: "Context length",
     capContextLengthHint: "How much context Abu can use at once",
     capContextLengthDetected: "Model supports {size}",
@@ -56852,7 +56877,16 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
     queuedHint: "Queued · read next turn",
     cancel: "Cancel queued message",
     paused: "Queue paused because you stopped the response",
-    resume: "Resume queue"
+    resume: "Resume queue",
+    steerLabel: "Joins next step",
+    steerHint: "The task reads this message after its current step",
+    afterRunLabel: "After the task",
+    sendAfterRun: "Send after the task",
+    steerLabelTeam: "For the lead",
+    steerHintTeam: "The lead reads this after its current step; while it waits on a member, once the member is done",
+    pausedLabel: "Paused",
+    pausedHint: "Sent as a new turn when you resume the queue",
+    pausedWhileRunning: "Queue paused; you can resume it once the current task ends"
   },
   reference: {
     commentToChat: "Comment to Chat",
@@ -56867,6 +56901,7 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
   },
   userQuestion: {
     cardTitle: "Please choose",
+    repliedInChatLabel: "You replied in the chat",
     singleSelectHint: "Single choice",
     multiSelectHint: "Multiple choices allowed",
     otherOptionLabel: "Other…",
@@ -57684,7 +57719,8 @@ The task was blocked by permissions at the "{mode}" tier: {list}. Raise the task
       errOptionLabelEmpty: "Parameter error: question {idx} options[{j}].label cannot be empty.",
       errNoToolCallId: "Internal error: toolCallId was not injected; cannot suspend waiting for user answer.",
       cancelled: "The user did not answer (cancelled or timed out). Please continue based on available information, or ask again more explicitly.",
-      answersHeader: "User answered:"
+      answersHeader: "User answered:",
+      repliedInChat: "The user did not choose on the card and replied in the chat instead:\n{text}\n\nThis may answer the questions above or be a new instruction; continue as it says."
     },
     updateSoul: {
       errContentEmpty: "Error: personality configuration content cannot be empty.",

@@ -1258,4 +1258,97 @@ describe('MessageBubble redo question', () => {
     expect(deleteSpy).toHaveBeenCalledTimes(1);
     expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1);
   });
+
+  describe('a run the user steered while it worked', () => {
+    const steer = (id: string, text: string): Message => ({
+      id, role: 'user', content: text, timestamp: 2, loopId: 'loop-1', steered: true,
+    });
+    const step: Message = { id: 'message-step', role: 'assistant', content: '', timestamp: 1, loopId: 'loop-1' };
+
+    it('regenerates from the request with everything steered into the run, so nothing is lost', async () => {
+      seed([question, step, steer('steer-1', '改成表格'), steer('steer-2', '标题加粗'), answer]);
+      render(<MessageBubble message={answer} />);
+
+      press('Regenerate');
+      await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
+
+      expect(questionTitle()).not.toBeInTheDocument();
+      expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(
+        ...sentWith(`${question.content as string}\n\n改成表格\n\n标题加粗`),
+      );
+    });
+
+    it('resends a run the app closed midway with what was steered into it', async () => {
+      const closed: Message = { ...question, runState: 'interrupted', runInterruptCause: 'app_exit' };
+      seed([closed, step, steer('steer-1', '改成表格')]);
+      render(<MessageBubble message={closed} />);
+
+      press(getI18n().chat.runResend);
+      await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
+
+      expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, closed.id]]);
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(
+        ...sentWith(`${closed.content as string}\n\n改成表格`),
+      );
+    });
+
+    it('opens the request\'s editor on the request and what was steered into the run', () => {
+      seed([question, step, steer('steer-1', '改成表格'), answer]);
+      render(<MessageBubble message={question} />);
+
+      press('Edit');
+
+      expect(screen.getByRole('textbox')).toHaveValue(`${question.content as string}\n\n改成表格`);
+    });
+
+    it('an old transcript (a follow-up injected into the loop before steering existed) regenerates from the request alone, as before', async () => {
+      // No `steered` mark: the old follow-up is a turn of its own, so it is
+      // neither taken for the request nor joined into the redo text.
+      const oldFollowUp: Message = { id: 'old-follow-up', role: 'user', content: '再加一列同比', timestamp: 2, loopId: 'loop-1' };
+      const secondAnswer: Message = { id: 'answer-2', role: 'assistant', content: 'second answer', timestamp: 3, loopId: 'loop-1' };
+      seed([question, step, answer, oldFollowUp, secondAnswer]);
+      render(<MessageBubble message={secondAnswer} />);
+
+      press('Regenerate');
+      await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
+
+      // Same as before steering: the cut starts at the request, which also
+      // removes the old follow-up of the same loop, and no question is asked.
+      expect(questionTitle()).not.toBeInTheDocument();
+      expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, question.id]]);
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith(question.content as string));
+    });
+
+    it('retries a failed run with the request and what was steered into it', async () => {
+      const failed: Message = { ...question, runState: 'failed', runError: 'network unavailable' };
+      seed([failed, step, steer('steer-1', '改成表格')]);
+      render(<MessageBubble message={failed} />);
+
+      press(getI18n().chat.runRetry);
+      await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
+
+      expect(deleteSpy.mock.calls).toEqual([[CONVERSATION, failed.id]]);
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith(`${failed.content as string}\n\n改成表格`));
+    });
+
+    it('a steered message whose text is empty adds nothing to the redo', async () => {
+      seed([question, step, steer('steer-1', '   '), answer]);
+      render(<MessageBubble message={answer} />);
+
+      press('Regenerate');
+      await waitFor(() => expect(runAgentLoopDispatched).toHaveBeenCalledTimes(1));
+
+      expect(runAgentLoopDispatched).toHaveBeenCalledWith(...sentWith(question.content as string));
+    });
+
+    it('offers copy but no edit on a steered message', () => {
+      const steered = steer('steer-1', '改成表格');
+      seed([question, step, steered, answer]);
+      render(<MessageBubble message={steered} />);
+
+      expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    });
+  });
 });

@@ -26,6 +26,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
+import { answerTitleRequest } from './openAiMock';
 
 const READY_TIMEOUT = 45_000;
 const CHAT_PLACEHOLDER = '想让阿布帮你做点什么？';
@@ -131,6 +132,7 @@ async function startModelMock(): Promise<ModelMock> {
     } catch {
       // Recorded as aux with an undefined model; assertions will surface it.
     }
+    if (answerTitleRequest(body, res)) return;
     const modelId = typeof body.model === 'string' ? body.model : 'unknown-model';
     const { kind, marker } = classify(body);
     const hasTools = Array.isArray(body.tools) && body.tools.length > 0;

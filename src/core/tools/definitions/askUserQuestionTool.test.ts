@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { askUserQuestionTool } from './askUserQuestionTool';
 import * as bridge from '../../agent/permissionBridge';
 import type { UserQuestionResult } from '../../../types';
+import { getLanguageSetting, setLanguage } from '@/i18n';
 
 const VALID_INPUT = {
   questions: [
@@ -143,6 +144,46 @@ describe('askUserQuestionTool', () => {
       expect(result).toContain('User answered');
       expect(result).toContain('[格式]');
       expect(result).toContain('详细');
+    });
+
+    it('passes on a reply written in the chat once, whatever the number of questions', async () => {
+      const twoQuestions = {
+        questions: [
+          VALID_INPUT.questions[0],
+          { header: '范围', question: '包括哪几个月？', multiSelect: true, options: [{ label: '九月' }, { label: '十月' }] },
+        ],
+      };
+      const executePromise = askUserQuestionTool.execute(twoQuestions, VALID_CONTEXT);
+
+      await new Promise<void>((r) => setTimeout(r, 0));
+      bridge.resolveUserQuestion('tc-test', { answers: [], chatReply: '先别做了，改成汇总表 {format}' });
+
+      const result = await executePromise as string;
+      expect(result).toContain('replied in the chat instead');
+      expect(result.split('先别做了，改成汇总表 {format}')).toHaveLength(2);
+      expect(result).not.toContain('User answered');
+      expect(result).not.toContain('[范围]');
+    });
+
+    // Re-review addition (P7): the same result in the Chinese interface, with
+    // text that looks like the template's own placeholder and a `$&` that a
+    // string replacement would expand.
+    it('passes on a reply written in the chat once in the Chinese interface, as written', async () => {
+      const previous = getLanguageSetting();
+      setLanguage('zh-CN');
+      try {
+        const executePromise = askUserQuestionTool.execute(VALID_INPUT, VALID_CONTEXT);
+        await new Promise<void>((r) => setTimeout(r, 0));
+        const reply = '不用选了，按 {text} 和 $& 原样写进标题';
+        bridge.resolveUserQuestion('tc-test', { answers: [], chatReply: reply });
+
+        const result = await executePromise as string;
+        expect(result).toContain('用户没有在卡片上选择，而是在对话里回复了');
+        expect(result.split(reply)).toHaveLength(2);
+        expect(result).not.toContain('用户已作答');
+      } finally {
+        setLanguage(previous);
+      }
     });
 
     it('returns a fallback message when result is null', async () => {

@@ -38,7 +38,7 @@ import { canSendImageDraft } from '@/core/media/imageDraft';
 import type { ImageEditDraft } from '@/types/media';
 import { isImeComposing, resolveEnterAction } from '@/components/chat/composerKeys';
 import { isMacOS } from '@/utils/platform';
-import { enqueueUserInput } from '@/core/agent/userInputQueue';
+import { sendWhileRunning } from '@/components/chat/sendWhileRunning';
 import { parseGoalCommand } from '@/core/goal/goalCommand';
 import { requestDispatchInput } from '@/core/agent/dispatchCancel';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
@@ -1871,7 +1871,8 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
 
     // Mid-task input: if agent is running, stage the message in the queue
     // strip above the composer (cancellable) instead of starting a new loop.
-    // It becomes a transcript bubble only when the loop drains it.
+    // Plain text steers the running task: it becomes a transcript bubble at
+    // the step the task reads it (sendWhileRunning.ts).
     const hasRuntimeAttachments = images.length > 0;
     if (isRunning && hasRuntimeAttachments) {
       useToastStore.getState().addToast({
@@ -1895,7 +1896,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         resetInput();
         return;
       }
-      enqueueUserInput(activeConv.id, message);
+      sendWhileRunning(activeConv.id, message);
       resetInput();
       return;
     }
@@ -1916,7 +1917,7 @@ export default function ChatInput({ variant, onSend, disabled, scenarioPlacehold
         return;
       }
       if (activeConv?.id && message && !hasRuntimeAttachments) {
-        enqueueUserInput(activeConv.id, message);
+        sendWhileRunning(activeConv.id, message);
         resetInput();
         return;
       }

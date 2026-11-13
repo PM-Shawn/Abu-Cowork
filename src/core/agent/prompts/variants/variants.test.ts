@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { MODEL_FAMILIES, type ModelFamily } from '@/core/llm/model-data/families';
 import { resolveModelProfile } from '@/core/llm/modelProfile';
@@ -138,7 +139,7 @@ describe('resolvePromptVariant', () => {
       for (const variant of [gptVariant, deepseekVariant, kimiVariant, claudeVariant]) {
         expect(variant.familyNotes).toContain(PARALLEL_TOOL_CALLS_LINE);
       }
-      const dir = path.dirname(new URL(import.meta.url).pathname);
+      const dir = path.dirname(fileURLToPath(import.meta.url));
       for (const file of readdirSync(dir).filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts') && name !== 'default.ts')) {
         expect(readFileSync(path.join(dir, file), 'utf8'), file).not.toContain('Independent tool calls go out together');
       }

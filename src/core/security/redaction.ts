@@ -4,16 +4,6 @@ const BASE64_PAYLOAD_CHARACTER = /^[a-zA-Z0-9+/_=-]$/;
 const PATH_STOP = /[\s"'`<>，。；：！？、）】」』》]/u;
 /** Trailing characters that belong to the sentence or the markup around a path, not to the path. */
 const TRAILING_PUNCTUATION = /[.,;:!?*]$/;
-/**
- * Top-level folders under which a POSIX absolute path names something on this
- * machine: homes and user files, temporary and app-data locations, mounted and
- * container volumes. Matched in their real case and only with a folder after
- * them: `/tmp 目录`, `首页/Home`, `图书馆/Library` and `</var>` name nobody.
- */
-const POSIX_ROOTS = new Set([
-  'Users', 'home', 'root', 'Volumes', 'private', 'var', 'tmp', 'opt', 'mnt', 'media', 'srv',
-  'Library', 'Applications', 'System', 'Network', 'data', 'workspace',
-]);
 /** A user's folder, wherever a path reaches it (`/System/Volumes/Data/Users/x`, `/c/Users/x`, `../Users/x`). */
 const USER_FOLDERS = new Set(['Users', 'home']);
 /** A URL other than file://: its path is the site's, never a local path. */
@@ -99,16 +89,29 @@ function segmentsOf(path: string): string[] {
   return path.replace(/[\\/]+/g, '/').split('/');
 }
 
+/** What can stand right before a lone `/name` without it being a divisor (`(¥3)/year`, `12%/year`). */
+const DIVISOR_BEFORE = /[)\]）】%]/;
+/** A file name with an extension (`/a.png`), or a plain ASCII name (`/tmp`, `/etc`). */
+const FILE_NAME = /\.[A-Za-z0-9]{1,8}$/;
+const ASCII_NAME = /^[A-Za-z_][A-Za-z0-9_-]*$/;
+
 /**
  * Whether a path that starts with `/`, `~/` or `../` names a place on this
- * machine: a folder under one of `POSIX_ROOTS`, the home folder, or a user's
- * folder reached any other way.
+ * machine, told by its shape and never by which folder it starts in (any
+ * root, any case, any language): `~/x`, a path through a user's folder, a
+ * path of two or more segments (`/a/b`), or a lone `/name` that is a file
+ * name or a plain ASCII name (`/tmp`) and does not follow a closing bracket
+ * or percent sign (inside `<…>` a lone name is a closing tag, as in `</div>`). A lone `/年` or `/个` is a divisor in prose, not a path.
  */
-function isLocalPosixPath(path: string): boolean {
+function isLocalPosixPath(path: string, before = '', loneNameCounts = true): boolean {
   const segments = segmentsOf(path);
   if (segments[0] === '~') return segments.length > 1 && segments[1] !== '';
-  if (segments[0] === '' && POSIX_ROOTS.has(segments[1] ?? '') && (segments[2] ?? '') !== '') return true;
-  return segments.some((segment, i) => USER_FOLDERS.has(segment) && (segments[i + 1] ?? '') !== '');
+  if (segments.some((segment, i) => USER_FOLDERS.has(segment) && (segments[i + 1] ?? '') !== '')) return true;
+  if (segments[0] !== '') return false;
+  const names = segments.slice(1).filter(Boolean);
+  if (names.length >= 2) return true;
+  if (names.length === 0) return false;
+  return loneNameCounts && !DIVISOR_BEFORE.test(before) && (FILE_NAME.test(names[0]) || ASCII_NAME.test(names[0]));
 }
 
 /**
@@ -146,14 +149,14 @@ function pathEnd(text: string, start: number): number {
 }
 
 /** Replace every path that a start pattern finds and `pathEnd` ends, when `redact` says it is local. */
-function replacePaths(text: string, starts: RegExp, redact: (path: string) => boolean): string {
+function replacePaths(text: string, starts: RegExp, redact: (path: string, before: string) => boolean): string {
   let output = '';
   let cursor = 0;
   starts.lastIndex = 0;
   for (let match = starts.exec(text); match; match = starts.exec(text)) {
     if (match.index < cursor) continue;
     const end = pathEnd(text, match.index);
-    if (!redact(text.slice(match.index, end))) continue;
+    if (!redact(text.slice(match.index, end), text[match.index - 1] ?? '')) continue;
     output += `${text.slice(cursor, match.index)}[REDACTED:path]`;
     cursor = end;
     starts.lastIndex = end;
@@ -166,7 +169,7 @@ function replacePaths(text: string, starts: RegExp, redact: (path: string) => bo
  * counts), `~/` not right after a letter (`元~/月` is a price), or `../`.
  * Chinese text may run right up to a `/` path (`已保存到/Users/a.png`).
  */
-const POSIX_PATH_START = /(?<![A-Za-z0-9_.~/-])\/(?!\/)|(?<![\p{L}\p{N}_.~/\\-])~(?=[\\/])|(?<![\p{L}\p{N}_.~/\\-])(?:\.\.[\\/])+/gu;
+const POSIX_PATH_START = /(?<![A-Za-z0-9_\p{M}.~/<-])\/(?!\/)|(?<![\p{L}\p{N}\p{M}_.~/\\-])~(?=[\\/])|(?<![\p{L}\p{N}_.~/\\-])(?:\.\.[\\/])+/gu;
 
 function redactLocalPaths(text: string): string {
   const windows = replacePaths(text, WINDOWS_PATH_START, () => true);
@@ -185,9 +188,8 @@ function redactUrl(url: string): string {
  * Redact local filesystem paths and inline media from transport/telemetry
  * text, and nothing else: the text is often a document the model must read
  * exactly. A path is a drive letter (`C:\…`), a UNC share (`\\server\share`),
- * a `file://` URL, a POSIX path under one of the folders where this machine
- * keeps files (`POSIX_ROOTS`, in their real case, with a folder after the
- * root), `~/…`, or any path through a user's folder (`…/Users/<name>`).
+ * a `file://` URL, a POSIX path (any root; see `isLocalPosixPath` for the
+ * shapes that count), `~/…`, or any path through a user's folder (`…/Users/<name>`).
  * Colon-prefixed labels like `output:/tmp/a.png` count; an angle-bracketed
  * path may hold spaces (`</Users/a b.png>`) while HTML closing tags such as
  * `</div>` stay. A slash inside a word, a number or a URL (`https://host/Users/x`,
@@ -195,7 +197,7 @@ function redactUrl(url: string): string {
  */
 export function redactSensitiveMediaText(value: string): string {
   const text = redactInlineMediaPayloads(value).replace(ANGLE_PATH, (whole, inner: string) => (
-    /^[A-Za-z]:|^\\\\/.test(inner) || isLocalPosixPath(inner) ? '<[REDACTED:path]>' : whole
+    /^[A-Za-z]:|^\\\\/.test(inner) || isLocalPosixPath(inner, '', false) ? '<[REDACTED:path]>' : whole
   ));
   let output = '';
   let cursor = 0;

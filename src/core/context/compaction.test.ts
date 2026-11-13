@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Message, StreamEvent, ToolCall } from '@/types';
 import type { LLMAdapter } from '../llm/adapter';
 import type { SummaryRequest } from './contextCompressor';
-import { compactHistory, readFileThroughTool } from './compaction';
+import { compactHistory, readFileThroughTool, RETAINED_TAIL_RATIO } from './compaction';
 import { buildContextFromBoundary } from './compactBoundary';
 import { computeInputBudget, enforceContextBudget } from './contextManager';
 import { estimateMessageTokens, estimateTokens, estimateToolSchemaTokens } from './tokenEstimator';
@@ -206,6 +206,58 @@ describe('compactHistory', () => {
     })).rejects.toThrow();
     expect(readFile).toHaveBeenCalledTimes(1);
     expect(history).toEqual(original);
+  });
+});
+
+/**
+ * A run whose system prompt and tools take most of the input budget (a small
+ * local window, a long prompt). What compaction keeps is sized from the room
+ * left for the conversation, so the run's own next steps still fit; sized from
+ * the whole budget, the kept part alone filled that room and the budget gate
+ * refused the next request with INPUT_TOO_LARGE.
+ */
+describe('compactHistory in a window mostly filled by the system prompt', () => {
+  const WINDOW = 32_768;
+  const OUTPUT_RESERVE = 8_192;
+  const LONG_TURN = 'x'.repeat(6_000);
+
+  async function compactThenSend(fixedTokens: number) {
+    const { inputBudget } = computeInputBudget(WINDOW, OUTPUT_RESERVE);
+    const history: Message[] = [];
+    for (let turn = 0; turn < 6; turn += 1) {
+      history.push(msg('user', { content: `turn ${turn}\n${LONG_TURN}` }), msg('assistant', { content: `answer ${turn}` }));
+    }
+    // The newest task: a user message and two read_file steps, as the run goes on.
+    history.push(msg('user', { content: 'read the two files' }), step([{ name: 'read_file' }]), step([{ name: 'read_file' }]));
+
+    const marker = await compactHistory({
+      history,
+      inputBudget,
+      retainTokens: Math.floor(inputBudget * RETAINED_TAIL_RATIO),
+      source: 'auto',
+      summary: summaryRequest as never,
+      readFile: vi.fn(),
+      now: () => 1,
+    });
+    expect(marker).not.toBeNull();
+    const view = buildContextFromBoundary([...history.slice(0, -2), marker!, ...history.slice(-2)]);
+    const system = 'a'.repeat(fixedTokens * 4);
+    return { inputBudget, send: () => enforceContextBudget(view, system, WINDOW, OUTPUT_RESERVE, 0) };
+  }
+
+  it('leaves the run room for its own steps when the fixed part is 70% of the budget', async () => {
+    const { inputBudget, send } = await compactThenSend(Math.floor(23_920 * 0.7));
+    const sent = send();
+    expect(sent.strategy).toBe('unchanged');
+    // At least a tenth of the budget stays free after what compaction kept.
+    expect(inputBudget - sent.tokensAfter).toBeGreaterThanOrEqual(Math.floor(inputBudget * 0.1));
+  });
+
+  it('keeps fitting as the fixed part grows, up to what leaves any room at all', async () => {
+    for (const share of [0.6, 0.7, 0.8, 0.9]) {
+      const { send } = await compactThenSend(Math.floor(23_920 * share));
+      expect(send().strategy, `fixed part ${share * 100}% of the budget`).toBe('unchanged');
+    }
   });
 });
 

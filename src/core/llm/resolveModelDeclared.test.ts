@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveModelDeclared, resolveModelVision } from './resolveModelDeclared';
+import { resolveModelProfile } from './modelProfile';
 import type { ProviderInstance } from '@/types/provider';
 
 function makeProvider(over: Partial<ProviderInstance>): ProviderInstance {
@@ -38,6 +39,65 @@ describe('resolveModelDeclared', () => {
     expect(r?.useRawUrl).toBe(true);
     expect(r?.thinkingFormat).toBe('qwen');
     expect(r?.supportsTools).toBe(false);
+  });
+  it('thinkingEffort: the model\'s own pick wins, else the provider-level one, else unset', () => {
+    const p = makeProvider({
+      declaredCapabilities: { thinkingEffort: 'high' },
+      models: [
+        { id: 'inherits', label: 'inherits' },
+        { id: 'own', label: 'own', declaredCapabilities: { thinkingEffort: 'off' } },
+      ],
+    });
+    expect(resolveModelDeclared(p, 'inherits')?.thinkingEffort).toBe('high');
+    expect(resolveModelDeclared(p, 'own')?.thinkingEffort).toBe('off');
+    const unset = makeProvider({ models: [{ id: 'm', label: 'm', declaredCapabilities: { supportsTools: true } }] });
+    expect(resolveModelDeclared(unset, 'm')?.thinkingEffort).toBeUndefined();
+  });
+  it('thinkingEffort reaches a curated built-in provider, which declares nothing at provider level', () => {
+    const p = makeProvider({
+      id: 'deepseek',
+      source: 'builtin',
+      baseUrl: 'https://api.deepseek.com',
+      declaredCapabilities: undefined,
+      models: [
+        { id: 'deepseek-flash', label: 'DeepSeek V4.1 Flash', declaredCapabilities: { thinkingEffort: 'max' } },
+        { id: 'deepseek-v4-pro', label: 'DeepSeek V4 Pro' },
+      ],
+    });
+    const picked = resolveModelDeclared(p, 'deepseek-flash');
+    expect(picked?.thinkingEffort).toBe('max');
+    // Only the pick is declared: nothing else is switched on, off or limited by it.
+    expect(picked).toEqual({
+      thinkingEffort: 'max',
+      supportsTools: undefined, supportsImages: undefined, supportsReasoning: undefined,
+      supportedEfforts: undefined, maxInputTokens: undefined, maxOutputTokens: undefined,
+      parallelToolCalls: undefined, useRawUrl: undefined, thinkingFormat: undefined,
+      maxTokensField: undefined, requiresToolResultName: undefined, reasoningReplay: undefined,
+      toolSchemaDialect: undefined, sendTemperature: undefined, promptCacheKey: undefined,
+    });
+    // A sibling model that picked nothing still resolves to "auto-detect".
+    expect(resolveModelDeclared(p, 'deepseek-v4-pro')).toBeUndefined();
+  });
+  it('the profile of a curated built-in DeepSeek model carries the pick and nothing else changes', () => {
+    const provider = makeProvider({
+      id: 'deepseek',
+      source: 'builtin',
+      baseUrl: 'https://api.deepseek.com',
+      models: [{ id: 'deepseek-flash', label: 'DeepSeek V4.1 Flash', declaredCapabilities: { thinkingEffort: 'off' } }],
+    });
+    const plain = resolveModelProfile({
+      modelId: 'deepseek-flash',
+      provider: makeProvider({ id: 'deepseek', source: 'builtin', baseUrl: 'https://api.deepseek.com', models: [] }),
+    });
+    const picked = resolveModelProfile({ modelId: 'deepseek-flash', provider });
+    expect(plain.wire.thinkingEffort).toBeNull();
+    expect(picked.wire.thinkingEffort).toBe('off');
+    expect(picked.wire.thinkingFormat).toBe('deepseek');
+    expect(picked.wire.stripReasoningParams).toBe(false);
+    // The off pick also drops the reasoning replay (there is no reasoning to hand back).
+    expect(picked.wire.reasoningReplay).toBe('none');
+    expect({ ...picked.wire, thinkingEffort: null, reasoningReplay: plain.wire.reasoningReplay }).toEqual(plain.wire);
+    expect(picked.capabilities).toEqual(plain.capabilities);
   });
   it('unknown modelId falls back to provider-level only', () => {
     const p = makeProvider({

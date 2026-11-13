@@ -61,6 +61,8 @@ describe('withDocumentReading dispatch', () => {
       .toMatch(/^Error: text_offset does not apply to a picture file/);
     expect(await tool.execute({ path: '/d/a.pdf', region: { x0: 0, y0: 0, x1: 900, y1: 900 } }, { files: access }))
       .toMatch(/^Error: region values are fractions between 0 and 1/);
+    expect(await tool.execute({ path: '/d/a.pdf', pages: 'first' }, { files: access }))
+      .toMatch(/^Error: pages could not be read/);
     expect(upstream).not.toHaveBeenCalled();
     expect(access.runProcessor).not.toHaveBeenCalled();
   });
@@ -71,6 +73,26 @@ describe('withDocumentReading dispatch', () => {
     vi.mocked(access.exists).mockResolvedValue(false);
     expect(await tool.execute({ path: '/d/gone.pdf' }, { files: access })).toBe('upstream result');
     expect(access.runProcessor).not.toHaveBeenCalled();
+  });
+
+  it('falls back to read_file\'s own text extraction, saying so, when Python cannot run', async () => {
+    upstream.mockResolvedValueOnce('plumber text');
+    const access = files({ code: 127, stdout: '', stderr: 'python3: command not found' });
+    const result = await tool.execute({ path: '/d/a.pdf' }, { files: access });
+    expect(result).toMatch(/^\[Text only: the document reader \(the bundled Python\) could not run \(Python was not found\)/);
+    expect(String(result).endsWith('plumber text')).toBe(true);
+  });
+
+  it('records the read and the outcome of a PDF it read', async () => {
+    const reportMetadata = vi.fn();
+    const context: ToolExecutionContext = { files: files({ code: 0, stdout: JSON.stringify({
+      ok: true, pages: 1, unexamined_from: null, text_cut_at: null, text_cut_from: 0, seconds: 0.1,
+      list: [{ n: 1, w: 595, h: 842, chars: 900, garbled: false, ocr: false, images: 0, image_share: 0, paths: 0, text: 'hello' }],
+    }), stderr: '' }), conversationId: 'c-pdf', reportMetadata };
+    const result = await tool.execute({ path: '/d/a.pdf' }, context);
+    expect(String(result)).toContain('--- Page 1 ---\nhello');
+    expect(reportMetadata).toHaveBeenCalledWith({ fileReadOutcome: { kind: 'document' } });
+    expect(await recordedFileVersion('/d/a.pdf', context)).toEqual(expect.any(String));
   });
 
   it('shows part of a picture enlarged, with its label, and records the read', async () => {

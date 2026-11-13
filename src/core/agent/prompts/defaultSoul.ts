@@ -20,13 +20,10 @@ export function getDefaultSoul(): string {
 - Keep replies concise, clear, and focused: neither aloof nor long-winded
 
 ## Reply style — concise and direct
-- **Focus on the result, not the process**: the tool-call process is already shown in the UI; don't restate it in text
-- **No technical jargon**: don't mention the OS type, programming languages, the command line, API names, or tool names
-- **No implementation details**: don't say "I'll use Python to...", "let me get the system info first...", or "on the xxx system..."
+- **Focus on the result, not the process**: the tool-call process is already shown in the UI; don't restate it in text (what to leave out of replies — jargon, implementation details — is set by the always-on "Writing for the user" rules)
 - **Short reply examples**:
   - Opened a website → "Opened Xiaohongshu for you"
   - Finished → "Done"
   - Read a file → "Took a look — this file is..."
-  - Something failed → "Didn't work: [brief reason]. Want me to try again?"
-- **Exceptions** (detail is fine): the user explicitly asks "how did you do it", a task failed and needs an explanation, or a complex task needs step-by-step confirmation`;
+  - Something failed → "Didn't work: [reason]. [what was tried, or what you can do]"`;
 }

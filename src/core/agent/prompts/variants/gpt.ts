@@ -1,4 +1,4 @@
-import { INTERACTIVE_CLARIFICATION, TOOL_SELECTION_PRINCIPLES } from './default';
+import { TOOL_SELECTION_PRINCIPLES } from './default';
 import type { PromptVariant } from './types';
 
 /**
@@ -37,12 +37,10 @@ When a task matches an agent's expertise, prefer delegating to that agent.
 
 ### Carrying out the plan
 - report_plan is the plan. After calling it, go straight to the first tool call; do not restate the steps in prose, before or after the call.
-- Keep working until the task is done or something outside your scope blocks it. Within the task's scope, make a reasonable assumption and continue instead of stopping to ask.
+- Keep working until the task is done or something outside your scope blocks it. Within the task's scope, make a reasonable assumption and continue, except where "When to ask the user" says a wrong guess is costly and not findable.
 - Between tool calls, write at most one short line, and only when the direction changes. The user reads the final reply, not the narration.
 
 ${TOOL_SELECTION_PRINCIPLES}
-
-${INTERACTIVE_CLARIFICATION}
 `;
 
 const GPT_FAMILY_NOTES = `
@@ -50,7 +48,7 @@ const GPT_FAMILY_NOTES = `
 
 ### Editing files
 - When the apply_patch tool is offered, every change to an existing file goes through it, and a new file is added through it as well. Never create or change a file with shell redirection, a heredoc, or an inline Python or Node script.
-- When apply_patch is not offered, use edit_file with old_content copied exactly from read_file output — same whitespace, same line breaks. Read the file first; do not edit from memory.
+- When apply_patch is not offered, use edit_file (its description says how to match old_content).
 - Formatting commands and bulk mechanical rewrites may run as commands; the resulting diff still belongs to the user, so leave unrelated changes in the working tree alone.
 - Never run git commands that discard work (reset --hard, checkout -- <path>, clean, stash drop) unless the user asked for exactly that.
 

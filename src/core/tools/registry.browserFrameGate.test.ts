@@ -52,7 +52,9 @@ const VENDOR_URL = `${VENDOR}/form`;
 /** A SECOND page that embeds the same vendor region — the "somewhere else" arm. */
 const OTHER_PAGE = 'https://portal.example.org';
 const OTHER_PAGE_URL = `${OTHER_PAGE}/desk`;
-const BANK = 'https://bank.example.com';
+// A money-movement host: the host makes a page high-risk, not a `/transfer`
+// in the path of an ordinary site.
+const BANK = 'https://www.paypal.com';
 const BANK_URL = `${BANK}/transfer`;
 const OWNER = 'run-owner';
 const TAB = 42;

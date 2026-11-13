@@ -1,10 +1,9 @@
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Button } from '@/components/ds/button';
 import { Dialog } from '@/components/ds/dialog';
 import { Icon } from '@/components/ds/icon';
 import { AppIcons } from '@/components/ds/icons';
 import { InlineMessage } from '@/components/ds/inline-message';
-import { lastInputWasPointer } from '@/components/ds/input-modality';
 import { Pressable } from '@/components/ds/pressable';
 import { SegmentedControl } from '@/components/ds/segmented-control';
 import { useI18n } from '@/i18n';
@@ -45,29 +44,24 @@ const iconMap = {
  * An approval layer: no other window closes it or covers it, and one approval is on the page at
  * a time. It opens with the focus on Deny, so Enter and Space pressed as it appears deny.
  * Escape and the corner button deny as well; a press outside does nothing. Only a press on the
- * allowing button allows, and a grant for good takes a second press on purpose.
+ * allowing button allows.
+ *
+ * A grant is remembered by default: the folder is asked about once, and the answer holds after
+ * a restart. The one other choice keeps it until the app is quit. (Before 2026-11 the default
+ * lasted until a restart, so the same folder was asked about again every day, and remembering
+ * took a second press.)
  *
  * Another path or another kind of grant is another window: it starts from the default
- * duration, without the question about a grant for good, and with the focus on Deny. An owner
- * that shows one request after another for the same path gives each a `key` of its own.
+ * duration, with the focus on Deny. An owner that shows one request after another for the
+ * same path gives each a `key` of its own.
  */
 export default function PermissionDialog(props: PermissionDialogProps) {
   return <PermissionWindow key={`${props.request.type}\n${props.request.path ?? ''}`} {...props} />;
 }
 
 function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthorize, onFocusUnplaced }: PermissionDialogProps) {
-  const [selectedDuration, setSelectedDuration] = useState<PermissionDuration>('session');
-  const [showAlwaysConfirm, setShowAlwaysConfirm] = useState(false);
+  const [selectedDuration, setSelectedDuration] = useState<PermissionDuration>('always');
   const { t } = useI18n();
-
-  // The question about a grant for good turns the allowing button, which was just pressed and
-  // has the focus, into the button that grants for good. The focus moves to the button that
-  // takes the question back, so a stray Enter or Space grants nothing.
-  const cancelRef = useRef<HTMLButtonElement>(null);
-  useLayoutEffect(() => {
-    if (!showAlwaysConfirm) return;
-    cancelRef.current?.focus({ preventScroll: true, ...(lastInputWasPointer() ? { focusVisible: false } : {}) });
-  }, [showAlwaysConfirm]);
 
   // Get the appropriate permission config from translations
   const getPermissionConfig = () => {
@@ -87,30 +81,16 @@ function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthoriz
 
   const config = getPermissionConfig();
 
+  // Two durations that differ: for good, and until the app is quit. ('once' lasted until a
+  // restart as well, and nobody chose '24h'; grants stored with either still load.)
   const durationOptions: Array<{ value: PermissionDuration; label: string }> = [
-    { value: 'once', label: t.permission.durationOnce },
-    { value: 'session', label: t.permission.durationSession },
-    { value: '24h', label: t.permission.duration24h },
     { value: 'always', label: t.permission.durationAlways },
+    { value: 'session', label: t.permission.durationSession },
   ];
 
-  const getAllowButtonText = () => {
-    switch (selectedDuration) {
-      case 'once': return t.permission.allowOnceButton;
-      case 'session': return t.permission.allowSessionButton;
-      case '24h': return t.permission.allow24hButton;
-      case 'always': return t.permission.allowAlwaysButton;
-    }
-  };
-
-  const handleAllow = () => {
-    // Show inline confirmation for 'always' option instead of window.confirm
-    if (selectedDuration === 'always' && !showAlwaysConfirm) {
-      setShowAlwaysConfirm(true);
-      return;
-    }
-    onAllow(selectedDuration);
-  };
+  const allowButtonText = selectedDuration === 'always'
+    ? t.permission.allowAlwaysButton
+    : t.permission.allowSessionButton;
 
   // A workspace request of a task has two forms: one that names a folder to authorize, and one
   // that only asks the user to pick a folder.
@@ -192,7 +172,7 @@ function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthoriz
         <InlineMessage tone="warning">{config.warning}</InlineMessage>
         <div>
           <p className="mb-2 text-ui-sm text-label-secondary">{t.permission.durationLabel}</p>
-          {/* Arrow keys move the focus among the four; Enter, Space or a press chooses one. */}
+          {/* Arrow keys move the focus between the two; Enter, Space or a press chooses one. */}
           <SegmentedControl
             fullWidth
             label={t.permission.durationLabel}
@@ -204,27 +184,15 @@ function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthoriz
             options={durationOptions}
           />
         </div>
-        {showAlwaysConfirm && <InlineMessage tone="danger">{t.permission.durationAlwaysConfirm}</InlineMessage>}
       </div>
     );
     footer = (
       <>
-        <Button
-          ref={cancelRef}
-          variant="secondary"
-          data-approval-cancel=""
-          onClick={() => {
-            if (showAlwaysConfirm) {
-              setShowAlwaysConfirm(false);
-            } else {
-              onDeny();
-            }
-          }}
-        >
-          {showAlwaysConfirm ? t.common.cancel : t.permission.deny}
+        <Button variant="secondary" data-approval-cancel="" onClick={onDeny}>
+          {t.permission.deny}
         </Button>
-        <Button variant="primary" onClick={handleAllow}>
-          {showAlwaysConfirm ? t.common.confirm : getAllowButtonText()}
+        <Button variant="primary" onClick={() => onAllow(selectedDuration)}>
+          {allowButtonText}
         </Button>
       </>
     );
@@ -241,9 +209,6 @@ function PermissionWindow({ request, onAllow, onDeny, onChooseFolder, onAuthoriz
       // A workspace request answers itself 60 seconds after it was asked: among the approvals
       // that wait their turn it goes first.
       urgent={isFolderSelect}
-      // The question about a grant for good turns the allowing button into the one that grants
-      // for good, at the same spot: the window holds pointer presses back again, as when it appeared.
-      settleKey={showAlwaysConfirm}
       // Escape and the corner button. The layer registry never closes an approval.
       onOpenChange={(next) => { if (!next) onDeny(); }}
       title={title}

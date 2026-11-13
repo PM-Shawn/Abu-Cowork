@@ -26,25 +26,39 @@
  * If a page-derived signal is ever wanted, it may only TIGHTEN (turn a
  * not-high-risk URL into high-risk); it may never relax a URL-based verdict.
  *
- * ## Known evasion, and why it is acceptable
+ * ## What counts
  *
- * A page can shed the PATH classifier at will — `history.replaceState({}, '',
- * '/x')` rewrites the address bar without a navigation, and the next call
- * resolves a URL with no money-movement keyword in it. That is fail-safe, not
- * a hole: evasion only returns the call to the ORDINARY gate, which for an
- * unattended run still requires a standing `'allowed'` site grant, still pins
- * the origin at execution time, and still refuses scripting. The escape route
- * leads back to the fence, not past it. The domain table is unaffected by this
- * (a host cannot be rewritten without actually navigating).
+ * Two kinds of host, and nothing else: money-movement domains (payment
+ * processors, banks, brokerages, exchanges) and government hosts. The path is
+ * not read. Path keywords (`/payment`, `/transfer`, `/checkout`, …) used to
+ * flag any site, which turned a company OA's `/finance/payment/list` report
+ * page into a bank: every click asked, in every mode, with no way to remember.
+ * On a money domain the whole host is high-risk already, so a keyword added
+ * nothing there.
+ *
+ * The caller decides what each kind means: on a money domain every action asks
+ * and nothing is remembered; on a government host the first action of a task
+ * asks. Opening and reading a page is not an action (`navigatesOnly`).
+ *
+ * ## Why host classes and not the path again
+ *
+ * Reviewing the host-only version found common banks, brokers and government
+ * sites unprotected (`bankofchina.com`, `ebank.pingan.com`, `eastmoney.com`,
+ * `gov.hk`). The gap is the domain table's reach, not the lack of a path rule:
+ * a path rule reads an address the page can rewrite (`history.replaceState`),
+ * and it flagged ordinary sites (a company OA's payment report), which made
+ * every click ask with no way to remember. So the fix widens what a HOST can
+ * match instead: more named banks, brokers and payment services; a bank class
+ * by host label (`ebank.`, `netbank.`, `banking.`, the `.bank` TLD); and the
+ * government suffixes of the large jurisdictions (`gov.hk`, `gov.sg`,
+ * `gov.tw`, `.mil`, `go.kr`, ...). The path stays unread.
  *
  * ## Deliberately minimal, deliberately incomplete
  *
- * The domain table below is a short list of unambiguous money-movement and
- * government hosts, not an attempt at completeness — an incomplete list is not
- * a hole in the fence, because everything it misses still falls through to the
- * ordinary site-verdict + operation-policy gate. The path patterns are what
- * gives it reach beyond the list: `/checkout`, `/transfer`, `/wire` and their
- * kin appear on the long tail of sites nobody can enumerate.
+ * The domain table below is a list of unambiguous money-movement hosts, not an
+ * attempt at completeness — an incomplete list is not a hole in the fence,
+ * because everything it misses still falls through to the ordinary site
+ * configuration + operation-policy gate.
  */
 
 /**
@@ -62,7 +76,7 @@ const MONEY_MOVEMENT_DOMAINS = [
   'venmo.com',
   'alipay.com',
   'unionpay.com',
-  // Banks (a representative few — the path patterns carry the long tail)
+  // Banks (a representative few; an unlisted bank falls back to the ordinary site gate)
   'chase.com',
   'bankofamerica.com',
   'wellsfargo.com',
@@ -73,12 +87,71 @@ const MONEY_MOVEMENT_DOMAINS = [
   'boc.cn',
   'abchina.com',
   'cmbchina.com',
-  // Brokerages / crypto exchanges
+  'bankcomm.com',
+  'psbc.com',
+  'cib.com.cn',
+  'spdb.com.cn',
+  'cebbank.com',
+  'bankofchina.com',
+  'bochk.com',
+  'hsbc.com.cn',
+  'hsbc.com.hk',
+  'hangseng.com',
+  'citibank.com.cn',
+  'standardchartered.com',
+  'dbs.com',
+  'ocbc.com',
+  'uob.com',
+  'jpmorgan.com',
+  'capitalone.com',
+  'usbank.com',
+  'tdbank.com',
+  'ccb.com.cn',
+  'abchina.com.cn',
+  'ebank.pingan.com',
+  'citicbank.com',
+  'cmbc.com.cn',
+  'hxb.com.cn',
+  'cgbchina.com.cn',
+  'bank.pingan.com',
+  'bankofbeijing.com.cn',
+  'mybank.cn',
+  'webank.com',
+  // Payment and clearing services in China
+  'tenpay.com',
+  'pay.weixin.qq.com',
+  '95516.com',
+  '99bill.com',
+  'yeepay.com',
+  'lianlianpay.com',
+  'jdpay.com',
+  // Brokerages / crypto exchanges (the web trading hosts of the large Chinese securities firms first)
+  'citics.com',
+  'htsc.com.cn',
+  'gtja.com',
+  'cmschina.com',
+  'gf.com.cn',
+  'eastmoney.com',
+  'csc108.com',
+  'cicc.com',
+  'guosen.com.cn',
+  'ebscn.com',
+  'orientsec.com.cn',
+  'swhysc.com',
+  'xyzq.com.cn',
+  'gjzq.com.cn',
+  'cgws.com',
+  'dwzq.com.cn',
+  'essence.com.cn',
+  'futunn.com',
+  'tigerbrokers.com',
+  'interactivebrokers.com',
   'schwab.com',
   'fidelity.com',
   'robinhood.com',
   'coinbase.com',
   'binance.com',
+  'okx.com',
 ];
 
 /**
@@ -88,31 +161,52 @@ const MONEY_MOVEMENT_DOMAINS = [
  */
 const GOVERNMENT_HOST_SUFFIXES = [
   'gov',
+  'mil',
   'gov.cn',
+  'mil.cn',
+  'gov.hk',
+  'gov.mo',
+  'gov.tw',
+  'gov.sg',
   'gov.uk',
   'gov.au',
+  'gov.nz',
+  'govt.nz',
+  'gov.in',
+  'gov.my',
+  'gov.ph',
+  'gov.vn',
+  'gov.ae',
+  'gov.sa',
+  'gov.il',
+  'gov.tr',
+  'gov.br',
+  'gov.za',
+  'gov.ie',
+  'gov.it',
   'go.jp',
+  'go.kr',
+  'go.th',
+  'go.id',
   'gouv.fr',
+  'gouv.qc.ca',
+  'gc.ca',
+  'canada.ca',
+  'gob.mx',
+  'gob.es',
+  'bund.de',
+  'admin.ch',
+  'overheid.nl',
+  'europa.eu',
 ];
 
 /**
- * Money-movement path keywords. Anchored to path-SEGMENT-ish boundaries on
- * purpose: a bare substring match flags `/hardwired`, `/repayments` and
- * `/checkouts-are-hard`, and a control that cries wolf on a blog post is a
- * control users switch off.
+ * Host labels that name a bank's online banking wherever the bank keeps it:
+ * `ebank.<bank>.com`, `netbank.`, `banking.`, `perbank.`. Matched as a whole
+ * label, so `bankrate.com` and `bankofexample-news.test` are not banks. The
+ * `.bank` top-level domain is restricted to banks.
  */
-const MONEY_MOVEMENT_PATH_KEYWORDS = [
-  'transfer',
-  'payment',
-  'checkout',
-  'wire',
-  'remit',
-];
-
-const MONEY_MOVEMENT_PATH_PATTERN = new RegExp(
-  `(?:^|[/_.\\-])(${MONEY_MOVEMENT_PATH_KEYWORDS.join('|')})(?:s)?(?:[/_.\\-]|$)`,
-  'i',
-);
+const BANK_HOST_LABEL = /^(?:e|net|i|m|p|per|corp|mobile|online|internet|tele|phone)?bank(?:ing)?$/;
 
 /**
  * `host` is exactly `suffix`, or a subdomain of it. NOT `endsWith`: that would
@@ -122,20 +216,6 @@ const MONEY_MOVEMENT_PATH_PATTERN = new RegExp(
 function hostMatchesSuffix(host, suffix) {
   if (host === suffix) return true;
   return host.endsWith(`.${suffix}`);
-}
-
-/**
- * Percent-encoding must not be an escape hatch: `/%74%72%61%6e%73%66%65%72`
- * loads exactly the same page as `/transfer`, and `URL.pathname` keeps the
- * encoded spelling. Decoding failure (a lone `%`) falls back to the raw path —
- * matching on something is better than matching on nothing.
- */
-function decodedPath(pathname) {
-  try {
-    return decodeURIComponent(pathname);
-  } catch {
-    return pathname;
-  }
 }
 
 /**
@@ -167,19 +247,65 @@ export function classifyHighRiskUrl(url) {
   for (const domain of MONEY_MOVEMENT_DOMAINS) {
     if (hostMatchesSuffix(host, domain)) return { reason: 'money-domain', matched: domain };
   }
+  const labels = host.split('.');
+  if (labels[labels.length - 1] === 'bank' || labels.slice(0, -1).some((label) => BANK_HOST_LABEL.test(label))) {
+    return { reason: 'money-domain', matched: 'bank-host' };
+  }
   for (const suffix of GOVERNMENT_HOST_SUFFIXES) {
     if (hostMatchesSuffix(host, suffix)) return { reason: 'government-domain', matched: suffix };
   }
 
-  // Only the PATH, never the query: `?q=payment` is a search for the word, not
-  // a payment page, and flagging it would make the control noise.
-  const match = MONEY_MOVEMENT_PATH_PATTERN.exec(decodedPath(parsed.pathname));
-  if (match) return { reason: 'money-movement-path', matched: match[1].toLowerCase() };
-
+  // A money-movement keyword in the path of any other site is no longer a
+  // verdict: see "What counts" in this module's doc.
   return null;
 }
 
 /** Boolean form of {@link classifyHighRiskUrl}, for call sites that only branch. */
 export function isHighRiskUrl(url) {
   return classifyHighRiskUrl(url) !== null;
+}
+
+/**
+ * Money-movement path keywords, for one caller only: Electron's popup policy
+ * (`electron/browserPopupPolicy.cjs`), which refuses a popup or redirect that an
+ * AI action opens towards a payment-like path. Refusing a popup costs the user
+ * nothing, so that check keeps the path rule it always had; approvals no longer
+ * read the path (see "What counts"), because there every match asked the user.
+ *
+ * Anchored to path-segment-ish boundaries: a bare substring match would flag
+ * `/hardwired`, `/repayments` and `/checkouts-are-hard`.
+ */
+const MONEY_MOVEMENT_PATH_KEYWORDS = ['transfer', 'payment', 'checkout', 'wire', 'remit'];
+
+const MONEY_MOVEMENT_PATH_PATTERN = new RegExp(
+  `(?:^|[/_.\\-])(${MONEY_MOVEMENT_PATH_KEYWORDS.join('|')})(?:s)?(?:[/_.\\-]|$)`,
+  'i',
+);
+
+/**
+ * Percent-encoding must not be an escape hatch: `/%74ransfer` loads the same
+ * page as `/transfer`. A decoding failure (a lone `%`) falls back to the raw path.
+ */
+function decodedPath(pathname) {
+  try {
+    return decodeURIComponent(pathname);
+  } catch {
+    return pathname;
+  }
+}
+
+/**
+ * True when an http(s) URL's PATH (never the query) carries a money-movement
+ * keyword. Not part of {@link classifyHighRiskUrl}: only the popup policy uses it.
+ */
+export function hasMoneyMovementPath(url) {
+  if (!url) return false;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+  return MONEY_MOVEMENT_PATH_PATTERN.test(decodedPath(parsed.pathname));
 }

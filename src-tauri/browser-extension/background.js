@@ -561,9 +561,21 @@
   function ownerFromPayload(payload2) {
     return makeOwner(payload2.ownerId, payload2.runId);
   }
+  var SPAWN_ADOPT_WINDOW_MS = 8e3;
+  var TAB_SPAWNING_ACTIONS = /* @__PURE__ */ new Set([
+    "click",
+    "keyboard",
+    "fill",
+    "select",
+    "navigate",
+    "execute_js",
+    "download"
+  ]);
   function createTabClaimStore() {
     const claims = /* @__PURE__ */ new Map();
     const currentTabByOwner = /* @__PURE__ */ new Map();
+    const openedTabs = /* @__PURE__ */ new Map();
+    const lastDriven = /* @__PURE__ */ new Map();
     function inScope(owner, conversationId, runKey) {
       if (owner.conversationId !== conversationId) return false;
       return runKey === void 0 || owner.runKey === runKey;
@@ -585,6 +597,8 @@
       },
       releaseTab(tabId2) {
         claims.delete(tabId2);
+        openedTabs.delete(tabId2);
+        lastDriven.delete(tabId2);
         for (const [ownerKey, current] of currentTabByOwner) {
           if (current === tabId2) currentTabByOwner.delete(ownerKey);
         }
@@ -602,11 +616,34 @@
             currentTabByOwner.delete(ownerKey);
           }
         }
+        for (const [tabId2, driven] of lastDriven) {
+          if (inScope(driven.owner, conversationId, runKey)) lastDriven.delete(tabId2);
+        }
         return dropped;
       },
       releaseAll() {
         claims.clear();
         currentTabByOwner.clear();
+        openedTabs.clear();
+        lastDriven.clear();
+      },
+      markOpened(tabId2, owner) {
+        if (isLegacyOwner(owner)) return;
+        openedTabs.set(tabId2, owner);
+      },
+      openedBy(tabId2) {
+        return openedTabs.get(tabId2) ?? null;
+      },
+      noteDriven(tabId2, owner, at) {
+        if (isLegacyOwner(owner)) return;
+        lastDriven.set(tabId2, { owner, at });
+      },
+      adoptSpawned(tabId2, openerTabId, now) {
+        const driven = lastDriven.get(openerTabId);
+        if (!driven || now - driven.at > SPAWN_ADOPT_WINDOW_MS) return null;
+        if (!claims.has(tabId2)) claims.set(tabId2, { tabId: tabId2, owner: driven.owner, claimedAt: now });
+        openedTabs.set(tabId2, driven.owner);
+        return driven.owner;
       },
       entries() {
         return Array.from(claims.values());
@@ -703,6 +740,7 @@
         );
       }
       store.touch(explicit, owner);
+      if (TAB_SPAWNING_ACTIONS.has(action2)) store.noteDriven(explicit, owner, deps.now());
       return explicit;
     }
     if (!OWNER_CURRENT_TAB_ACTIONS.has(action2)) throw new Error(missingTabIdMessage(action2));
@@ -1191,6 +1229,46 @@
           };
           return { id, success: true, data };
         }
+        case "create_tab": {
+          const url = typeof payload.url === "string" ? payload.url : "";
+          if (!isAllowedUrl(url)) {
+            return { id, success: false, error: "Invalid URL scheme. Only http: and https: URLs are allowed." };
+          }
+          const expected = typeof payload.expectedOrigin === "string" ? payload.expectedOrigin : "";
+          if (expected && normalizedOrigin(url) !== expected || payload.unattended === true && !expected) {
+            return { id, success: false, error: "Refused: the new tab destination does not match an approved origin." };
+          }
+          const owner = ownerFromPayload(payload);
+          let windowId;
+          if (lastActiveWindowId) {
+            const win = await chrome.windows.get(lastActiveWindowId).catch(() => null);
+            if (win?.type === "normal") windowId = lastActiveWindowId;
+          }
+          const tab = await chrome.tabs.create({ url, active: true, ...windowId ? { windowId } : {} });
+          if (tab.id === void 0) return { id, success: false, error: "Chrome did not open the tab." };
+          tabClaims.claim(tab.id, owner, Date.now());
+          tabClaims.touch(tab.id, owner);
+          tabClaims.markOpened(tab.id, owner);
+          tabClaims.noteDriven(tab.id, owner, Date.now());
+          return { id, success: true, data: { tabId: tab.id, windowId: tab.windowId, url } };
+        }
+        case "close_tab": {
+          const owner = ownerFromPayload(payload);
+          const target = Number(payload.tabId);
+          const opener = Number.isInteger(target) ? tabClaims.openedBy(target) : null;
+          const holder = Number.isInteger(target) ? tabClaims.holderOf(target) : null;
+          if (!opener || isLegacyOwner(owner) || opener.conversationId !== owner.conversationId || holder && holder.conversationId !== owner.conversationId) {
+            return {
+              id,
+              success: true,
+              data: { status: "requires_user_action", reason: "This tab was not opened by this task. Leave it open for the user to close." }
+            };
+          }
+          await chrome.tabs.remove(target).catch(() => {
+          });
+          tabClaims.releaseTab(target);
+          return { id, success: true, data: { status: "closed", tabId: target } };
+        }
         case "get_downloads": {
           return {
             id,
@@ -1423,6 +1501,10 @@
   });
   chrome.tabs.onUpdated.addListener((tabId2, changeInfo) => {
     if (changeInfo.status === "loading") injectedTabs.delete(tabId2);
+  });
+  chrome.tabs.onCreated.addListener((tab) => {
+    if (tab.id === void 0 || tab.openerTabId === void 0) return;
+    tabClaims.adoptSpawned(tab.id, tab.openerTabId, Date.now());
   });
   async function ensureContentScript(tabId2) {
     if (injectedTabs.has(tabId2)) return;

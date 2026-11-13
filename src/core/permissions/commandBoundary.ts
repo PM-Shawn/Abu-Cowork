@@ -94,6 +94,15 @@ function extractWriteTargets(command: string): string[] {
   return targets;
 }
 
+/**
+ * The words a command writes to directly (output redirections, `cp` / `mv` /
+ * `tee` destinations), unquoted and unresolved: for rules that go by a file's
+ * name wherever it is put (`commandSafety.ts`).
+ */
+export function commandWriteTargetWords(command: string): string[] {
+  return extractWriteTargets(command).map(unquote);
+}
+
 /** Split shell command segments without treating quoted control characters as operators. */
 function splitUnquotedCommandSegments(command: string): string[] {
   const segments: string[] = [];

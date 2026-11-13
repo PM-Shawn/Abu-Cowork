@@ -10,6 +10,7 @@ import {
   hasBrowserGrant,
   isScriptingBrowserTool,
   listAllBrowserToolPatterns,
+  navigatesOnly,
   browserOperationStatesFor,
   browserToolTargetsPage,
   normalizeBrowserOperationPolicy,
@@ -244,6 +245,18 @@ describe('browser tool policy', () => {
       expect(summary).not.toContain('hunter2');
       expect(summary).not.toContain('example.com');
       expect(summary).not.toContain('Transfer');
+    });
+  });
+
+  describe('navigatesOnly', () => {
+    it.each(['navigate', 'create_tab', 'close_tab', 'retain_tab'])('treats %s as opening or closing a page', (tool) => {
+      expect(navigatesOnly(`abu-browser__${tool}`)).toBe(true);
+    });
+    it.each(['click', 'fill_form', 'execute_js', 'upload_file', 'screenshot'])('does not treat %s as navigation', (tool) => {
+      expect(navigatesOnly(`abu-browser__${tool}`)).toBe(false);
+    });
+    it('does not treat a tool of another server as navigation', () => {
+      expect(navigatesOnly('other-server__navigate')).toBe(false);
     });
   });
 

@@ -3169,17 +3169,46 @@ export interface TranslationDict {
     rememberChoiceDescription: string;
     forgetAfterSession: string;
     // Duration options
-    durationOnce: string;
     durationSession: string;
-    duration24h: string;
     durationAlways: string;
-    durationAlwaysConfirm: string;
     // Button labels per duration
     durationLabel: string;
-    allowOnceButton: string;
     allowSessionButton: string;
-    allow24hButton: string;
     allowAlwaysButton: string;
+    /** Sentences the approval dialog shows for the actions that ask in every mode. */
+    rules: {
+      /** Asked before the first click or fill of a task on a government site. */
+      governmentReason: string;
+      /**
+       * Summary of a connector action, in plain words: `{connector}` is
+       * `connectorNamed` (with the connector's name) or `connectorUnnamed`.
+       */
+      connectorSendAction: string;
+      /** A send whose recipients the call names: `{recipients}` is the list, joined by `connectorRecipientSeparator`. */
+      connectorSendToAction: string;
+      connectorRecipientSeparator: string;
+      /** Appended to the list when more recipients than it shows are named. */
+      connectorRecipientsMore: string;
+      /** Appended to the summary: the start of what is sent, `{preview}`. */
+      connectorContentPreview: string;
+      /** Appended to the reason when the same answer also lets the tool's plugin run for the conversation. */
+      connectorPluginGrantNote: string;
+      connectorDestructiveAction: string;
+      connectorChangeAction: string;
+      connectorMoneyAction: string;
+      connectorNamed: string;
+      connectorUnnamed: string;
+      connectorSendReason: string;
+      connectorDestructiveReason: string;
+      connectorChangeReason: string;
+      /** Appended to the send reason only when the answer is kept as a grant for the task (a named target). */
+      connectorSendGrantNote: string;
+      /** Appended to the change reason only when the answer is kept as a grant for the task (a named target). */
+      connectorChangeGrantNote: string;
+      connectorMoneyReason: string;
+      /** Refusal when no one can be asked (an unattended run with no approval channel). */
+      connectorDenied: string;
+    };
   };
 
   // Panels
@@ -5558,6 +5587,10 @@ export interface TranslationDict {
       injWinPsNoProfile: string;
       injWinCmdDel: string;
       // getDangerLevelLabel — danger level display labels
+      /** Writing to a place a program starts from at sign-in (autostart) is refused in every mode. */
+      blockAutostart: string;
+      /** Taking an autostart entry away is asked about, not refused. */
+      warnRemoveAutostart: string;
       levelBlock: string;
       levelDanger: string;
       levelWarn: string;

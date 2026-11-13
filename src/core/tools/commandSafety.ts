@@ -6,6 +6,7 @@
 import { getI18n } from '../../i18n';
 import { isWindows } from '../../utils/platform';
 import { isReadOnlyCommand } from './readOnlyDetector';
+import { commandWriteTargetWords } from '../permissions/commandBoundary';
 import type { BrowserOperationClass } from '../permissions/browserToolPolicy';
 
 export type DangerLevel = 'safe' | 'warn' | 'danger' | 'block';
@@ -37,6 +38,14 @@ export interface ConfirmationInfo {
    * 「确认执行」 (acceptance F5).
    */
   kind?: 'command' | 'browser' | 'browser-upload' | 'self-extension';
+  /**
+   * An action the product stops for in every mode: a connector tool that
+   * sends to other people, deletes in a connected service or moves money
+   * (`connectorActionPolicy.ts`). A capability tier that approves on its own
+   * (the IM and trigger `full` tiers) still hands it to a person — the run's
+   * approval channel, or a refusal when it has none.
+   */
+  alwaysAsks?: true;
   /**
    * Upload confirmations only: how many files this call would send. The
    * dialog puts it in the question ("上传 2 个文件到 …"), which is the part a
@@ -391,6 +400,118 @@ function getWinDangerousPatterns(): Record<Exclude<DangerLevel, 'safe'>, Array<{
  */
 const DANGER_ORDER: DangerLevel[] = ['safe', 'warn', 'danger', 'block'];
 
+/**
+ * A command that makes a program start when the user signs in: writing into
+ * `~/Library/LaunchAgents` / `LaunchDaemons`, loading a launch agent, adding a
+ * login item, installing a crontab, writing a shell login or profile script
+ * (`.zprofile`, `.bash_profile`, fish `config.fish`, a PowerShell profile),
+ * writing into the Windows Startup folder, writing a `Run` / `RunOnce` or
+ * Winlogon `Shell` / `Userinit` registry value or `UserInitMprLogonScript`, or
+ * a scheduled task that runs at logon or boot.
+ *
+ * Refused in every mode (`block`): the file tools cannot write there either
+ * (`pathSafety.ts`), and a command must not be the way around that. Read over
+ * the WHOLE command line, before the safe list and before the injection check:
+ * `cp` is on the safe list, and `cd ~/Library/LaunchAgents && cp x.plist .`
+ * names the folder in one part and writes in another. Only reading those
+ * places (`ls`, `cat`, `reg query`, `crontab -l`) is left alone, and taking an
+ * entry away (`rm` of a launch agent, `launchctl unload`, `crontab -r`) asks
+ * (`warn`) instead: that undoes an automatic start, it does not add one.
+ *
+ * The launch folders count where they are named as a folder of a path
+ * (`~/Library/LaunchAgents/x.plist`, `LaunchAgents/`), not as a word in a
+ * sentence: a commit message about LaunchAgents writes nothing there.
+ */
+function autostartCommand(command: string): { level: 'block' | 'warn'; reason: string } | null {
+  const t = getI18n().toolResult.commandSafety;
+  const block = { level: 'block' as const, reason: t.blockAutostart };
+  const readOnly = isReadOnlyCommand(command);
+  const mentionsLaunchFolder = /(?:[\\/]Launch(?:Agents|Daemons)(?=[\\/\s'"`;&|)]|$)|\bLaunch(?:Agents|Daemons)[\\/])/i.test(command);
+  const mentionsStartupFolder = /Start Menu[\\/]+Programs[\\/]+Startup\b/i.test(command)
+    || /shell:(common\s+)?startup\b/i.test(command);
+  if ((mentionsLaunchFolder || mentionsStartupFolder) && !readOnly) {
+    return removesAutostartEntries(command) ? { level: 'warn', reason: t.warnRemoveAutostart } : block;
+  }
+  if (/\blaunchctl\s+(load|bootstrap|submit|enable)\b/i.test(command)) return block;
+  if (/osascript[\s\S]*\blogin item\b/i.test(command) && /\b(make|add)\b/i.test(command)) return block;
+  if (/\bdefaults\s+write\b[\s\S]*\b(LoginHook|AutoLaunchedApplicationDictionary)\b/i.test(command)) return block;
+  const crontab = crontabUse(command);
+  if (crontab === 'install') return block;
+  if (commandWriteTargetWords(command).some(isLoginScriptPath)) return block;
+  const onlyReadsRegistry = /^\s*(reg(\.exe)?\s+query|Get-ItemProperty|Get-Item|Get-ChildItem|gp|gi|gci)\b/i.test(command)
+    && !/[;&|]/.test(command);
+  if (/[\\/](CurrentVersion|Explorer)[\\/]Run(Once|Services|ServicesOnce)?\b/i.test(command) && !onlyReadsRegistry) return block;
+  if (/[\\/]Winlogon\b/i.test(command) && /\b(Shell|Userinit)\b/i.test(command) && !onlyReadsRegistry) return block;
+  if (/\bUserInitMprLogonScript\b/i.test(command) && !onlyReadsRegistry) return block;
+  if (/\bschtasks(\.exe)?\b[\s\S]*\/create\b[\s\S]*\/sc\s+(onlogon|onstart)\b/i.test(command)) return block;
+  if (/\bNew-ScheduledTaskTrigger\b[\s\S]*-At(LogOn|Startup)\b/i.test(command)) return block;
+  if (crontab === 'remove') return { level: 'warn', reason: t.warnRemoveAutostart };
+  return null;
+}
+
+/**
+ * The shell login and profile scripts, which run at every sign-in or new
+ * shell: by name, wherever the command puts them (the file tools close them by
+ * path in `pathSafety.ts`).
+ */
+const LOGIN_SCRIPT_PATH = /(?:^|[\\/])(?:\.zlogin|\.zprofile|\.zshrc|\.zshenv|\.bash_login|\.bash_profile|\.bashrc|\.profile|config\.fish|(?:Microsoft\.[A-Za-z]+_)?profile\.ps1)$/i;
+const FISH_CONF_D = /[\\/]fish[\\/]conf\.d[\\/]/i;
+
+function isLoginScriptPath(word: string): boolean {
+  // `-Path ($PROFILE)` and `-Path "$PROFILE"` name the same file as `$PROFILE`.
+  const path = word.replace(/^["'(]+|["')]+$/g, '').replace(/^\$\(\s*/, '');
+  // `$PROFILE` (and `$PROFILE.CurrentUserAllHosts`) is PowerShell's own name for the profile.
+  return LOGIN_SCRIPT_PATH.test(path) || FISH_CONF_D.test(path) || /^\$profile\b/i.test(path);
+}
+
+/** What the `crontab` calls of a command do: list only, remove, or install / edit. */
+function crontabUse(command: string): 'install' | 'remove' | 'list' | null {
+  // Installing returns at once, so only these two are ever held.
+  let use: 'remove' | 'list' | null = null;
+  // The program may be named bare, quoted (`"crontab"`), escaped (`\\crontab`) or by a path
+  // (`/usr/bin/crontab`). A path counts where a command goes (after a separator or `sudo`), so
+  // reading a file called crontab (`cat /etc/crontab`) is not a crontab call.
+  const bare = '(?:^|[\\s;&|(`$])["\']?\\\\?crontab["\']?';
+  const viaPath = '(?:^|[;&|(`]|\\b(?:sudo|env|command|exec|nohup|xargs)\\s)\\s*["\']?[^\\s;&|()`"\']*[\\\\/]crontab["\']?';
+  const callPattern = new RegExp(`(?:${bare}|${viaPath})(?![\\w.-])([^;&|\\n)\`]*)`, 'gi');
+  for (const match of command.matchAll(callPattern)) {
+    // A redirection is not an argument: `crontab -l 2>/dev/null`, `crontab -l > backup`.
+    const args = match[1].replace(/\d*[<>]+&?\s*\S*/g, ' ').trim().split(/\s+/).filter(Boolean);
+    // `-u <user>` names whose table it is.
+    const own = args.filter((arg, index) => arg !== '-u' && args[index - 1] !== '-u');
+    if (own.length === 1 && own[0] === '-l') {
+      use ??= 'list';
+    } else if (own.length >= 1 && own.every((arg) => /^-[ir]+$/.test(arg)) && own.some((arg) => arg.includes('r'))) {
+      use = 'remove';
+    } else {
+      // A file, `-` (the input), `-e`, or nothing (the input too) installs a table.
+      return 'install';
+    }
+  }
+  return use;
+}
+
+/**
+ * Whether every part of the command is taking an entry away (`rm`, `unlink`,
+ * `trash`, `launchctl unload|bootout|remove|disable`), moving into the folder
+ * to do so (`cd`), or only reading, with at least one removal among them.
+ * Parts are split on the shell's separators; a quoted separator splits too,
+ * which only ever makes the command look like more than a removal.
+ */
+function removesAutostartEntries(command: string): boolean {
+  const parts = command.split(/&&|\|\||[;|\n]/).map((part) => part.trim()).filter(Boolean);
+  let removes = false;
+  for (const part of parts) {
+    if (/^(?:sudo\s+)?(?:rm|rmdir|unlink|trash)\b/i.test(part)
+      || /^(?:sudo\s+)?launchctl\s+(?:unload|bootout|remove|disable)\b/i.test(part)) {
+      removes = true;
+    } else if (!/^cd\b/i.test(part) && !isReadOnlyCommand(part)) {
+      return false;
+    }
+  }
+  return removes;
+}
+
 function compareDanger(a: DangerLevel, b: DangerLevel): number {
   return DANGER_ORDER.indexOf(a) - DANGER_ORDER.indexOf(b);
 }
@@ -711,6 +832,20 @@ export function analyzeCommand(command: string): CommandAnalysis {
 
   // Compute read-only status for the full command upfront
   const readOnly = isReadOnlyCommand(trimmedCommand);
+
+  // Start-at-sign-in locations: a red line in every mode, ahead of the
+  // injection check (which would only rate the command 'danger').
+  const autostart = autostartCommand(trimmedCommand);
+  if (autostart?.level === 'block') return { level: 'block', reason: autostart.reason, readOnly: false };
+  const analysis = analyzeAllSegments(trimmedCommand, readOnly);
+  // Taking an autostart entry away asks at least as a warning.
+  if (autostart && compareDanger(autostart.level, analysis.level) > 0) {
+    return { level: autostart.level, reason: autostart.reason, readOnly: false };
+  }
+  return analysis;
+}
+
+function analyzeAllSegments(trimmedCommand: string, readOnly: boolean): CommandAnalysis {
 
   // Injection check runs on the full command before any splitting
   const injectionCheck = hasCommandInjection(trimmedCommand);

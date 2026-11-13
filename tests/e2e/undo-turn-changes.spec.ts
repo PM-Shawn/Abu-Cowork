@@ -446,8 +446,10 @@ test.describe('story 2: seeing beforehand which files change and which do not', 
       (async () => {
         const permission = page.getByRole('alertdialog', { name: '文件写入权限' });
         await expect(permission).toBeVisible({ timeout: READY_TIMEOUT });
-        await expect(permission).toContainText(memoPath.split(path.sep).join('/'));
-        await pressWhenSettled(permission.getByRole('button', { name: '允许本次会话', exact: true }));
+        // The window asks for the folder, and offers the grant for good (the default) or until the app quits.
+        await expect(permission).toContainText(path.dirname(memoPath).split(path.sep).join('/'));
+        await pressWhenSettled(permission.getByRole('radio', { name: '直到关闭应用' }));
+        await pressWhenSettled(permission.getByRole('button', { name: '允许到关闭应用', exact: true }));
         await expect(permission).toBeHidden();
       })(),
     ]);

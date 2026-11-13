@@ -42,12 +42,9 @@ function createReadingFixtureDirectory(runId: string): string {
   return readingFixtureDirectory;
 }
 
-async function allowFileRead(page: Page, filePath: string): Promise<void> {
-  const dialog = page.getByRole('alertdialog', { name: '文件读取权限' });
-  await expect(dialog).toBeVisible({ timeout: READY_TIMEOUT });
-  await expect(dialog).toContainText(filePath);
-  await pressWhenSettled(dialog.getByRole('button', { name: '允许本次会话', exact: true }));
-  await expect(dialog).toBeHidden();
+/** Reading never asks, not even for a file outside the workspace: the run goes on with no dialog. */
+async function expectNoReadDialog(page: Page): Promise<void> {
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
 }
 
 interface ChatRequestBody {
@@ -253,8 +250,8 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
     ], { supportsTools: true, permissionMode: 'standard' });
 
     await send(page, `请读取 ${fixturePath}`);
-    await allowFileRead(page, fixturePath);
     await expect(page.getByText(answer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expectNoReadDialog(page);
     await expect(page.getByText('我先读一下文件。')).toBeVisible();
     await expect(page.getByText('<invoke')).toHaveCount(0);
     await expect(page.getByText('function_calls')).toHaveCount(0);
@@ -356,8 +353,8 @@ test.describe.serial('Electron local and third-party model compatibility', () =>
       await expect(input).toBeEditable({ timeout: READY_TIMEOUT });
     }
     await send(page, `请依次读取 ${fixtures[0].path} 和 ${fixtures[1].path}`);
-    for (const fixture of fixtures) await allowFileRead(page, fixture.path);
     await expect(page.getByText(finalAnswer, { exact: true })).toBeVisible({ timeout: READY_TIMEOUT });
+    await expectNoReadDialog(page);
     await expectRunEnded(page);
 
     // 整理发生在服务报超长之前：服务一次都没有拒绝，最后一步带着整理后的摘要和两次读取的结果发出

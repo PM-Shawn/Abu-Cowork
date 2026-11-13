@@ -57,3 +57,39 @@ describe('new permission execution gate', () => {
     expect(evaluateBrowserPermissionGate({ ...base, permissionMode, configured: { decision: 'deny', source: 'site' } }).outcome).toBe('deny');
   });
 });
+
+describe('government sites', () => {
+  it.each(['standard', 'smart', 'autonomous'] as const)('asks before the first action of a task in %s mode, with no grant for good', (permissionMode) => {
+    const result = evaluateBrowserPermissionGate({ ...base, permissionMode, governmentAction: true });
+    expect(result.ask?.channel).toBe('dialog');
+    expect(result.ask?.offersPersistentGrant).toBe(false);
+  });
+  it('asks nothing once the task approved acting there', () => {
+    const result = evaluateBrowserPermissionGate({ ...base, governmentAction: true, governmentTaskGranted: true });
+    expect(result.ask).toBeNull();
+    expect(result.outcome).toBe('allow');
+  });
+  it('still asks for a script on a government site the user set to ask, after the task grant', () => {
+    const result = evaluateBrowserPermissionGate({
+      ...base, opClass: 'scripting', governmentAction: true, governmentTaskGranted: true, configured: { decision: 'ask', source: 'default' },
+    });
+    expect(result.ask?.offersPersistentGrant).toBe(false);
+  });
+  it('refuses acting there in an unattended run, even with a task grant', () => {
+    expect(evaluateBrowserPermissionGate({ ...base, runMode: 'unattended', governmentAction: true }).denialReason).toBe('high-risk-site');
+    expect(evaluateBrowserPermissionGate({ ...base, runMode: 'unattended', governmentAction: true, governmentTaskGranted: true }).denialReason).toBe('high-risk-site');
+  });
+  it('lets reading a government page through, attended or not', () => {
+    for (const runMode of ['attended', 'unattended'] as const) {
+      expect(evaluateBrowserPermissionGate({ ...base, opClass: 'read-only', runMode }).outcome).toBe('allow');
+      expect(evaluateBrowserPermissionGate({ ...base, opClass: 'read-only', runMode }).ask).toBeNull();
+    }
+  });
+  it('lets a money page keep its own rule when the host is both', () => {
+    const result = evaluateBrowserPermissionGate({ ...base, highRisk: true, governmentAction: true, governmentTaskGranted: true });
+    expect(result.ask).not.toBeNull();
+  });
+  it('treats a caller that predates the rule as no government action', () => {
+    expect(evaluateBrowserPermissionGate({ ...base }).ask).toBeNull();
+  });
+});

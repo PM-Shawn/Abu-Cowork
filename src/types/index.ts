@@ -991,6 +991,16 @@ export interface ToolDefinition {
    * bridge (see MCPClientManager.getAppTool).
    */
   ui?: { resourceUri: string; visibility: ReadonlyArray<'model' | 'app'> };
+  /**
+   * MCP tools only: the server's own `annotations.destructiveHint`. Untrusted,
+   * so the approval gate reads it only to ask MORE (`connectorActionPolicy.ts`).
+   */
+  mcpDestructiveHint?: boolean;
+  /**
+   * MCP tools only: the server's own `annotations.openWorldHint`. Untrusted
+   * like the destructive hint; it only confirms a sign of sending.
+   */
+  mcpOpenWorldHint?: boolean;
 }
 
 // --- LLM ---

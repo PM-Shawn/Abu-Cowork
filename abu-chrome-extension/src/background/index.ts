@@ -36,6 +36,7 @@ import {
   TAB_TARGETED_ACTIONS,
   classifyInbound,
   createTabClaimStore,
+  isLegacyOwner,
   ownerFromPayload,
   resolveTargetTab,
   tabListingFor,
@@ -731,6 +732,55 @@ async function handleRequest(request: BridgeRequest): Promise<BridgeResponse> {
         return { id, success: true, data };
       }
 
+      case 'create_tab': {
+        // A task-owned tab in the window the user last used, so a task never
+        // has to borrow (and navigate away) one of the user's own tabs.
+        const url = typeof payload.url === 'string' ? payload.url : '';
+        if (!isAllowedUrl(url)) {
+          return { id, success: false, error: 'Invalid URL scheme. Only http: and https: URLs are allowed.' };
+        }
+        // The approval was given for the destination; refuse anything else
+        // (same rule as the built-in browser's create_tab).
+        const expected = typeof payload.expectedOrigin === 'string' ? payload.expectedOrigin : '';
+        if ((expected && normalizedOrigin(url) !== expected) || (payload.unattended === true && !expected)) {
+          return { id, success: false, error: 'Refused: the new tab destination does not match an approved origin.' };
+        }
+        const owner = ownerFromPayload(payload);
+        let windowId: number | undefined;
+        if (lastActiveWindowId) {
+          const win = await chrome.windows.get(lastActiveWindowId).catch(() => null);
+          if (win?.type === 'normal') windowId = lastActiveWindowId;
+        }
+        const tab = await chrome.tabs.create({ url, active: true, ...(windowId ? { windowId } : {}) });
+        if (tab.id === undefined) return { id, success: false, error: 'Chrome did not open the tab.' };
+        tabClaims.claim(tab.id, owner, Date.now());
+        tabClaims.touch(tab.id, owner);
+        tabClaims.markOpened(tab.id, owner);
+        tabClaims.noteDriven(tab.id, owner, Date.now());
+        return { id, success: true, data: { tabId: tab.id, windowId: tab.windowId, url } };
+      }
+
+      case 'close_tab': {
+        // Only a tab this conversation's task opened itself, and only while no
+        // other conversation holds it now. The user's own tabs are never closed
+        // by a task.
+        const owner = ownerFromPayload(payload);
+        const target = Number(payload.tabId);
+        const opener = Number.isInteger(target) ? tabClaims.openedBy(target) : null;
+        const holder = Number.isInteger(target) ? tabClaims.holderOf(target) : null;
+        if (!opener || isLegacyOwner(owner) || opener.conversationId !== owner.conversationId
+          || (holder && holder.conversationId !== owner.conversationId)) {
+          return {
+            id,
+            success: true,
+            data: { status: 'requires_user_action', reason: 'This tab was not opened by this task. Leave it open for the user to close.' },
+          };
+        }
+        await chrome.tabs.remove(target).catch(() => {});
+        tabClaims.releaseTab(target);
+        return { id, success: true, data: { status: 'closed', tabId: target } };
+      }
+
       case 'get_downloads': {
         // Owner-scoped, like the built-in host's: a task sees what IT
         // downloaded and nothing else.
@@ -1060,6 +1110,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading') injectedTabs.delete(tabId);
+});
+// A page the task is driving often opens its next step in a new tab (a link
+// with target=_blank, window.open). That tab came from the task's own click, so
+// the task owns it and closes it when done, like a tab it opened with create_tab.
+chrome.tabs.onCreated.addListener((tab) => {
+  if (tab.id === undefined || tab.openerTabId === undefined) return;
+  tabClaims.adoptSpawned(tab.id, tab.openerTabId, Date.now());
 });
 
 async function ensureContentScript(tabId: number): Promise<void> {

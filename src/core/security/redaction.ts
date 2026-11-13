@@ -146,7 +146,7 @@ function nameContinues(following: string, lastSegment: string): boolean {
 
 /**
  * Where a path that starts at `start` ends. A path ends at `PATH_STOP`, except
- * that names under a user's folder may hold several spaces (`C:\Users\Zhang San\AppData\…`,
+ * that names under a user's folder (`~` included) may hold several spaces (`C:\Users\Zhang San\AppData\…`,
  * `…/Library/Application Support/…`, `My Great Folder/contract.pdf`): at a space
  * the path goes on when `nameContinues` finds its end in the next few words. Trailing
  * sentence punctuation, Markdown emphasis and an unmatched closing bracket
@@ -164,7 +164,8 @@ function pathEnd(text: string, start: number): number {
     const segments = segmentsOf(text.slice(start, end));
     // Windows writes the folder in any case (`c:\\users\\…`).
     const userAt = segments.findIndex((segment) => /^(users|home)$/i.test(segment));
-    const underUser = userAt >= 0 && (segments[userAt + 1] ?? '') !== '';
+    // A leading `~` is the user folder itself.
+    const underUser = (userAt >= 0 && (segments[userAt + 1] ?? '') !== '') || (segments[0] === '~' && (segments[1] ?? '') !== '');
     if (!underUser || !nameContinues(text.slice(end), segments[segments.length - 1])) break;
     end++;
   }

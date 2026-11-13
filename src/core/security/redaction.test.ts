@@ -225,6 +225,10 @@ describe('redactSensitiveMediaText', () => {
       ['/home/bob/Documents/Q3 final report v2.docx', '[REDACTED:path]'],
       ['/Users/some name/My Great Folder/x', '[REDACTED:path]'],
       ['C:\\Users\\张三\\我的 资料 文件夹\\合同.pdf', '[REDACTED:path]'],
+      ['~/Library/Application Support/Abu/x.db', '[REDACTED:path]'],
+      ['~/Documents/My Great Folder/x.pdf', '[REDACTED:path]'],
+      ['~/我的 文件/x.png', '[REDACTED:path]'],
+      ['~\\Documents\\My Great Folder\\x.pdf', '[REDACTED:path]'],
     ])('removes the whole path: %s', (text, expected) => {
       expect(redactSensitiveMediaText(text)).toBe(expected);
     });
@@ -240,6 +244,9 @@ describe('redactSensitiveMediaText', () => {
       ['/Users/alice/Desktop and /Users/bob/My Great Folder/x.png ok', '[REDACTED:path] and [REDACTED:path] ok'],
       ['Error: spawn /Users/alice/bin/tool failed to start the process', 'Error: spawn [REDACTED:path] failed to start the process'],
       ['see /Users/alice/Documents for the files', 'see [REDACTED:path] for the files'],
+      ['see ~/Documents/a.pdf and the rest', 'see [REDACTED:path] and the rest'],
+      ['saved to ~/Documents/My Great Folder/a.pdf。请查看', 'saved to [REDACTED:path]。请查看'],
+      ['saved to ~/Documents/My Great Folder/a.pdf, then close it', 'saved to [REDACTED:path], then close it'],
       ['line one /Users/alice/Documents\nMy Great Folder holds it', 'line one [REDACTED:path]\nMy Great Folder holds it'],
     ])('keeps the prose after a path: %s', (text, expected) => {
       expect(redactSensitiveMediaText(text)).toBe(expected);

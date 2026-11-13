@@ -179,12 +179,33 @@ export class SkillLoader {
   private scanSeq = 0;
 
   /**
-   * Resolves once no scan is running. A reader that must see the complete
-   * catalog (the first request of a run) awaits this; it never sees the
-   * catalog half-built, because a scan publishes only when it is finished.
+   * Resolves once no scan is running, or when `timeoutMs` elapses, or when
+   * `signal` aborts, whichever comes first; it never rejects. A reader that
+   * must see the complete catalog (the first request of a run) awaits this.
+   * It never sees the catalog half-built, because a scan publishes only when
+   * it is finished: a reader that stops waiting gets the previous complete one.
    */
-  async ready(): Promise<void> {
-    while (this.scansInFlight.size > 0) await Promise.allSettled([...this.scansInFlight]);
+  async ready(opts: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<void> {
+    const { signal, timeoutMs } = opts;
+    if (this.scansInFlight.size === 0 || signal?.aborted) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const bounds = new Promise<void>((done) => {
+      if (timeoutMs !== undefined) timer = setTimeout(done, timeoutMs);
+      if (signal) {
+        onAbort = done;
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+    });
+    const scansDone = (async () => {
+      while (this.scansInFlight.size > 0) await Promise.allSettled([...this.scansInFlight]);
+    })();
+    try {
+      await Promise.race([scansDone, bounds]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    }
   }
 
   /**

@@ -87,6 +87,25 @@ describe('memory extraction runs on the conversation\'s own provider', () => {
     expect(mockChat.mock.calls[0][1]).toMatchObject({ model: 'default-model', apiKey: 'sk-default' });
   });
 
+  it('asks a model that thinks by default not to think, so the 1024-token answer is not spent on reasoning', async () => {
+    setConversationReader({
+      getConversation: () => ({ model: { providerId: 'ds', modelId: 'deepseek-flash' } }) as never,
+      getIndexEntry: () => undefined,
+      getThinkingStartTime: () => null,
+    } as ConversationReader);
+    useSettingsStore.setState({
+      providers: [{
+        ...provider('ds'), source: 'builtin', baseUrl: 'https://api.deepseek.com',
+        models: [{ id: 'deepseek-flash', label: 'deepseek-flash' }],
+      }],
+      activeModel: { providerId: 'ds', modelId: 'deepseek-flash' },
+    });
+
+    await extractMemoriesFromConversation('c1', null);
+
+    expect(mockChat.mock.calls[0][1]).toMatchObject({ maxTokens: 1024, enableThinking: false });
+  });
+
   it('marks Ollama as a local server and asks it nothing when the user left the context length blank', async () => {
     mockProbeContextWindow.mockClear();
     useSettingsStore.setState({

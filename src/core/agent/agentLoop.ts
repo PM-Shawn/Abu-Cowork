@@ -1989,7 +1989,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const discoveredCaps = activeProvider
         ? getCapsPort().get(activeProvider.id, effectiveModelId)
         : undefined;
-      const { effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, requestedMaxOutputTokens, requestedContextLength, localServer, outputCeiling: effectiveModelCeiling } = resolveRequestBudget(
+      const { effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, thinkingPick, requestedMaxOutputTokens, requestedContextLength, localServer, outputCeiling: effectiveModelCeiling } = resolveRequestBudget(
         effectiveModelId, modelCaps, activeProvider, freshSettings, discoveredCaps, runProbedContextWindow,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
@@ -2589,6 +2589,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             effectiveCaps,
             requestedMaxOutputTokens,
             recoveryReserveWindowSize,
+            thinkingPick,
           );
           const recoveryMaxOutputTokens = recoveryReasoningParams.maxTokens;
           const recoveryRequestOptions = {

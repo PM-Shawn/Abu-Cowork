@@ -132,7 +132,8 @@ test.describe('Chat', () => {
       );
     }
 
-    // Wait for the mock assistant reply to appear in the chat
-    await expect(page.getByText('E2E mock reply')).toBeVisible({ timeout: 20_000 });
+    // Wait for the mock assistant reply to appear in the chat. The mock also answers the title
+    // request with these words, so look for the reply in the message list.
+    await expect(page.getByTestId('chat-message-list').getByText('E2E mock reply')).toBeVisible({ timeout: 20_000 });
   });
 });

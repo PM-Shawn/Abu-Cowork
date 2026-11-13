@@ -1,0 +1,66 @@
+{
+  "url": "https://api.deepseek.com/v1/chat/completions",
+  "body": {
+    "model": "deepseek-flash",
+    "messages": [
+      {
+        "role": "user",
+        "content": "Read the config"
+      },
+      {
+        "role": "assistant",
+        "content": "Reading it now.",
+        "tool_calls": [
+          {
+            "id": "toolu_1_0",
+            "type": "function",
+            "function": {
+              "name": "read_file",
+              "arguments": "{\"path\":\"config.json\"}"
+            }
+          }
+        ],
+        "reasoning_content": "The user wants the config file."
+      },
+      {
+        "role": "tool",
+        "tool_call_id": "toolu_1_0",
+        "content": "{\"a\":1}\n[当前模型不支持视觉识别，无法查看截图内容。请使用其他方式获取信息，不要再尝试截图操作。]"
+      },
+      {
+        "role": "user",
+        "content": "Thanks, now summarize it"
+      }
+    ],
+    "max_tokens": 8192,
+    "stream": true,
+    "stream_options": {
+      "include_usage": true
+    },
+    "tools": [
+      {
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "description": "Read a file",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "Path to file"
+              }
+            },
+            "required": [
+              "path"
+            ]
+          }
+        }
+      }
+    ],
+    "thinking": {
+      "type": "enabled"
+    },
+    "reasoning_effort": "max"
+  }
+}

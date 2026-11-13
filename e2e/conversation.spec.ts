@@ -93,8 +93,9 @@ test.describe('Conversation', () => {
     await chatInput.fill('Hi');
     await chatInput.press('Enter');
 
-    // Wait for the mock reply to confirm we are now in an active conversation
-    await expect(page.getByText('任务完成')).toBeVisible({ timeout: 20_000 });
+    // Wait for the mock reply to confirm we are now in an active conversation. The mock
+    // answers the title request with the same words, so look for the reply in the message list.
+    await expect(page.getByTestId('chat-message-list').getByText('任务完成')).toBeVisible({ timeout: 20_000 });
 
     // Welcome title must NOT be visible now (we are viewing conversation messages)
     await expect(page.getByText('交给阿布就行啦 ✨')).not.toBeVisible();

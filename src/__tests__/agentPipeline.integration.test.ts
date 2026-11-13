@@ -1207,11 +1207,11 @@ describe('Agent Pipeline Integration', () => {
         messages: messages as Message[],
         options: options as { systemPrompt?: string; volatileContextTail?: string },
       }));
-      expect(requests.map((r) => /\[(Only \d+ steps are left|This is your last step)/.exec(r.options.volatileContextTail ?? '')?.[1] ?? null)).toEqual([
+      expect(requests.map((r) => /\[(Only \d+ steps are left|This is the last model request)/.exec(r.options.volatileContextTail ?? '')?.[1] ?? null)).toEqual([
         null, null, null, null, null,
-        'Only 5 steps are left', 'Only 4 steps are left', 'Only 3 steps are left', 'Only 2 steps are left', 'This is your last step',
+        'Only 5 steps are left', 'Only 4 steps are left', 'Only 3 steps are left', 'Only 2 steps are left', 'This is the last model request',
       ]);
-      const NOTE = /steps are left|last step in this run/;
+      const NOTE = /steps are left|last model request in this run/;
       for (const r of requests) {
         expect(r.options.systemPrompt ?? '').not.toMatch(NOTE);
         expect(JSON.stringify(r.messages)).not.toMatch(NOTE);

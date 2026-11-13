@@ -47,14 +47,26 @@ describe('TAB_TARGETED_ACTIONS', () => {
       send: async () => { throw new Error('registration must not execute tools'); },
       getConnectionError: () => 'not connected',
     });
-    expect(names).not.toContain('close_tab');
-    expect(names).not.toContain('create_tab');
     const fromBridge = bridgeActionsCarryingTabId(handlers.map(String).join('\n'));
 
     // Sanity check on the parser itself: a silent zero here would make the
     // comparison below vacuous.
     expect(fromBridge.length).toBeGreaterThan(10);
-    expect(Array.from(TAB_TARGETED_ACTIONS).sort()).toEqual(fromBridge);
+
+    // `close_tab` names a tab but has its own ownership gate in the extension:
+    // it closes only a tab this conversation's task opened (`openedBy`). Running
+    // it through the claim gate instead would claim the user's own tab just
+    // because a task asked to close it. Listed here so the exemption cannot go
+    // stale: if the tool disappears, this fails.
+    const OWN_GATE = ['close_tab'];
+    for (const action of OWN_GATE) {
+      expect(fromBridge).toContain(action);
+      expect(TAB_TARGETED_ACTIONS.has(action)).toBe(false);
+    }
+    expect(Array.from(TAB_TARGETED_ACTIONS).sort()).toEqual(fromBridge.filter((a) => !OWN_GATE.includes(a)));
+    // `create_tab` opens a new tab rather than acting on one.
+    expect(names).toContain('create_tab');
+    expect(fromBridge).not.toContain('create_tab');
     // …and the two that name no tab stay out of it.
     expect(TAB_TARGETED_ACTIONS.has('get_tabs')).toBe(false);
     expect(TAB_TARGETED_ACTIONS.has('get_downloads')).toBe(false);

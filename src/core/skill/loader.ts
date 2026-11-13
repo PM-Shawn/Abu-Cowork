@@ -155,6 +155,13 @@ function parseSkillHooks(
   return result.PreToolUse || result.PostToolUse ? result : undefined;
 }
 
+/** What one scan found; it becomes the loader's catalog only when the scan is complete. */
+interface ScanResult {
+  skills: Map<string, Skill>;
+  nameClaims: Array<{ name: string; source: SkillSource }>;
+  shadowed: Skill[];
+}
+
 export class SkillLoader {
   private skills: Map<string, Skill> = new Map();
   /**
@@ -167,6 +174,18 @@ export class SkillLoader {
   private shadowed: Skill[] = [];
   /** Last workspace this loader was discovered against (null = global-only). */
   private currentWorkspace: string | null = null;
+  /** Scans in flight, and the number of the newest one started (only that one may publish). */
+  private scansInFlight = new Set<Promise<unknown>>();
+  private scanSeq = 0;
+
+  /**
+   * Resolves once no scan is running. A reader that must see the complete
+   * catalog (the first request of a run) awaits this; it never sees the
+   * catalog half-built, because a scan publishes only when it is finished.
+   */
+  async ready(): Promise<void> {
+    while (this.scansInFlight.size > 0) await Promise.allSettled([...this.scansInFlight]);
+  }
 
   /**
    * Scan all skill directories and load SKILL.md files.
@@ -189,10 +208,16 @@ export class SkillLoader {
    * returns only the global + builtin set.
    */
   async discoverSkills(workspacePath?: string | null): Promise<SkillMetadata[]> {
-    this.skills.clear();
-    this.nameClaims = [];
-    this.shadowed = [];
-    this.currentWorkspace = workspacePath ?? null;
+    const seq = ++this.scanSeq;
+    const scan = this.scan(workspacePath ?? null, seq);
+    const settled = (): void => { this.scansInFlight.delete(scan); };
+    this.scansInFlight.add(scan);
+    scan.then(settled, settled);
+    return scan;
+  }
+
+  private async scan(workspacePath: string | null, seq: number): Promise<SkillMetadata[]> {
+    const found: ScanResult = { skills: new Map(), nameClaims: [], shadowed: [] };
 
     const home = await homeDir();
 
@@ -286,8 +311,18 @@ export class SkillLoader {
     }
 
     for (const { path, source, direct, packageRoot } of dirs) {
-      if (direct && packageRoot) await this.scanPluginSkill(path, packageRoot);
-      else await this.scanDirectory(path, source);
+      if (direct && packageRoot) await this.scanPluginSkill(path, packageRoot, found);
+      else await this.scanDirectory(path, source, found);
+    }
+
+    // Publish the finished catalog in one step. A newer scan owns the catalog:
+    // an older one that ends later must not put its (possibly other-workspace)
+    // result over it.
+    if (seq === this.scanSeq) {
+      this.skills = found.skills;
+      this.nameClaims = found.nameClaims;
+      this.shadowed = found.shadowed;
+      this.currentWorkspace = workspacePath;
     }
 
     return this.getAvailableSkills({ includeDisabledPlugins: true });
@@ -298,7 +333,7 @@ export class SkillLoader {
     return this.currentWorkspace;
   }
 
-  private async scanPluginSkill(dir: string, packageRoot: string): Promise<void> {
+  private async scanPluginSkill(dir: string, packageRoot: string, found: ScanResult): Promise<void> {
     try {
       const scan = scanPluginPackage(packageRoot);
       const relative = normalizeSeparators(dir).slice(normalizeSeparators(packageRoot).length).replace(/^\//, '');
@@ -308,16 +343,16 @@ export class SkillLoader {
         const path = joinPath(dir, filename);
         const skill = parseSkillFile(await readTextFile(path), path);
         if (skill) {
-          this.nameClaims.push({ name: skill.name, source: 'plugin' });
-          if (!this.skills.has(skill.name)) this.skills.set(skill.name, { ...skill, source: 'plugin' });
-          else this.shadowed.push({ ...skill, source: 'plugin' });
+          found.nameClaims.push({ name: skill.name, source: 'plugin' });
+          if (!found.skills.has(skill.name)) found.skills.set(skill.name, { ...skill, source: 'plugin' });
+          else found.shadowed.push({ ...skill, source: 'plugin' });
           break;
         }
       }
     } catch { /* An unavailable plugin component cannot hide independent skills. */ }
   }
 
-  private async scanDirectory(dir: string, source: SkillSource): Promise<void> {
+  private async scanDirectory(dir: string, source: SkillSource, found: ScanResult): Promise<void> {
     try {
       if (!(await exists(dir))) return;
 
@@ -345,11 +380,11 @@ export class SkillLoader {
             const raw = await readTextFile(skillPath);
             const skill = parseSkillFile(raw, skillPath);
             if (skill) {
-              this.nameClaims.push({ name: skill.name, source });
+              found.nameClaims.push({ name: skill.name, source });
               skill.source = source;
               // Earlier directories take priority — don't overwrite
-              if (!this.skills.has(skill.name)) this.skills.set(skill.name, skill);
-              else this.shadowed.push(skill);
+              if (!found.skills.has(skill.name)) found.skills.set(skill.name, skill);
+              else found.shadowed.push(skill);
               break; // Found a skill file, skip trying the other filename
             }
           } catch {

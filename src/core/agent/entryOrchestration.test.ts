@@ -22,8 +22,10 @@ vi.mock('./orchestrator', () => ({
 
 const refreshSkillMock = vi.fn().mockResolvedValue(undefined);
 const getSkillMock = vi.fn();
+const readyMock = vi.fn().mockResolvedValue(undefined);
 vi.mock('../skill/loader', () => ({
   skillLoader: {
+    ready: () => readyMock(),
     refreshSkill: (...a: unknown[]) => refreshSkillMock(...a),
     getSkill: (...a: unknown[]) => getSkillMock(...a),
     listSupportingFiles: async () => [],
@@ -110,6 +112,20 @@ describe('precomputeOrchestration', () => {
     await precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
 
     expect(resolvePreloadedSkillsMock).not.toHaveBeenCalled();
+  });
+
+  it('builds nothing until the skill catalog is ready', async () => {
+    routeInputMock.mockReturnValue({ type: 'general', cleanInput: 'hi' });
+    let finishScan: () => void = () => {};
+    readyMock.mockReturnValueOnce(new Promise<void>((done) => { finishScan = done; }));
+
+    const pending = precomputeOrchestration('conv-1', 'hi', undefined, { settingsForModel });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(buildSystemPromptSectionsMock).not.toHaveBeenCalled();
+
+    finishScan();
+    await pending;
+    expect(buildSystemPromptSectionsMock).toHaveBeenCalledTimes(1);
   });
 
   it('builds the system prompt for the tier the entry model will run at', async () => {

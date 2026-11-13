@@ -422,7 +422,7 @@ export function fileBusyMessage(error: unknown, path: string): string | null {
 
 export const editFileTool: ToolDefinition = {
   name: TOOL_NAMES.EDIT_FILE,
-  description: 'Edit a file via exact-match replacement. Use for partial file edits; safer than write_file. old_content must exactly match the text in the file, including whitespace and indentation.',
+  description: 'Edit a file via exact-match replacement. Use for partial file edits; safer than write_file. Read the file first (unless you created or edited it earlier in this session), then copy old_content from it verbatim: it must exactly match the text in the file, including whitespace and indentation.',
   descriptionByFamily: {
     gpt: 'Replace one block of text in an existing file. Read the file first, then copy old_content from it verbatim: the same lines, the same indentation, the same blank lines. Include enough surrounding lines for old_content to occur once in the file; a block that occurs twice is rejected. new_content is inserted in its place exactly as given. For a file that does not exist yet use write_file; for more than one change to a file make one call per change.',
   },

@@ -19,8 +19,7 @@ const DEEPSEEK_FAMILY_NOTES = `
 - Keep the thinking before the first tool call short: decide which tool, then call it.
 
 ### Files
-- Read a file before editing it, unless you created or edited it earlier in this session.
-- edit_file for a targeted change, with old_content copied exactly from read_file output; write_file only for a new file or when the user asked to replace the whole file.
+- edit_file for a targeted change; write_file only for a new file or when the user asked to replace the whole file.
 - Read a text file with read_file, with offset and limit for a long one; do not cat it through run_command.
 
 ### Commands

@@ -61,7 +61,8 @@ describe('resolvePromptVariant', () => {
       expect(resolved.planning).toBe(DEFAULT_PLANNING);
       expect(resolved.familyNotes).toBe(deepseekVariant.familyNotes);
       expect(resolved.familyNotes).toContain('Do not call get_system_info');
-      expect(resolved.familyNotes).toContain('Read a file before editing it');
+      // read-before-edit lives in the edit_file description only, not repeated per family
+      expect(resolved.familyNotes).not.toContain('Read a file before editing it');
       expect(resolved.persona).toBeUndefined();
     });
   });

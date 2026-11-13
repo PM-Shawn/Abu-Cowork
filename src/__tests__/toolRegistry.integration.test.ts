@@ -570,6 +570,40 @@ describe('toolRegistry integration', () => {
   describe('unattended capability ceiling', () => {
     const workspace = '/Users/testuser/Projects/unattended-ceiling';
 
+    it('does not auto-grant a read outside its scope to an unattended run in standard mode', async () => {
+      const previousMode = useSettingsStore.getState().permissionMode;
+      const scopeId = createAuthorizationScope();
+      scopedAuthorizeWorkspace(scopeId, workspace);
+      const executeFn = vi.fn().mockResolvedValue('contract text');
+      toolRegistry.register({
+        name: 'read_file',
+        description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      // The scheduler's own callback: nobody is there, so a request is refused.
+      const onFilePermission = vi.fn().mockResolvedValue(false);
+
+      try {
+        useSettingsStore.setState({ permissionMode: 'standard' });
+        const context = { authorizationScopeId: scopeId, workspacePath: workspace, interactionMode: 'background' } as never;
+        const outside = await executeAnyTool(
+          'read_file', { path: '/Users/testuser/Documents/contract.pdf' }, undefined, onFilePermission, context,
+        );
+        expect(String(outside)).toContain('user denied access');
+        expect(executeFn).not.toHaveBeenCalled();
+        expect(onFilePermission).toHaveBeenCalledTimes(1);
+        expect((await checkReadPath('/Users/testuser/Documents/other.pdf', scopeId)).allowed).toBe(false);
+
+        await expect(executeAnyTool(
+          'read_file', { path: `${workspace}/notes.md` }, undefined, onFilePermission, context,
+        )).resolves.toBe('contract text');
+      } finally {
+        useSettingsStore.setState({ permissionMode: previousMode });
+        disposeAuthorizationScope(scopeId);
+      }
+    });
+
     it('blocks shell commands for safe_tools even when global mode is autonomous', async () => {
       const previousMode = useSettingsStore.getState().permissionMode;
       const scopeId = createAuthorizationScope();
@@ -974,7 +1008,7 @@ describe('toolRegistry integration', () => {
       });
       const executeFn = vi.fn().mockResolvedValue('must not execute');
       toolRegistry.register({
-        name: 'read_file',
+        name: 'write_file',
         description: 'Read file',
         inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
         execute: executeFn,
@@ -987,8 +1021,8 @@ describe('toolRegistry integration', () => {
 
       try {
         const result = await executeAnyTool(
-          'read_file',
-          { path: lexicalPath },
+          'write_file',
+          { path: lexicalPath, content: 'x' },
           undefined,
           grant,
           { authorizationScopeId: scopeId },
@@ -1026,11 +1060,36 @@ describe('toolRegistry integration', () => {
       expect(result).toBe('file content');
     });
 
-    it('requests file permission when path needs authorization', async () => {
+    it('does not ask before reading a file outside the workspace, and grants its folder', async () => {
       const executeFn = vi.fn().mockResolvedValue('file data');
       toolRegistry.register({
         name: 'read_file',
         description: 'Read file',
+        inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
+        execute: executeFn,
+      });
+      const onFilePermission = vi.fn().mockResolvedValue(false);
+
+      try {
+        await expect(executeAnyTool(
+          'read_file',
+          { path: '/Users/testuser/Desktop/report.pdf' },
+          undefined,
+          onFilePermission,
+        )).resolves.toBe('file data');
+        expect(onFilePermission).not.toHaveBeenCalled();
+        expect((await checkReadPath('/Users/testuser/Desktop/other.pdf')).allowed).toBe(true);
+        expect((await checkWritePath('/Users/testuser/Desktop/other.pdf')).allowed).toBe(false);
+      } finally {
+        revokeWorkspace('/Users/testuser/Desktop');
+      }
+    });
+
+    it('requests file permission when a write needs authorization', async () => {
+      const executeFn = vi.fn().mockResolvedValue('written');
+      toolRegistry.register({
+        name: 'write_file',
+        description: 'Write file',
         inputSchema: { type: 'object', properties: { path: { type: 'string', description: 'path' } } },
         execute: executeFn,
       });
@@ -1042,15 +1101,15 @@ describe('toolRegistry integration', () => {
       });
 
       await executeAnyTool(
-        'read_file',
-        { path: '/Users/testuser/Desktop/report.pdf' },
+        'write_file',
+        { path: '/Users/testuser/Desktop/report.pdf', content: 'x' },
         undefined,
         onFilePermission
       );
       expect(onFilePermission).toHaveBeenCalled();
     });
 
-    it('executes the canonical escape target after the user approves that exact target', async () => {
+    it('executes the canonical escape target of a read once its real destination is granted for reading', async () => {
       const previousMode = useSettingsStore.getState().permissionMode;
       const lexicalRoot = '/Users/testuser/Documents/registry-canonical-source';
       const lexicalPath = `${lexicalRoot}/link/report.md`;
@@ -1080,12 +1139,11 @@ describe('toolRegistry integration', () => {
           undefined,
           onFilePermission,
         )).resolves.toBe('file content');
-        expect(onFilePermission).toHaveBeenCalledWith({
-          path: canonicalPath,
-          capability: 'read',
-          toolName: 'read_file',
-        }, undefined);
+        // Reading never asks: the real destination is granted for reading by the
+        // gate itself, and the tool runs on that exact path.
+        expect(onFilePermission).not.toHaveBeenCalled();
         expect(executeFn).toHaveBeenCalledWith({ path: canonicalPath }, undefined);
+        expect((await checkReadPath(canonicalPath)).allowed).toBe(true);
         expect((await checkWritePath(canonicalPath)).allowed).toBe(false);
       } finally {
         useSettingsStore.setState({ permissionMode: previousMode });

@@ -121,4 +121,75 @@ describe('SkillLoader scan publication', () => {
     await Promise.all([older, newer]);
     expect(loader.getCurrentWorkspace()).toBe('/work/new');
   });
+
+  describe('ready() with a bound', () => {
+    afterEach(() => { vi.useRealTimers(); });
+
+    async function loaderWithCompleteCatalog(): Promise<SkillLoader> {
+      const loader = new SkillLoader();
+      releaseBuiltin();
+      await loader.discoverSkills(null);
+      builtinGate = new Promise<void>((done) => { releaseBuiltin = done; });
+      mockReadDir.mockClear();
+      return loader;
+    }
+
+    it('resolves after timeoutMs when a scan never settles, and the catalog is the previous complete one', async () => {
+      const loader = await loaderWithCompleteCatalog();
+      vi.useFakeTimers();
+      void loader.discoverSkills('/work/hung');
+      await vi.waitFor(() => expect(mockReadDir).toHaveBeenCalledWith(BUILTIN_DIR));
+
+      let ready = false;
+      const waiting = loader.ready({ timeoutMs: 5000 }).then(() => { ready = true; });
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(ready).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await waiting;
+      expect(ready).toBe(true);
+      expect(loader.getAvailableSkills().map((s) => s.name).sort()).toEqual(['docx', 'mermaid-diagram', 'mine']);
+      expect(loader.getCurrentWorkspace()).toBeNull();
+    });
+
+    it('resolves when the signal aborts, and at once when it is already aborted', async () => {
+      const loader = new SkillLoader();
+      void loader.discoverSkills(null);
+      await untilBuiltinScanStarted();
+
+      const controller = new AbortController();
+      let ready = false;
+      const waiting = loader.ready({ signal: controller.signal }).then(() => { ready = true; });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(ready).toBe(false);
+      controller.abort();
+      await waiting;
+      expect(ready).toBe(true);
+
+      await expect(loader.ready({ signal: controller.signal })).resolves.toBeUndefined();
+    });
+
+    it('removes its abort listener and timer once it settles', async () => {
+      vi.useFakeTimers();
+      const loader = new SkillLoader();
+      const controller = new AbortController();
+      const remove = vi.spyOn(controller.signal, 'removeEventListener');
+      void loader.discoverSkills(null);
+      await untilBuiltinScanStarted();
+      const waiting = loader.ready({ signal: controller.signal, timeoutMs: 60_000 });
+      releaseBuiltin();
+      await waiting;
+      expect(remove).toHaveBeenCalledWith('abort', expect.any(Function));
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('resolves when a scan rejects, and the previous catalog stays published', async () => {
+      const loader = await loaderWithCompleteCatalog();
+      mockHomeDir.mockRejectedValueOnce(new Error('ipc down'));
+      const failing = loader.discoverSkills('/work/broken');
+      const failure = failing.then(() => undefined, (e: unknown) => e);
+      await expect(loader.ready()).resolves.toBeUndefined();
+      await failure;
+      expect(loader.getAvailableSkills().map((s) => s.name).sort()).toEqual(['docx', 'mermaid-diagram', 'mine']);
+    });
+  });
 });

@@ -30,8 +30,10 @@ import { computeShowAdvanced, defaultModelDeclaredCapabilities } from './provide
 import { toModelInfo, withContextWindows } from './modelInfoUtil';
 import { sortKnownFirst, unionSelectAll, filterModels, MODEL_FILTER_MIN_ITEMS } from './fetchModelUtils';
 import AdvancedCapabilitiesFields from './AdvancedCapabilitiesFields';
+import ThinkingEffortSelect from './ThinkingEffortSelect';
+import { documentedDefaultThinkingEffort, offeredThinkingEffortsFor } from '@/core/llm/modelProfile';
 import type { LLMProvider, ApiFormat } from '@/types';
-import type { ModelInfo, ProviderSource, ModelDeclaredCapabilities, ProviderInstance } from '@/types/provider';
+import type { ModelInfo, ProviderSource, ModelDeclaredCapabilities, ProviderInstance, ThinkingEffort } from '@/types/provider';
 import {
   checkOllamaHealth,
   fetchOllamaModels,
@@ -40,6 +42,16 @@ import {
 import { fetchProviderModels, type FetchModelsResult } from '@/core/llm/modelFetcher';
 import { fetchLmStudioContextWindows, fetchOllamaLoadedContextWindows } from '@/core/llm/contextWindowProbe';
 import { SECRET_KEYS } from '@/utils/secretStore';
+
+/**
+ * What a curated built-in provider keeps of a model's declared capabilities. Its models
+ * have no advanced section (tools, images and limits come from Abu's model data), so the
+ * one thing a user can set on them is the thinking effort; unset leaves the model with no
+ * declared capabilities at all, exactly as before the setting existed.
+ */
+function curatedModelDeclared(declared: ModelDeclaredCapabilities | undefined): ModelDeclaredCapabilities | undefined {
+  return declared?.thinkingEffort ? { thinkingEffort: declared.thinkingEffort } : undefined;
+}
 
 /**
  * Turn a failed fetch into something the user can act on.
@@ -620,6 +632,11 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
     }));
   }, []);
 
+  // The curated built-in providers' rows: only the thinking effort is theirs to set.
+  const setModelThinkingEffort = useCallback((id: string, thinkingEffort: ThinkingEffort | undefined) => {
+    updateModelDeclared(id, (d) => ({ ...d, thinkingEffort }));
+  }, [updateModelDeclared]);
+
   const toggleModelExpand = useCallback((id: string) => {
     setExpandedModelIds(prev => {
       const next = new Set(prev);
@@ -642,6 +659,15 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   // ── Shared row of the three model lists inside the window (fetched checklist / models the
   // user typed / models Ollama reported): the expand button and the abilities under it are
   // gated identically everywhere: showAdvanced && isSelected. ──
+  // The thinking levels the model carries on this provider's wire; a level the request could not
+  // carry is not offered. Ollama has its own adapter, every other type follows its API format.
+  const offeredEfforts = (modelId: string) => offeredThinkingEffortsFor({
+    modelId,
+    baseUrl,
+    declared: perModelDeclared[modelId] ?? defaultModelDeclaredCapabilities(modelId),
+    adapter: isOllama ? 'ollama' : effectiveFormat === 'anthropic' ? 'claude' : 'openai-compatible',
+  });
+
   const renderModelCapsPanel = (modelId: string) => {
     const providerId = shownProvider?.id ?? (isCustom ? undefined : selectedOption?.provider);
     const discovered = providerId ? discoveredCapabilities[`${providerId}:${modelId}`] : undefined;
@@ -656,6 +682,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
           // (design doc §7b), and `selectedOption.format` never changes for
           // it — only `effectiveFormat` (which follows `activePlan`) does.
           apiFormat={effectiveFormat}
+          thinkingEfforts={offeredEfforts(modelId)}
           contextWindow={resolveContextWindow({
             modelId,
             probed: detectedContextWindowFor(modelId),
@@ -839,7 +866,10 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
   // shows for it: a fetch or a detection that only fills those defaults in is no change.
   const formSnapshot = JSON.stringify([
     selectedId, serviceName, apiKey, baseUrl, selectedPlanId, useRawUrl, manualModelInput,
-    [...selectedModels].map((id) => [id, showAdvanced ? perModelDeclared[id] ?? defaultModelDeclaredCapabilities(id) : null]),
+    [...selectedModels].map((id) => [
+      id,
+      showAdvanced ? perModelDeclared[id] ?? defaultModelDeclaredCapabilities(id) : curatedModelDeclared(perModelDeclared[id]) ?? null,
+    ]),
   ]);
   // null until the form has been reset or prefilled for this opening (the layout effect below).
   const [savedSnapshot, setSavedSnapshot] = useState<string | null>(null);
@@ -865,7 +895,7 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
       const ollamaModel = ollamaModels.find((m) => m.id === id);
       return toModelInfo(id, {
         label: ollamaModel?.label,
-        declaredCapabilities: showAdvanced ? perModelDeclared[id] : undefined,
+        declaredCapabilities: showAdvanced ? perModelDeclared[id] : curatedModelDeclared(perModelDeclared[id]),
         contextWindow: detectedContextWindowFor(id),
       });
     });
@@ -1616,6 +1646,29 @@ export default function AddProviderModal({ open: isOpen, onClose, editProvider }
                     )}
                   </div>
                 </Popover>
+              )}
+
+              {/* Thinking effort — offered for every provider. A curated built-in has no
+                  advanced section to hold it, so each picked model gets its own row here. */}
+              {isBuiltinCurated && builtinModelList.some((m) => selectedModels.has(m.id)) && (
+                <div className="space-y-2 border-l border-separator pl-3">
+                  <div className="space-y-0.5">
+                    <div className="text-ui-sm font-medium text-label">{t.settings.capThinkingEffort}</div>
+                    <p className="text-ui-sm text-label-tertiary">{t.settings.capThinkingEffortHint}</p>
+                  </div>
+                  {builtinModelList.filter((m) => selectedModels.has(m.id)).map((model) => (
+                    offeredEfforts(model.id).length > 0 && <div key={model.id} className="flex items-center justify-between gap-3">
+                      <span className="min-w-0 truncate text-ui text-label">{model.label}</span>
+                      <ThinkingEffortSelect
+                        efforts={offeredEfforts(model.id)}
+                        label={`${model.label} ${t.settings.capThinkingEffort}`}
+                        value={perModelDeclared[model.id]?.thinkingEffort}
+                        onChange={(effort) => setModelThinkingEffort(model.id, effort)}
+                        modelDefault={documentedDefaultThinkingEffort(model.id, baseUrl)}
+                      />
+                    </div>
+                  ))}
+                </div>
               )}
 
                 {/* Non-Ollama models — fetched checklist (checkbox select/deselect) merged

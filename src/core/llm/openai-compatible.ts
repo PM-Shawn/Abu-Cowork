@@ -424,6 +424,7 @@ export class OpenAICompatibleAdapter implements LLMAdapter {
     const profile = resolveModelProfile({
       modelId: options.model,
       declared: options.declaredCapabilities,
+      thinkingOff: options.enableThinking === false,
       requestHost,
       overrides,
     });

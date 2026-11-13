@@ -13,6 +13,8 @@ import {
   type ModelCapabilities,
 } from './modelCapabilities';
 import { classifyThinking } from './model-data/classify';
+import type { ThinkingControl, ThinkingPick } from './model-data/thinkingControl';
+import type { ThinkingEffort } from '@/types/provider';
 
 describe('modelCapabilities', () => {
   describe('resolveCapabilities — generated table wired', () => {
@@ -262,6 +264,111 @@ describe('modelCapabilities', () => {
 
     it('is unchanged when no window is given', () => {
       expect(computeReasoningParams(plain, 32768).maxTokens).toBe(8192);
+    });
+  });
+
+  describe('computeReasoningParams — the user\'s thinking effort', () => {
+    const claude = (overrides: Partial<ModelCapabilities> = {}): ModelCapabilities => ({
+      vision: true, thinking: 'anthropic', toolResultImages: 'native', documentBlock: true,
+      maxOutputTokens: 32768, outputCeiling: 128000, contextWindow: 200000, ...overrides,
+    });
+    const budget: ThinkingControl = { kind: 'anthropic-budget' };
+    const adaptive: ThinkingControl = { kind: 'anthropic-adaptive', off: 'disabled' };
+    const pick = (effort: ThinkingEffort, control: ThinkingControl): ThinkingPick => ({ effort, control });
+
+    it('no pick keeps every default, whatever the protocol', () => {
+      const opus = resolveCapabilities('claude-opus-4-8');
+      expect(computeReasoningParams(opus, 32768, 200000, undefined)).toEqual(computeReasoningParams(opus, 32768, 200000));
+      expect(computeReasoningParams(resolveCapabilities('gpt-5'), 32768, undefined, undefined).reasoningEffort).toBe('medium');
+    });
+
+    describe('anthropic budget models', () => {
+      it('low / high / max pick a 4096 / 10000 / 32000 budget', () => {
+        expect(computeReasoningParams(claude(), 65536, 400000, pick('low', budget)).thinkingBudget).toBe(4096);
+        expect(computeReasoningParams(claude(), 65536, 400000, pick('high', budget)).thinkingBudget).toBe(10000);
+        expect(computeReasoningParams(claude({ maxOutputTokens: 65536 }), 65536, 400000, pick('max', budget)).thinkingBudget).toBe(32000);
+        for (const effort of ['low', 'high', 'max'] as const) {
+          expect(computeReasoningParams(claude(), 32768, 200000, pick(effort, budget)).enableThinking).toBe(true);
+        }
+      });
+
+      it('high is the default request', () => {
+        expect(computeReasoningParams(claude(), 32768, 200000, pick('high', budget)))
+          .toEqual(computeReasoningParams(claude(), 32768, 200000));
+      });
+
+      it('never asks for more than the model\'s declared output: max_tokens stays, the budget gives way', () => {
+        const p = computeReasoningParams(claude(), 32768, 200000, pick('max', budget));
+        expect(p.maxTokens).toBe(32768);
+        expect(p.thinkingBudget).toBe(32768 - CONTENT_FLOOR_TOKENS);
+      });
+
+      it.each(['low', 'high', 'max'] as const)('%s stays inside a small declared cap and keeps the answer floor', (effort) => {
+        const p = computeReasoningParams(claude({ maxOutputTokens: 8192, outputCeiling: 8192 }), 8192, 200000, pick(effort, budget));
+        expect(p.maxTokens).toBe(8192);
+        expect(p.thinkingBudget).toBeLessThanOrEqual(8192 - CONTENT_FLOOR_TOKENS);
+        expect(p.thinkingBudget).toBeGreaterThanOrEqual(1024);
+      });
+
+      it('stays inside the window\'s answer reserve', () => {
+        const p = computeReasoningParams(claude(), 32768, 32768, pick('max', budget));
+        expect(p.maxTokens).toBe(8192);
+        expect(p.thinkingBudget).toBe(8192 - CONTENT_FLOOR_TOKENS);
+      });
+
+      it('off sends no thinking: enableThinking false and no budget', () => {
+        const p = computeReasoningParams(claude(), 32768, 200000, pick('off', budget));
+        expect(p.enableThinking).toBe(false);
+        expect(p.thinkingBudget).toBeUndefined();
+        expect(p.maxTokens).toBe(32768);
+      });
+    });
+
+    describe('anthropic adaptive models', () => {
+      it('carry no budget at all: the depth is written by the adapter from the profile', () => {
+        for (const effort of ['low', 'high', 'max'] as const) {
+          expect(computeReasoningParams(claude(), 32768, 200000, pick(effort, adaptive)))
+            .toEqual({ maxTokens: 32768, enableThinking: true });
+        }
+      });
+      it('off marks thinking off', () => {
+        expect(computeReasoningParams(claude(), 32768, 200000, pick('off', adaptive)))
+          .toEqual({ maxTokens: 32768, enableThinking: false });
+      });
+    });
+
+    describe('openai reasoning_effort', () => {
+      const o = resolveCapabilities('gpt-5.2');
+      const control: ThinkingControl = { kind: 'reasoning-effort', none: true, xhigh: true };
+      it('off -> none, low -> low, high -> high, max -> xhigh', () => {
+        expect(computeReasoningParams(o, 32768, undefined, pick('off', control)).reasoningEffort).toBe('none');
+        expect(computeReasoningParams(o, 32768, undefined, pick('low', control)).reasoningEffort).toBe('low');
+        expect(computeReasoningParams(o, 32768, undefined, pick('high', control)).reasoningEffort).toBe('high');
+        expect(computeReasoningParams(o, 32768, undefined, pick('max', control)).reasoningEffort).toBe('xhigh');
+      });
+      it('off is not "thinking disabled" for the adapters that read enableThinking', () => {
+        expect(computeReasoningParams(o, 32768, undefined, pick('off', control)).enableThinking).toBeUndefined();
+      });
+    });
+
+    describe('switch formats', () => {
+      const q = resolveCapabilities('qwen3.7-max');
+      const d = resolveCapabilities('deepseek-flash');
+      it('qwen on keeps the budget as today, off carries none', () => {
+        const base = computeReasoningParams(q, 32768);
+        expect(computeReasoningParams(q, 32768, undefined, pick('high', { kind: 'switch', effort: false }))).toEqual(base);
+        const off = computeReasoningParams(q, 32768, undefined, pick('off', { kind: 'switch', effort: false }));
+        expect(off.thinkingBudget).toBeUndefined();
+        expect(off.enableThinking).toBe(false);
+        expect(off.maxTokens).toBe(65536);
+      });
+      it('deepseek carries nothing for low / high / max: the request processors write the wire fields', () => {
+        for (const effort of ['low', 'high', 'max'] as const) {
+          expect(computeReasoningParams(d, 32768, undefined, pick(effort, { kind: 'switch', effort: true }))).toEqual({ maxTokens: d.maxOutputTokens });
+        }
+        expect(computeReasoningParams(d, 32768, undefined, pick('off', { kind: 'switch', effort: true })))
+          .toEqual({ maxTokens: d.maxOutputTokens, enableThinking: false });
+      });
     });
   });
 

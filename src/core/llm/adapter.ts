@@ -99,7 +99,8 @@ export interface ChatOptions {
   // Extended thinking support (Claude Opus 4+)
   enableThinking?: boolean;
   thinkingBudget?: number;     // Max reasoning tokens (Claude budget_tokens / Qwen thinking_budget)
-  reasoningEffort?: 'low' | 'medium' | 'high'; // OpenAI o-series / gpt-5 reasoning depth
+  // OpenAI reasoning depth; `none` and `xhigh` exist only on the newer models.
+  reasoningEffort?: 'none' | 'low' | 'medium' | 'high' | 'xhigh';
   // Whether the model supports vision (image inputs)
   supportsVision?: boolean;
   /** 自定义端点用户声明的能力，供适配器 URL 归一化与出参规则引擎读取 */

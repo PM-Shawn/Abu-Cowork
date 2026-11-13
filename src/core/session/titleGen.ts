@@ -6,7 +6,8 @@
  * that, so the call can never compete with the reply for a one-request-at-a-time
  * server or key), one short side call asks the conversation's own model for a
  * real title and swaps it in, provided nobody has renamed the conversation
- * meanwhile. On any failure the slice stays, silently.
+ * meanwhile. On any failure the slice stays, silently, and the next end of a run asks
+ * again, up to MAX_TITLE_ATTEMPTS calls in all.
  */
 import type { Message } from '@/types';
 import { llmCall } from '@/core/llm/llmCall';
@@ -21,18 +22,25 @@ const MAX_REPLY_CHARS = 300;
 const MAX_ATTACHMENTS = 5;
 const MAX_TITLE_CHARS: Record<string, number> = { 'zh-CN': 24, 'en-US': 60 };
 
-/** Conversations that were asked once. A retry or an edit of the first message never asks again. */
-const asked = new Set<string>();
+/** Calls made per conversation whose title is still open, and a bound on them. */
+export const MAX_TITLE_ATTEMPTS = 2;
+const attempts = new Map<string, number>();
+/**
+ * Conversations whose title is settled: written, or out of attempts. A retry or an edit of the first
+ * message never asks again.
+ */
+const settled = new Set<string>();
 /** Title calls in flight, so the next run of the conversation can send them out of its way. */
 const inflight = new Map<string, AbortController>();
 
-/** The conversation runs again: a title call still out gives way (it is not retried). */
+/** The conversation runs again: a title call still out gives way. It is asked again at the end of that run, and the call does not count against the attempts. */
 export function abortConversationTitle(convId: string): void {
   inflight.get(convId)?.abort();
 }
 
 export function resetTitleGenForTests(): void {
-  asked.clear();
+  attempts.clear();
+  settled.clear();
   inflight.clear();
 }
 
@@ -142,34 +150,55 @@ function excludedKind(conv: { scheduledTaskId?: string; triggerId?: string; imCh
   return !!(conv.scheduledTaskId || conv.triggerId || conv.imChannelId);
 }
 
+/** `done`: nothing more to ask. `retry`: no title came back and another attempt is left. */
+export type TitleOutcome = 'done' | 'retry';
+
 /**
  * Ask for a title for `convId` after its first user message was committed.
  * `autoTitle` is the title the store gave it at that moment (the slice, or the
  * default name for a message that is only attachments); the model's title
  * replaces it only while the conversation still carries exactly that title.
+ * The call goes through `llmCall`, which sends the app's own short-call options
+ * (`internalCallOptions`): a model that thinks by default is asked not to, or is
+ * given room for it, so the 60-token budget is spent on the title.
+ * A call that brings no title back (failed, timed out, empty, not a title) does not
+ * settle the conversation: the caller is told to ask again at the next run's end, at
+ * most MAX_TITLE_ATTEMPTS calls in all.
  * Resolves when done; never throws.
  */
-export async function requestConversationTitle(convId: string, message: Message, autoTitle: string): Promise<void> {
+export async function requestConversationTitle(convId: string, message: Message, autoTitle: string): Promise<TitleOutcome> {
   try {
     const store = useChatStore.getState();
     const conv = store.conversations[convId];
-    if (!conv || asked.has(convId) || excludedKind(conv)) return;
-    if (message.role !== 'user' || message.isSystem) return;
+    if (!conv || settled.has(convId) || inflight.has(convId) || excludedKind(conv)) return 'done';
+    if (message.role !== 'user' || message.isSystem) return 'done';
 
     const ctx = titleContextOf(message);
-    if (!ctx.text && ctx.attachments.length === 0) return;
+    if (!ctx.text && ctx.attachments.length === 0) return 'done';
 
     // Renamed (by the user) since the first message: nothing left to replace, so no call.
-    if (conv.title !== autoTitle) return;
+    if (conv.title !== autoTitle) return 'done';
 
     const locale = getLocale();
-    asked.add(convId);
-
+    const attempt = (attempts.get(convId) ?? 0) + 1;
+    attempts.set(convId, attempt);
     const controller = new AbortController();
     inflight.set(convId, controller);
+    let timedOut = false;
+    const noTitle = (): TitleOutcome => {
+      if (controller.signal.aborted && !timedOut) {
+        // The next run sent the call out of its way: that says nothing about the model.
+        attempts.set(convId, attempt - 1);
+        return 'retry';
+      }
+      if (attempt < MAX_TITLE_ATTEMPTS) return 'retry';
+      settled.add(convId);
+      return 'done';
+    };
+
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => { controller.abort(); resolve(null); }, TITLE_TIMEOUT_MS);
+      timer = setTimeout(() => { timedOut = true; controller.abort(); resolve(null); }, TITLE_TIMEOUT_MS);
     });
     try {
       const call = llmCall({
@@ -180,20 +209,23 @@ export async function requestConversationTitle(convId: string, message: Message,
         conversationId: convId,
       }).then((r) => r.text, () => null);
       const raw = await Promise.race([call, timeout]);
-      if (raw == null) return;
+      if (raw == null) return noTitle();
       const title = cleanTitle(raw, locale);
-      if (!title) return;
+      if (!title) return noTitle();
 
+      settled.add(convId);
       // Still the same conversation, and still the title we started from.
       const now = useChatStore.getState();
       const live = now.conversations[convId] ?? now.conversationIndex[convId];
-      if (!live || live.title !== autoTitle || title === autoTitle) return;
+      if (!live || live.title !== autoTitle || title === autoTitle) return 'done';
       now.renameConversation(convId, title);
+      return 'done';
     } finally {
       clearTimeout(timer);
       if (inflight.get(convId) === controller) inflight.delete(convId);
     }
   } catch {
     // The slice stays.
+    return 'done';
   }
 }

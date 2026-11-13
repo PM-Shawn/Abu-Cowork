@@ -2733,6 +2733,12 @@ export const useChatStore = create<ChatStore>()(
           titleSent.add(convId);
           import('../core/session/titleGen')
             .then(({ requestConversationTitle }) => requestConversationTitle(convId, pendingTitle.message, pendingTitle.autoTitle))
+            .then((outcome) => {
+              // No title came back: ask again when the next run ends (titleGen bounds the attempts),
+              // unless the conversation went away or a newer first message is already waiting.
+              const stillThere = get().conversations[convId] ?? get().conversationIndex[convId];
+              if (outcome === 'retry' && stillThere && !titlePending.has(convId)) titlePending.set(convId, pendingTitle);
+            })
             .catch(() => {});
         }
         // Live-freshness write-through (message-storage hybrid P2): turn-end

@@ -5,4 +5,5 @@ export const SETTING_CONTROL_WIDTH = {
   browserPermission: 'w-52',
   siteAccess: 'w-48',
   imForm: 'w-85',
+  thinkingEffort: 'w-32',
 } as const;

@@ -1092,7 +1092,8 @@ export async function runSubagentLoop(options: SubagentLoopOptions): Promise<Sub
         const marker = await compactHistory({
           history: messages,
           inputBudget,
-          retainTokens: Math.floor(inputBudget * RETAINED_TAIL_RATIO),
+          fixedTokens: estimateTokens(systemPrompt) + toolSchemaTokens,
+          retainShare: RETAINED_TAIL_RATIO,
           source: 'auto',
           fitSummaryInput: (summaryMessages) => enforceContextBudget(
             summaryMessages, systemPrompt, contextWindowSize, maxOutputTokens, toolSchemaTokens,

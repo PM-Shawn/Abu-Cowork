@@ -17,6 +17,7 @@
 import type { ThinkingEffort } from '@/types/provider';
 import type { ModelCapabilities } from '../modelCapabilities';
 import { classifyThinkingProtocol } from './classify';
+import type { ThinkingControl } from './thinkingControl';
 
 export type ModelFamily =
   | 'claude'
@@ -172,6 +173,11 @@ export interface ProfileWire {
    * over the defaults the request is built with, per thinking format.
    */
   thinkingEffort: ThinkingEffort | null;
+  /**
+   * What a pick can do for this model on this wire (`thinkingControl.ts`); the pick above is
+   * only kept when this control carries it. Set when the profile is resolved.
+   */
+  thinkingControl: ThinkingControl;
   /** `reasoning_effort` leaves the request; off once the endpoint rejected the field. */
   sendReasoningEffort: boolean;
   /** `parallel_tool_calls` may be written; off once the endpoint rejected the field. */
@@ -215,6 +221,7 @@ const BASE_WIRE: ProfileWire = {
   stripReasoningParams: false,
   supportedEfforts: null,
   thinkingEffort: null,
+  thinkingControl: { kind: 'none' },
   sendReasoningEffort: true,
   sendParallelToolCalls: true,
   toolSchemaDialect: 'standard',

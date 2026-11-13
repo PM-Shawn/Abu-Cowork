@@ -2027,6 +2027,8 @@ export interface TranslationDict {
     /** Appended to 「默认」 when the model's default effort is known: 「（{effort}）」. {effort} */
     thinkingEffortDefaultIs: string;
     thinkingEffortOff: string;
+    /** The one "on" of a model whose thinking is a plain switch. */
+    thinkingEffortOn: string;
     thinkingEffortMax: string;
     capContextLength: string;
     capContextLengthHint: string;

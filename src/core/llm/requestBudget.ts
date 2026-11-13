@@ -5,6 +5,7 @@ import { computeReasoningParams, type ModelCapabilities } from './modelCapabilit
 import { positiveInteger, resolveContextWindow } from './contextWindow';
 import { resolveModelDeclared } from './resolveModelDeclared';
 import { localServerKind } from './localProvider';
+import { resolveThinkingPick } from './modelProfile';
 
 /** Resolve the same model limits and paired reasoning/output budgets for every conversation request. */
 export function resolveRequestBudget(
@@ -33,6 +34,7 @@ export function resolveRequestBudget(
     isLocal: localServerKind(provider) !== null,
     ceiling: settings.contextWindowSize,
   });
+  const thinkingPick = resolveThinkingPick({ modelId, provider, declared });
   const requestedMaxOutputTokens = declared?.maxOutputTokens ?? settings.maxOutputTokens ?? maxOutputTokens;
   return {
     effectiveCaps,
@@ -42,6 +44,7 @@ export function resolveRequestBudget(
     localServer: localServerKind(provider) !== null,
     outputCeiling: discovered?.maxOutputTokens ?? modelCaps.outputCeiling ?? modelCaps.maxOutputTokens,
     requestedMaxOutputTokens,
-    reasoningParams: computeReasoningParams(effectiveCaps, requestedMaxOutputTokens, window.uncappedSize, declared?.thinkingEffort),
+    thinkingPick,
+    reasoningParams: computeReasoningParams(effectiveCaps, requestedMaxOutputTokens, window.uncappedSize, thinkingPick),
   };
 }

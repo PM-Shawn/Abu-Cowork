@@ -1,5 +1,4 @@
 import type { ModelProfile } from './modelProfile';
-import { THINKING_SWITCH_FORMATS } from './thinkingEffort';
 
 /**
  * Recursively delete Gemini-unsupported JSON Schema keys from a node.
@@ -243,7 +242,7 @@ const thinkingFormatTranslator: ModelRequestProcessor = {
  * (`stripReasoningParams`, which a rejected `thinking` field also sets), and a
  * `reasoning_effort` the endpoint rejected or does not accept next to tools.
  *
- * The formats without an on/off switch (`openai`, `openrouter`, `together`) are not
+ * The controls without an on/off switch (`reasoning-effort`, the Anthropic kinds) are not
  * handled here: they take the effort through `reasoning_effort`, which
  * `computeReasoningParams` already derived from the same pick.
  */
@@ -253,7 +252,7 @@ const thinkingEffortOverride: ModelRequestProcessor = {
   matches: (_b, ctx) =>
     ctx.profile.wire.thinkingEffort !== null &&
     !ctx.profile.wire.stripReasoningParams &&
-    THINKING_SWITCH_FORMATS.has(ctx.profile.wire.thinkingFormat),
+    ctx.profile.wire.thinkingControl.kind === 'switch',
   apply(body, ctx) {
     const { wire } = ctx.profile;
     const effort = wire.thinkingEffort!;

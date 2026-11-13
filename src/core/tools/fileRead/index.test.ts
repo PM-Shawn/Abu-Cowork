@@ -25,7 +25,7 @@ const view = {
 
 describe('read_file schema', () => {
   it('offers the document parameters beside upstream\'s and describes them', () => {
-    expect(Object.keys(readFileTool.inputSchema.properties)).toEqual(['path', 'offset', 'limit', 'pages', 'region', 'rotate', 'image_index']);
+    expect(Object.keys(readFileTool.inputSchema.properties)).toEqual(['path', 'offset', 'limit', 'pages', 'text_offset', 'region', 'rotate', 'image_index']);
     expect(readFileTool.inputSchema.required).toEqual(['path']);
     expect(readFileTool.description).toContain('pass pages (e.g. "18" or "3-5")');
     expect(readFileTool.description).toContain('pass image_index to see one picture');
@@ -52,9 +52,13 @@ describe('withDocumentReading dispatch', () => {
     upstream.mockClear();
     const access = files();
     expect(await tool.execute({ path: '/d/notes.txt', pages: '2' }, { files: access }))
-      .toMatch(/^Error: pages does not apply to this file\. pages is for PDFs/);
+      .toMatch(/^Error: pages does not apply to this file\. pages and text_offset are for PDFs/);
+    expect(await tool.execute({ path: '/d/notes.txt', text_offset: 5 }, { files: access }))
+      .toMatch(/^Error: text_offset does not apply to this file/);
     expect(await tool.execute({ path: '/d/photo.png', image_index: 2 }, { files: access }))
       .toMatch(/^Error: pages and image_index do not apply to a picture file/);
+    expect(await tool.execute({ path: '/d/photo.png', text_offset: 5 }, { files: access }))
+      .toMatch(/^Error: text_offset does not apply to a picture file/);
     expect(await tool.execute({ path: '/d/a.pdf', region: { x0: 0, y0: 0, x1: 900, y1: 900 } }, { files: access }))
       .toMatch(/^Error: region values are fractions between 0 and 1/);
     expect(upstream).not.toHaveBeenCalled();

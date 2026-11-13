@@ -2,7 +2,7 @@ import type { Region } from './documentProbe';
 
 /**
  * The optional read_file parameters that look into documents and pictures:
- * `pages` (PDF), `region` and `rotate` (a PDF page or a picture), and
+ * `pages` and `text_offset` (PDF), `region` and `rotate` (a PDF page or a picture), and
  * `image_index` (a picture embedded in a Word, Excel or PowerPoint file).
  *
  * Models pass numbers as strings and objects as JSON text often enough that
@@ -19,6 +19,8 @@ export interface DocumentReadParams {
   region: Region | null;
   rotate: Rotation;
   imageIndex: number | null;
+  /** Characters of the first page's text to skip: reads on from where the last read of a long page stopped. */
+  textOffset: number;
 }
 
 type Parsed<T> = T | { error: string };
@@ -108,7 +110,9 @@ export function parseDocumentReadParams(input: Record<string, unknown>): Parsed<
   if (isError(rotate)) return rotate;
   const imageIndex = parseImageIndex(input.image_index);
   if (isError(imageIndex)) return imageIndex;
-  return { pages, region, rotate, imageIndex };
+  const textOffset = parseTextOffset(input.text_offset);
+  if (isError(textOffset)) return textOffset;
+  return { pages, region, rotate, imageIndex, textOffset };
 }
 
 /** Whether a call asks for a closer view (a region or a turn) rather than a plain read. */
@@ -121,6 +125,15 @@ export function singlePage(ranges: PageRanges | null): number | null {
   if (!ranges || ranges.length !== 1) return null;
   const [start, end] = ranges[0];
   return end === start ? start : null;
+}
+
+/** "100000" or a number: a count of characters, 0 or more. */
+export function parseTextOffset(spec: unknown): Parsed<number> {
+  if (spec === undefined || spec === null || spec === '') return 0;
+  const value = typeof spec === 'string' && /^\s*\d+\s*$/.test(spec) ? Number(spec) : spec;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value
+    : { error: `text_offset must be a number of characters, 0 or more, got ${JSON.stringify(spec)}` };
 }
 
 /** "1–6, 9, 12–14" */

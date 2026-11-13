@@ -59,9 +59,12 @@ describe('parseRotation', () => {
 describe('parseDocumentReadParams', () => {
   it('collects every parameter, or the first one that cannot be used', () => {
     expect(parseDocumentReadParams({ path: '/a.pdf', pages: '18', region: [0, 0, 0.5, 0.5], rotate: 90 }))
-      .toEqual({ pages: [[18, 18]], region: [0, 0, 0.5, 0.5], rotate: 90, imageIndex: null });
+      .toEqual({ pages: [[18, 18]], region: [0, 0, 0.5, 0.5], rotate: 90, imageIndex: null, textOffset: 0 });
     expect(parseDocumentReadParams({ path: '/a.docx', image_index: '3' })).toMatchObject({ imageIndex: 3 });
     expect(parseDocumentReadParams({ path: '/a.docx', image_index: 0 })).toEqual({ error: expect.stringMatching(/image_index/) });
+    expect(parseDocumentReadParams({ path: '/a.pdf', pages: '1-', text_offset: '100000' })).toMatchObject({ pages: [[1, null]], textOffset: 100000 });
+    expect(parseDocumentReadParams({ path: '/a.pdf', text_offset: -5 })).toEqual({ error: expect.stringMatching(/^text_offset/) });
+    expect(parseDocumentReadParams({ path: '/a.pdf', text_offset: 'x' })).toEqual({ error: expect.stringMatching(/^text_offset/) });
     expect(parseDocumentReadParams({ path: '/a.pdf', pages: 'x', rotate: 45 })).toEqual({ error: expect.stringMatching(/^pages/) });
   });
 });

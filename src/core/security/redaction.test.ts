@@ -37,12 +37,15 @@ describe('redactSensitiveMediaText', () => {
   });
 
   it.each([
+    ['/用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['图片 /用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['路径:/用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['路径：/用户/张三/截图.png', '/用户/张三/截图.png'],
+    ['(/用户/张三/截图.png)', '/用户/张三/截图.png'],
+    ['（/用户/张三/截图.png）', '/用户/张三/截图.png'],
     ['/Users/张三/截图.png', '/Users/张三/截图.png'],
-    ['图片 /Users/张三/截图.png', '/Users/张三/截图.png'],
     ['路径:/home/张三/截图.png', '/home/张三/截图.png'],
-    ['路径：/home/张三/截图.png', '/home/张三/截图.png'],
     ['(/Volumes/资料/截图.png)', '/Volumes/资料/截图.png'],
-    ['（/Users/张三/截图.png）', '/Users/张三/截图.png'],
     ['C:\\用户\\张三\\截图.png', 'C:\\用户\\张三\\截图.png'],
     ['\\\\服务器\\共享\\截图.png', '\\\\服务器\\共享\\截图.png'],
     ['file:///用户/张三/截图.png', '/用户/张三/截图.png'],
@@ -135,6 +138,28 @@ describe('redactSensitiveMediaText', () => {
       expect(sanitized).toContain('[REDACTED:path]');
     });
 
+    // Every path shape upstream/dev redacted (any root, any case) is still redacted.
+    it.each([
+      ['/etc/hosts', '/etc/hosts'],
+      ['cat /proc/1/status', '/proc/1'],
+      ['在 /data/exports/a.csv 里', '/data/exports'],
+      ['/workspace/app/src/index.ts', '/workspace/app'],
+      ['/users/alice/a.png', '/users/alice'],
+      ['见 /api/v1/orders 接口', '/api/v1/orders'],
+      ['/客户资料/合同/a.pdf', '/客户资料/合同'],
+      ['(/a/b)', '/a/b'],
+      ['x:/srv/a', '/srv/a'],
+      ['(见)/Users/alice/a.png', '/Users/alice'],
+      ['/tmp', '/tmp'],
+      ['listed /tmp/ and more', '/tmp/'],
+      ['wrote /report.pdf', '/report.pdf'],
+      ['/年度总结.docx', '/年度总结.docx'],
+    ])('redacts any root, any shape upstream redacted: %s', (text, secret) => {
+      const sanitized = redactSensitiveMediaText(text);
+      expect(sanitized).not.toContain(secret);
+      expect(sanitized).toContain('[REDACTED:path]');
+    });
+
     it('ends a path at Chinese punctuation, so the sentence after it stays', () => {
       expect(redactSensitiveMediaText('截图已保存到/Users/alice/a.png，请查看。')).toBe('截图已保存到[REDACTED:path]，请查看。');
       expect(redactSensitiveMediaText('文件（D:\\合同\\a.pdf）已读')).toBe('文件（[REDACTED:path]）已读');
@@ -150,6 +175,7 @@ describe('redactSensitiveMediaText', () => {
       'A/B 两版方案',
       '甲方 / 乙方',
       '/ 分隔的字段',
+      '/',
       '1/2 和 3/4',
       'and/or',
       '签订日期：2026/09/28',
@@ -157,13 +183,17 @@ describe('redactSensitiveMediaText', () => {
       'https://example.com/Users/alice/a.png',
       'https://example.test/home/index.html',
       'http://intranet:8080/Users/list',
-      '见 /api/v1/orders 接口',
+      '合同金额 5,000 元 /年，按季支付',
+      '（¥30,000.00）/年',
+      '（¥30,000.00）/year',
+      '(¥30,000.00)/year',
+      '[上限]/月',
+      '甲方 /乙方',
+      '价格/元 /年',
       '分子/分母',
       'TCP/IP',
       '</div></td>',
       '~ 约 5/6',
-      // Roots are matched in their real case.
-      '/users/alice/a.png',
     ])('keeps: %s', (text) => {
       expect(redactSensitiveMediaText(text)).toBe(text);
     });

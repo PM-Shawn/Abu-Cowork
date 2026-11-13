@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseCommandOutcome, parseFileReadOutcome, parseHttpFetchOutcome } from './toolOutcomes';
+import { parseCommandOutcome, parseFileReadOutcome, parseHttpFetchOutcome, outcomesAfterSpill } from './toolOutcomes';
 
 describe('toolOutcomes', () => {
   describe('parseCommandOutcome', () => {
@@ -73,5 +73,16 @@ describe('toolOutcomes', () => {
     ])('returns undefined for %s', (_name, value) => {
       expect(parseHttpFetchOutcome(value)).toBeUndefined();
     });
+  });
+});
+
+describe('outcomesAfterSpill', () => {
+  it('drops the command sections and widens the http body to the stored text', () => {
+    expect(outcomesAfterSpill({ commandOutcome: { exitCode: 0, stdout: [8, 900] } }, 'short')).toEqual({});
+    expect(outcomesAfterSpill(
+      { httpFetchOutcome: { status: 200, statusText: 'OK', body: [13, 90000], truncated: false } },
+      'x'.repeat(4000),
+    )).toEqual({ httpFetchOutcome: { status: 200, statusText: 'OK', body: [13, 4000], truncated: true } });
+    expect(outcomesAfterSpill(undefined, 'x')).toBeUndefined();
   });
 });

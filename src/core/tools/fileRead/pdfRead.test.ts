@@ -13,7 +13,7 @@ function page(n: number, fields: Partial<PdfPageProbe> = {}): PdfPageProbe {
 }
 
 function pdf(list: PdfPageProbe[], fields: Partial<PdfReadProbe> = {}): PdfReadProbe {
-  return { ok: true, pages: list.length, unexamined_from: null, text_cut_at: null, list, seconds: 0.1, ...fields };
+  return { ok: true, pages: list.length, unexamined_from: null, text_cut_at: null, text_cut_from: 0, list, seconds: 0.1, ...fields };
 }
 
 const textOf = (result: string | ToolResultContent[]): string =>
@@ -135,6 +135,20 @@ describe('buildPdfReadResult', () => {
     expect(text).toContain('Pages from 4 on were not examined in the time available. To read them, call read_file with pages="4-".');
     expect(text).toContain('--- Page 2 ---\ncut\n[... the text of this page is cut here');
     expect(text).not.toContain('--- Page 3 ---');
+  });
+
+  it('says where in a long page the text stopped, and how to read on from there with the later pages kept', () => {
+    const cut = textOf(buildPdfReadResult(pdf([
+      page(1, { text: 'head of a long page', text_cut: true }),
+    ], { pages: 2, text_cut_at: 1, text_cut_from: 100000 }), { fileName, vision: false, explicitPages: false }));
+    expect(cut).toContain('The text stops partway through page 1, at character 100,000 of its text (about 100,000 characters per read). To read on, call read_file with pages="1-" and text_offset=100000; the pages after it follow.');
+    const rest = textOf(buildPdfReadResult(pdf([
+      page(1, { text: 'tail of a long page', text_from: 100000 }),
+      page(2, { text: 'page two' }),
+    ], { pages: 2 }), { fileName, vision: false, explicitPages: true }));
+    expect(rest).toContain('--- Page 1, from character 100,000 of its text ---\ntail of a long page');
+    expect(rest).toContain('--- Page 2 ---\npage two');
+    expect(rest).not.toContain('The text stops');
   });
 
   it('marks a garbled layer and lists smaller pictures and lines', () => {

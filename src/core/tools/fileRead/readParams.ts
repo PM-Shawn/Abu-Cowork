@@ -1,6 +1,6 @@
 /**
  * The optional read_file parameters that look into documents and pictures:
- * `pages` (PDF).
+ * `pages` and `text_offset` (PDF).
  *
  * Models pass numbers as strings and objects as JSON text often enough that
  * every parser accepts both.
@@ -11,6 +11,8 @@ export type PageRanges = Array<[number, number | null]>;
 
 export interface DocumentReadParams {
   pages: PageRanges | null;
+  /** Characters of the first page's text to skip: reads on from where the last read of a long page stopped. */
+  textOffset: number;
 }
 
 type Parsed<T> = T | { error: string };
@@ -44,7 +46,18 @@ export function parsePages(spec: unknown): Parsed<PageRanges | null> {
 export function parseDocumentReadParams(input: Record<string, unknown>): Parsed<DocumentReadParams> {
   const pages = parsePages(input.pages);
   if (isError(pages)) return pages;
-  return { pages };
+  const textOffset = parseTextOffset(input.text_offset);
+  if (isError(textOffset)) return textOffset;
+  return { pages, textOffset };
+}
+
+/** "100000" or a number: a count of characters, 0 or more. */
+export function parseTextOffset(spec: unknown): Parsed<number> {
+  if (spec === undefined || spec === null || spec === '') return 0;
+  const value = typeof spec === 'string' && /^\s*\d+\s*$/.test(spec) ? Number(spec) : spec;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0
+    ? value
+    : { error: `text_offset must be a number of characters, 0 or more, got ${JSON.stringify(spec)}` };
 }
 
 /** "1–6, 9, 12–14" */

@@ -16,7 +16,7 @@ import { parseDocumentReadParams } from './readParams';
  * here leaves `fileTools.ts` as it was but for the wrapping call.
  */
 
-const DOCUMENT_PARAMETERS = ['pages'] as const;
+const DOCUMENT_PARAMETERS = ['pages', 'text_offset'] as const;
 
 type FileKind = 'pdf';
 
@@ -38,6 +38,10 @@ export const DOCUMENT_READ_PROPERTIES: Record<string, ToolParameter> = {
   pages: {
     type: 'string',
     description: 'PDF only: the pages to read with their page images, e.g. "18", "3-5" or "2,7" (up to 4 page images per call).',
+  },
+  text_offset: {
+    type: 'number',
+    description: 'PDF only: characters of the first page\'s text to skip. Use it, with pages, to read on when a read said its text stopped partway through a page.',
   },
 };
 
@@ -62,7 +66,7 @@ async function handle(input: Record<string, unknown>, context?: ToolExecutionCon
   if (!kind) {
     const asked = DOCUMENT_PARAMETERS.filter((name) => given(input[name]));
     if (!asked.length) return { kind: 'upstream' };
-    return { kind: 'done', result: `Error: ${asked.join(', ')} ${asked.length === 1 ? 'does' : 'do'} not apply to this file. pages is for PDFs.` };
+    return { kind: 'done', result: `Error: ${asked.join(', ')} ${asked.length === 1 ? 'does' : 'do'} not apply to this file. pages and text_offset are for PDFs.` };
   }
   const params = parseDocumentReadParams(input);
   if ('error' in params) return { kind: 'done', result: `Error: ${params.error}` };

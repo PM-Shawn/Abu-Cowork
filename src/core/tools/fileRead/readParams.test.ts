@@ -26,7 +26,10 @@ describe('parsePages', () => {
 
 describe('parseDocumentReadParams', () => {
   it('collects every parameter, or the first one that cannot be used', () => {
-    expect(parseDocumentReadParams({ path: '/a.pdf', pages: '18' })).toEqual({ pages: [[18, 18]] });
+    expect(parseDocumentReadParams({ path: '/a.pdf', pages: '18' })).toEqual({ pages: [[18, 18]], textOffset: 0 });
+    expect(parseDocumentReadParams({ path: '/a.pdf', pages: '1-', text_offset: '100000' })).toEqual({ pages: [[1, null]], textOffset: 100000 });
+    expect(parseDocumentReadParams({ path: '/a.pdf', text_offset: -5 })).toEqual({ error: expect.stringMatching(/^text_offset/) });
+    expect(parseDocumentReadParams({ path: '/a.pdf', text_offset: 'x' })).toEqual({ error: expect.stringMatching(/^text_offset/) });
     expect(parseDocumentReadParams({ path: '/a.pdf', pages: 'x' })).toEqual({ error: expect.stringMatching(/^pages/) });
   });
 });

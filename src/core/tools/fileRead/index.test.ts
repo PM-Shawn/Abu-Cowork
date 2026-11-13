@@ -20,7 +20,7 @@ function files(answer?: { code: number; stdout: string; stderr: string }) {
 
 describe('read_file schema', () => {
   it('offers the document parameters beside upstream\'s and describes them', () => {
-    expect(Object.keys(readFileTool.inputSchema.properties)).toEqual(['path', 'offset', 'limit', 'pages']);
+    expect(Object.keys(readFileTool.inputSchema.properties)).toEqual(['path', 'offset', 'limit', 'pages', 'text_offset']);
     expect(readFileTool.inputSchema.required).toEqual(['path']);
     expect(readFileTool.description).toContain('pass pages (e.g. "18" or "3-5")');
     expect(readFileTool.isConcurrencySafe).toBe(true);
@@ -44,7 +44,9 @@ describe('withDocumentReading dispatch', () => {
     upstream.mockClear();
     const access = files();
     expect(await tool.execute({ path: '/d/notes.txt', pages: '2' }, { files: access }))
-      .toMatch(/^Error: pages does not apply to this file\. pages is for PDFs/);
+      .toMatch(/^Error: pages does not apply to this file\. pages and text_offset are for PDFs/);
+    expect(await tool.execute({ path: '/d/notes.txt', text_offset: 5 }, { files: access }))
+      .toMatch(/^Error: text_offset does not apply to this file/);
     expect(await tool.execute({ path: '/d/a.pdf', pages: 'first' }, { files: access }))
       .toMatch(/^Error: pages could not be read/);
     expect(upstream).not.toHaveBeenCalled();
@@ -70,7 +72,7 @@ describe('withDocumentReading dispatch', () => {
   it('records the read and the outcome of a PDF it read', async () => {
     const reportMetadata = vi.fn();
     const context: ToolExecutionContext = { files: files({ code: 0, stdout: JSON.stringify({
-      ok: true, pages: 1, unexamined_from: null, text_cut_at: null, seconds: 0.1,
+      ok: true, pages: 1, unexamined_from: null, text_cut_at: null, text_cut_from: 0, seconds: 0.1,
       list: [{ n: 1, w: 595, h: 842, chars: 900, garbled: false, ocr: false, images: 0, image_share: 0, paths: 0, text: 'hello' }],
     }), stderr: '' }), conversationId: 'c-pdf', reportMetadata };
     const result = await tool.execute({ path: '/d/a.pdf' }, context);

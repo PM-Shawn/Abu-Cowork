@@ -7,7 +7,7 @@ const shownOn = (maxTurns: number) => {
   return steps;
 };
 const range = (from: number, to: number) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
-const LAST = '[This is your last step in this run. Reply now with what is done and where each file the user asked for is saved; nothing can be saved or fixed after this reply.]';
+const LAST = '[This is the last model request in this run. You can still call the save tool in this one, but you will not get another request to summarise. Save every file the user asked for now, in a usable state.]';
 const left = (n: number) => `[Only ${n} steps are left in this run. Make sure every file the user asked for is saved now in a usable state, before any further polishing.]`;
 
 describe('stepBudgetThreshold', () => {
@@ -49,6 +49,12 @@ describe('stepBudgetNote', () => {
   it('has its own wording on the last step', () => {
     expect(stepBudgetNote(200, 200)).toBe(LAST);
     expect(stepBudgetNote(10, 10)).toBe(LAST);
+  });
+
+  it('says tool calls still run on the last request, since the loop stops only on the next one', () => {
+    const note = stepBudgetNote(200, 200)!;
+    expect(note).toMatch(/can still call the save tool/);
+    expect(note).not.toMatch(/nothing can be saved/);
   });
 
   it('is the same text when the same step is requested again, and silent past the cap', () => {

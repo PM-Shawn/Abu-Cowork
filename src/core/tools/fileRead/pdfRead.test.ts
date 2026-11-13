@@ -13,7 +13,7 @@ function page(n: number, fields: Partial<PdfPageProbe> = {}): PdfPageProbe {
 }
 
 function pdf(list: PdfPageProbe[], fields: Partial<PdfReadProbe> = {}): PdfReadProbe {
-  return { ok: true, pages: list.length, unexamined_from: null, text_cut_at: null, list, seconds: 0.1, ...fields };
+  return { ok: true, pages: list.length, unexamined_from: null, text_cut_at: null, text_cut_from: 0, list, seconds: 0.1, ...fields };
 }
 
 const textOf = (result: string | ToolResultContent[]): string =>
@@ -142,6 +142,20 @@ describe('buildPdfReadResult', () => {
     expect(text).not.toContain('--- Page 3 ---');
   });
 
+  it('says where in a long page the text stopped, and how to read on from there with the later pages kept', () => {
+    const cut = textOf(buildPdfReadResult(pdf([
+      page(1, { text: 'head of a long page', text_cut: true }),
+    ], { pages: 2, text_cut_at: 1, text_cut_from: 100000 }), { fileName, vision: false, explicitPages: false }));
+    expect(cut).toContain('The text stops partway through page 1, at character 100,000 of its text (about 100,000 characters per read). To read on, call read_file with pages="1-" and text_offset=100000; the pages after it follow.');
+    const rest = textOf(buildPdfReadResult(pdf([
+      page(1, { text: 'tail of a long page', text_from: 100000 }),
+      page(2, { text: 'page two' }),
+    ], { pages: 2 }), { fileName, vision: false, explicitPages: true }));
+    expect(rest).toContain('--- Page 1, from character 100,000 of its text ---\ntail of a long page');
+    expect(rest).toContain('--- Page 2 ---\npage two');
+    expect(rest).not.toContain('The text stops');
+  });
+
   it('marks a garbled layer and lists smaller pictures and lines', () => {
     const text = textOf(buildPdfReadResult(pdf([
       page(1, { garbled: true }),
@@ -158,7 +172,7 @@ describe('buildPdfViewResult', () => {
   const view = (fields: Partial<PdfViewProbe> = {}): PdfViewProbe => ({
     ok: true, pages: 23, page: { ...page(18, { chars: 93, ocr: true, images: 1, image_share: 0.72 }) },
     region: [0.25, 0.2, 0.9, 0.5], rotate: 0, rulers: [[0.25, 0.9], [0.2, 0.5]],
-    img: { data: 'ZZZZ', w: 1643, h: 1070 }, text: '乙方(签字): 张三', ...fields,
+    img: { data: 'ZZZZ', w: 1643, h: 1070 }, text: '乙方(签字): 张三', text_cut: false, text_chars: 8, ...fields,
   });
 
   it('returns the enlarged region with its label and the OCR text inside it', () => {
@@ -183,6 +197,14 @@ describe('buildPdfViewResult', () => {
     expect(buildPdfViewResult(view({ scan_zoom: 8, img: null }), { fileName, vision: false })).not.toContain('enlarges');
   });
 
+  it('says when the region holds more text than was returned, and how to get the rest', () => {
+    const cut = textOf(buildPdfViewResult(view({ img: null, text: 'abc'.repeat(10), text_cut: true, text_chars: 120_000 }), { fileName, vision: false }));
+    expect(cut).toContain('abcabcabc\n[... the text of this region is cut here: 30 of 120,000 characters are shown. Ask for a smaller region (part of the page at a time) to read the rest.]');
+    const ocr = textOf(buildPdfViewResult(view({ text_cut: true, text_chars: 99 }), { fileName, vision: true }));
+    expect(ocr).toContain('张三\n[... the text of this region is cut here');
+    expect(textOf(buildPdfViewResult(view(), { fileName, vision: true }))).not.toContain('cut here');
+  });
+
   it('gives a model that cannot see the region text alone', () => {
     const result = buildPdfViewResult(view({ img: null }), { fileName, vision: false });
     expect(typeof result).toBe('string');
@@ -194,7 +216,7 @@ describe('readPdf', () => {
   beforeEach(() => vi.mocked(invoke).mockReset());
 
   const params = (fields: Partial<DocumentReadParams> = {}): DocumentReadParams =>
-    ({ pages: null, region: null, rotate: 0, ...fields });
+    ({ pages: null, region: null, rotate: 0, textOffset: 0, ...fields });
   const optionsOf = () => JSON.parse((vi.mocked(invoke).mock.calls[0][1] as { args: string[] }).args[3]);
   const operationOf = () => (vi.mocked(invoke).mock.calls[0][1] as { args: string[] }).args[2];
 
@@ -210,10 +232,10 @@ describe('readPdf', () => {
   });
 
   it('views one page for region or rotate, and refuses several pages', async () => {
-    vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: JSON.stringify({ ok: true, pages: 1, page: page(1), region: [0, 0, 1, 1], rotate: 90, rulers: [[1, 0], [0, 1]], img: img, text: '' }), stderr: '' });
+    vi.mocked(invoke).mockResolvedValue({ code: 0, stdout: JSON.stringify({ ok: true, pages: 1, page: page(1), region: [0, 0, 1, 1], rotate: 90, rulers: [[1, 0], [0, 1]], img: img, text: '', text_cut: false, text_chars: 0 }), stderr: '' });
     await readPdf('/d/a.pdf', params({ pages: [[5, 5]], rotate: 90 }), {});
     expect(operationOf()).toBe('pdf-view');
-    expect(optionsOf()).toMatchObject({ page: 5, rotate: 90, side: 1600, render: true });
+    expect(optionsOf()).toMatchObject({ page: 5, rotate: 90, side: 1600, render: true, text_chars: 20_000 });
 
     vi.mocked(invoke).mockClear();
     const refused = await readPdf('/d/a.pdf', params({ pages: [[5, 6]], region: [0, 0, 0.5, 0.5] }), {});

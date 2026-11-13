@@ -67,6 +67,32 @@ function clausesPdf(scan: boolean, inOrder = false): Buffer {
   return buildPdf(`${order.map(line).join('\n')}\n`, scan);
 }
 
+/** A PDF of 600×800 pages, one content stream each. */
+function pagesPdf(streams: string[]): Buffer {
+  const kids = streams.map((_, i) => `${6 + i * 2} 0 R`).join(' ');
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${kids}] /Count ${streams.length} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    '<< /Producer (test) >>',
+    '<< >>',
+    ...streams.flatMap((stream, i) => [
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] /Contents ${7 + i * 2} 0 R /Resources << /Font << /F1 3 0 R >> >> >>`,
+      `<< /Length ${stream.length} >>\nstream\n${stream}endstream`,
+    ]),
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  objects.forEach((body, i) => {
+    offsets.push(pdf.length);
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((o) => `${String(o).padStart(10, '0')} 00000 n \n`).join('')}`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, 'latin1');
+}
+
 /** A 40×20 PNG, left half black, right half white. */
 function samplePng(): Buffer {
   const chunk = (type: string, data: Buffer) => {
@@ -107,6 +133,9 @@ describe.skipIf(!hasLibraries)('the probe program on generated files', () => {
     writeFileSync(join(dir, 'ocr.pdf'), clausesPdf(true));
     writeFileSync(join(dir, 'ocr-in-order.pdf'), clausesPdf(true, true));
     writeFileSync(join(dir, 'drawn.pdf'), clausesPdf(false));
+    // Page 1 holds 400 lines of 300 letters in 1 pt type (120,000 characters), page 2 a few words.
+    const dense = Array.from({ length: 400 }, (_, i) => `BT /F1 1 Tf 40 ${800 - i} Td (${'abc'.repeat(100)}) Tj ET`).join('\n');
+    writeFileSync(join(dir, 'dense.pdf'), pagesPdf([`${dense}\n`, 'BT /F1 12 Tf 50 700 Td (page two) Tj ET\n']));
   });
 
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -200,5 +229,52 @@ describe.skipIf(!hasLibraries)('the probe program on generated files', () => {
     expect(run<RasterViewProbe>('image-view', { side: 80 }, join(dir, 'photo.jpg')).size).toEqual([400, 300]);
     expect(run<RasterViewProbe>('image-view', { side: 80 }, join(dir, 'turned.jpg')).size).toEqual([300, 400]);
     expect(run<RasterViewProbe>('image-view', { region: [0, 0, 0.25, 0.25], side: 80 }, join(dir, 'turned.jpg')).size).toEqual([300, 400]);
+  });
+
+  it('pdf-read: a page longer than the text budget is continued inside that page, and later pages stay reachable', () => {
+    const file = join(dir, 'dense.pdf');
+    const whole = run<PdfReadProbe>('pdf-read', { text_chars: 10_000_000, text_bytes: 10_000_000 }, file);
+    const full = whole.list[0].text!;
+    expect(full.replace(/\s/g, '').length).toBe(120_000);
+    const options = { text_chars: 100_000, text_bytes: 10_000_000 };
+    const first = run<PdfReadProbe>('pdf-read', options, file);
+    expect(first.text_cut_at).toBe(1);
+    expect(first.text_cut_from).toBe(100_000);
+    expect(first.list[0].text).toBe(full.slice(0, 100_000));
+    // The continuation starts where the last chunk ended, not at the page's start.
+    const second = run<PdfReadProbe>('pdf-read', { ...options, pages: [[1, null]], text_from: first.text_cut_from }, file);
+    expect(second.list[0].text).toBe(full.slice(100_000));
+    expect(first.list[0].text! + second.list[0].text!).toBe(full);
+    // Nothing is left of page 1 and the budget has room, so page 2 follows in the same read.
+    expect(second.text_cut_at).toBeNull();
+    expect(second.list.map((p) => p.n)).toEqual([1, 2]);
+    expect(second.list[1].text).toContain('page two');
+  });
+
+  it('pdf-read: a continuation that is cut again names the next position, again within the same page', () => {
+    const file = join(dir, 'dense.pdf');
+    const options = { text_chars: 50_000, text_bytes: 10_000_000 };
+    const first = run<PdfReadProbe>('pdf-read', options, file);
+    const second = run<PdfReadProbe>('pdf-read', { ...options, pages: [[1, null]], text_from: first.text_cut_from }, file);
+    expect(first.text_cut_from).toBe(50_000);
+    expect(second.text_cut_at).toBe(1);
+    expect(second.text_cut_from).toBe(100_000);
+    const third = run<PdfReadProbe>('pdf-read', { ...options, pages: [[1, null]], text_from: second.text_cut_from }, file);
+    expect(third.text_cut_at).toBeNull();
+    expect(third.list.map((p) => p.n)).toEqual([1, 2]);
+  });
+
+  it('pdf-view: a region holding more text than the limit says that its text was cut, and a smaller region does not', () => {
+    const file = join(dir, 'dense.pdf');
+    const whole = run<PdfViewProbe>('pdf-view', { page: 1, region: [0, 0, 1, 1], render: false }, file);
+    expect(whole.text.length).toBe(20_000);
+    expect(whole.text_cut).toBe(true);
+    expect(whole.text_chars).toBeGreaterThan(120_000);
+    const top = run<PdfViewProbe>('pdf-view', { page: 1, region: [0, 0, 1, 0.04], render: false }, file);
+    expect(top.text_cut).toBe(false);
+    expect(top.text_chars).toBe(top.text.length);
+    expect(top.text.startsWith('abcabc')).toBe(true);
+    // The limit is the caller's to set.
+    expect(run<PdfViewProbe>('pdf-view', { page: 1, region: [0, 0, 1, 0.04], render: false, text_chars: 1000 }, file)).toMatchObject({ text_cut: true });
   });
 });

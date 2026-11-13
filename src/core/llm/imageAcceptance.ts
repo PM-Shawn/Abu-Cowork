@@ -24,7 +24,9 @@
  * look at it, never dropped silently. Pictures are judged by their header
  * only, so this costs a few bytes of base64 decoding per picture; data whose
  * header is in no format this knows and that could still be a picture is
- * sent under its label (the provider decides), so nothing is lost on a guess.
+ * sent under its label (the provider decides), so nothing is lost on a guess;
+ * data that is not Base64 at all cannot be decoded by any provider and is left
+ * out with the same kind of note.
  *
  * The verdict is a pure function of the bytes and the route, so a replayed
  * history builds the same request body (prompt cache, deterministic replays).
@@ -46,6 +48,9 @@ const SENDABLE: ReadonlySet<string> = new Set(SUPPORTED_IMAGE_TYPES);
 
 /** Base64 characters that hold the 18 bytes the checks below read (`sniffImageMediaType` reads 16). */
 const SNIFF_CHARS = 24;
+
+/** What the note says about data that cannot be decoded as Base64 (distinct from data that decodes to a header in no known format). */
+const NOT_BASE64 = 'data that is not valid Base64';
 
 /** The first bytes of a picture's data, or null when the data is not base64. */
 function head(data: string): Uint8Array | null {
@@ -139,7 +144,9 @@ export function formatNote(mediaType: string): string {
  */
 export function judgeImage(declaredMediaType: string, data: string, maxDimension: number, maxBytes?: number): ImageVerdict {
   const bytes = head(data);
-  const sniffed = bytes ? sniff(bytes) : null;
+  // Not base64 at all: no provider decodes it, so it would fail every later request of the conversation.
+  if (bytes === null) return { kind: 'leave-out', note: notPictureNote(NOT_BASE64), notPicture: NOT_BASE64 };
+  const sniffed = sniff(bytes);
   if (sniffed !== null && !SENDABLE.has(sniffed)) {
     return { kind: 'leave-out', note: formatNote(sniffed), format: formatName(sniffed) };
   }
@@ -149,8 +156,7 @@ export function judgeImage(declaredMediaType: string, data: string, maxDimension
     return { kind: 'leave-out', note: formatNote(declaredMediaType), format: formatName(declaredMediaType) };
   }
   // A sendable label on bytes in no picture format: sent only while they could still be a picture.
-  // Data that is not base64 has no bytes to read and is judged by its label.
-  const notPicture = sniffed === null && bytes !== null ? notAPicture(bytes) : null;
+  const notPicture = sniffed === null ? notAPicture(bytes) : null;
   if (notPicture) return { kind: 'leave-out', note: notPictureNote(notPicture), notPicture };
   const size = sniffed !== null && Number.isFinite(maxDimension) && maxDimension > 0 ? base64ImageHeaderSize(data) : null;
   if (size && Math.max(size.w, size.h) > maxDimension) {

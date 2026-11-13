@@ -37,7 +37,7 @@ const messages: Message[] = [
       result: 'Image: /tmp/x/图片.png (251KB, image/png)',
       resultContent: [
         { type: 'text', text: 'Image: /tmp/x/图片.png (251KB, image/png)' },
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'BASE64PNG' } },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'BASE64PNG123' } },
       ],
     }],
   },
@@ -51,7 +51,7 @@ describe('OpenAICompatibleAdapter — non-vision model must not receive image_ur
     await new OpenAICompatibleAdapter().chat(messages, opts({ model: modelId, supportsVision: resolveCapabilities(modelId).vision }), () => {});
     const wire = JSON.stringify(JSON.parse(mockFetch.mock.calls[0][1].body as string).messages);
     expect(wire).not.toContain('image_url');
-    expect(wire).not.toContain('BASE64PNG');
+    expect(wire).not.toContain('BASE64PNG123');
     expect(wire).toContain('read_file');
   });
 
@@ -62,7 +62,7 @@ describe('OpenAICompatibleAdapter — non-vision model must not receive image_ur
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
     const wire = JSON.stringify(body.messages);
     expect(wire).not.toContain('image_url');
-    expect(wire).not.toContain('BASE64PNG');
+    expect(wire).not.toContain('BASE64PNG123');
   });
 });
 
@@ -107,7 +107,7 @@ describe('OpenAICompatibleAdapter — DeepSeek vision route carries images end t
     {
       id: 'u1', role: 'user', timestamp: 1,
       content: [
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'BASE64PNG' } },
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'BASE64PNG123' } },
         { type: 'text', text: '这张图里是什么' },
       ],
     } as unknown as Message,
@@ -139,7 +139,7 @@ describe('OpenAICompatibleAdapter — DeepSeek vision route carries images end t
   it.each(['deepseek-flash', 'deepseek/deepseek-flash', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'])('%s receives the image as an image_url data URL', async (modelId) => {
     const { wire, userText } = await sendAs(modelId);
     expect(wire).toContain('image_url');
-    expect(wire).toContain('data:image/png;base64,BASE64PNG');
+    expect(wire).toContain('data:image/png;base64,BASE64PNG123');
     expect(wire).toContain('这张图里是什么');
     expect(userText).toBe('这张图里是什么');
   });
@@ -154,7 +154,7 @@ describe('OpenAICompatibleAdapter — DeepSeek vision route carries images end t
     const sent = JSON.parse(mockFetch.mock.calls[0][1].body as string).messages as Array<{ role: string; content: unknown }>;
     expect(sent.find((message) => message.role === 'tool')?.content).toEqual(expect.any(String));
     expect(sent.filter((message) => message.role === 'user').at(-1)?.content).toEqual(expect.arrayContaining([
-      expect.objectContaining({ type: 'image_url', image_url: expect.objectContaining({ url: 'data:image/png;base64,BASE64PNG' }) }),
+      expect.objectContaining({ type: 'image_url', image_url: expect.objectContaining({ url: 'data:image/png;base64,BASE64PNG123' }) }),
     ]));
   });
 
@@ -162,7 +162,7 @@ describe('OpenAICompatibleAdapter — DeepSeek vision route carries images end t
     const prompt = '这张图里是什么';
     const { wire, userText } = await sendAs('deepseek-v4-pro');
     expect(wire).not.toContain('image_url');
-    expect(wire).not.toContain('BASE64PNG');
+    expect(wire).not.toContain('BASE64PNG123');
     expect(userText).toContain(prompt);
 
     // Degrades loudly: a note rides along so the model knows an image was dropped,

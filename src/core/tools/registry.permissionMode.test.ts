@@ -596,6 +596,24 @@ describe('command confirmation channel', () => {
 
     expect(decision.decision).toBe('deny');
   });
+
+  it('hands the model\'s purpose, cleaned, to the confirmation of a command', async () => {
+    const confirm = vi.fn(async () => true);
+    await checkToolApproval('run_command', { command: 'git reset --hard', purpose: '  撤销\n本地改动 ' }, {} as never, confirm);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    const [info] = confirm.mock.calls[0] as unknown as [{ command: string; purpose?: string }];
+    expect(info.command).toBe('git reset --hard');
+    expect(info.purpose).toBe('撤销 本地改动');
+  });
+
+  it('passes no purpose when the model gave none or pasted the command into it', async () => {
+    for (const input of [{ command: 'git reset --hard' }, { command: 'git reset --hard', purpose: 'git reset --hard' }]) {
+      const confirm = vi.fn(async () => true);
+      await checkToolApproval('run_command', input, {} as never, confirm);
+      const [info] = confirm.mock.calls[0] as unknown as [{ purpose?: string }];
+      expect(info.purpose).toBeUndefined();
+    }
+  });
 });
 
 // ── Self-extension gate ──

@@ -1022,10 +1022,19 @@ export interface TranslationDict {
     running: string;
     /** Shown in tool-call detail when the task was aborted mid-execution */
     cancelled: string;
-    /** Tool-row labels of background commands; {command} is the command text, or its id */
+    /** Tool-row labels of background commands; {command} is the model's plain-language purpose for
+     *  runInBackground, the command text (or its id) for the other two */
     runInBackground: string;
     readBackgroundCommandOutput: string;
     stopBackgroundCommand: string;
+    /** A command step the model gave no usable purpose for: a generic sentence, never the command */
+    commandFallback: string;
+    commandFallbackBackground: string;
+    /** Step titles of connector tools; {server} is the connector's name */
+    connectorStep: string;
+    connectorBrowser: string;
+    /** A tool with no plain name of its own */
+    toolFallback: string;
     /** Tool views: command, file read, search, directory and web page results */
     exitCode: string;
     commandEnded: string;
@@ -4043,6 +4052,12 @@ export interface TranslationDict {
 
   // Command Confirmation Dialog
   commandConfirm: {
+    /** Under a headline that is the model's own description of the step */
+    descriptionAiPurpose: string;
+    /** On a dangerous command: the model's sentence as a second, marked line; {purpose} */
+    purposeLine: string;
+    /** Heading of the disclosure that holds the exact command */
+    technicalDetails: string;
     title: string;
     titleDanger: string;
     titleBlock: string;

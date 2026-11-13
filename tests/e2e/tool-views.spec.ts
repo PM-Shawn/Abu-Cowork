@@ -171,17 +171,29 @@ function call(id: string, toolName: string, args: Record<string, unknown>): Mock
   return { kind: 'tool-call', toolCallId: id, toolName, arguments: args };
 }
 
+const commandPurposes = new Map<string, string>();
+
+/** The plain-language purpose a command's run_command call carries: one distinct sentence per command. */
+function purposeOf(command: string): string {
+  let purpose = commandPurposes.get(command);
+  if (!purpose) {
+    purpose = `运行检查 ${commandPurposes.size + 1}`;
+    commandPurposes.set(command, purpose);
+  }
+  return purpose;
+}
+
 function commandCall(id: string, command: string, extra: Record<string, unknown> = {}): MockReplyPlan {
-  return call(id, 'run_command', { command, ...extra });
+  return call(id, 'run_command', { command, purpose: purposeOf(command), ...extra });
 }
 
 function finalReply(): MockReplyPlan {
   return { kind: 'complete', responseText: FINAL_TEXT };
 }
 
-/** The title of a run_command step: the command, cut after 20 characters. */
+/** The title of a run_command step: the plain-language purpose the call carries, not the command. */
 function commandTitle(command: string): string {
-  return `执行 ${command.length > 20 ? `${command.slice(0, 20)}...` : command}`;
+  return purposeOf(command);
 }
 
 // ---------------------------------------------------------------------------
@@ -498,7 +510,7 @@ test.describe('story 1, a command that has not ended', () => {
     await send(page);
     const row = stepRow(page, commandTitle(FAILING));
     await expect(row.locator('[data-exit-code="1"]')).toHaveText('退出码 1', { timeout: REPLY_TIMEOUT });
-    await expect(row.getByText(/^命令已结束：/)).toBeVisible();
+    await expect(row.getByText('这一步已结束，结果请看详情', { exact: true })).toBeVisible();
 
     const stop = page.getByLabel(/^停止$/);
     await stop.click();
@@ -512,7 +524,7 @@ test.describe('story 1, a command that has not ended', () => {
     ]);
     await runTurn(page);
     await showSteps(page);
-    const { row, view } = await openView(page, `在后台执行 ${SLEEP}`, 'command');
+    const { row, view } = await openView(page, `${commandTitle(SLEEP)}（在后台）`, 'command');
     await expect(view).toContainText(SLEEP);
     await expect(view.getByText('运行中…', { exact: true })).toHaveCount(0);
     await expect(view.getByText('没有输出', { exact: true })).toHaveCount(0);

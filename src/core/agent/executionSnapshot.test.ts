@@ -611,3 +611,23 @@ describe('executionSnapshot', () => {
     });
   });
 });
+
+describe('command steps keep their purpose across a snapshot', () => {
+  const step = (toolInput: Record<string, unknown>): ExecutionStep => ({
+    id: 's1', executionId: 'e1', type: 'command', label: 'x', status: 'completed',
+    toolName: 'run_command', toolInput, source: 'agent', detailBlocks: [],
+  });
+
+  it('keeps the cleaned purpose and the background flag, and nothing else of the input', () => {
+    const [snap] = snapshotExecutionSteps([step({ command: 'npm run dev', purpose: ' 启动预览 ', background: true, cwd: '/x' })]);
+    expect(snap.purpose).toBe('启动预览');
+    expect(snap.background).toBe(true);
+    expect(snapshotToExecutionSteps([snap])[0].toolInput).toEqual({ purpose: '启动预览', background: true });
+  });
+
+  it('drops a purpose that is the command or a path', () => {
+    const [snap] = snapshotExecutionSteps([step({ command: 'ls', purpose: '/tmp/a.txt' })]);
+    expect(snap.purpose).toBeUndefined();
+    expect(snapshotToExecutionSteps([snap])[0].toolInput).toEqual({});
+  });
+});

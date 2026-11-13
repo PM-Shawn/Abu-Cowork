@@ -14,7 +14,7 @@ import { NOT_RUN_TOOL_RESULTS, TOOL_RESULT_HOOK_BLOCKED_MARKER } from '@/core/ag
 import type { WorkflowStep, StepType } from '@/utils/workflowExtractor';
 import type { ExecutionStep, DetailBlock, StepType as ExecStepType, BatchTaskRef } from '@/types/execution';
 import { generateCompletionMessage } from '@/utils/workflowExtractor';
-import { getToolLabel, shortUrl } from '@/utils/toolLabels';
+import { getToolLabel, shortUrl, isCommandToolName, isMCPTool, hasNameOnlyLabel } from '@/utils/toolLabels';
 import { useTaskExecutionStore } from '@/stores/taskExecutionStore';
 import { usePreviewStore } from '@/stores/previewStore';
 import { getBaseName } from '@/utils/pathUtils';
@@ -258,8 +258,13 @@ function resolveStepLabel(
   // from (executionSnapshot.ts strips toolInput); recomputing from an empty
   // input degrades "执行 sleep 180" to the generic "执行命令". Keep the label.
   // A background-command step is named by the command its tool call recorded.
+  // Exception: a command or connector step's saved label may be an old one that shows the command
+  // or the tool's id ("执行 python3 …", "[gh] list", "调用 manage_goal"), and a tool whose title needs
+  // only its name is always rebuilt. A command title is rebuilt from what the snapshot kept (the
+  // purpose), else read as a generic sentence; the command stays in the details.
   const hasInput = !!toolInput && Object.keys(toolInput).length > 0;
-  if (!hasInput && fallback && !backgroundCommand) return fallback;
+  const titleNeedsRebuild = isCommandToolName(toolName) || hasNameOnlyLabel(toolName) || isMCPTool(toolName);
+  if (!hasInput && fallback && !backgroundCommand && !titleNeedsRebuild) return fallback;
   return getToolLabel(toolName, toolInput ?? {}, locale, { backgroundCommand }).label;
 }
 

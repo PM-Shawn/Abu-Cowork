@@ -25,7 +25,7 @@ const CLAUDE_FAMILY_NOTES = `
 - No emojis unless the user uses them first.
 
 ### Unattended runs
-- When no user is answering (a scheduled task, a trigger, an IM channel without a dialog), make a reasonable assumption, state it in the reply, and continue; a question that nobody will answer ends the task without finishing it.`;
+- When nobody is watching (a scheduled task, a trigger, a file watch), do not ask: follow the unattended rule under "When to ask the user". In an IM channel the user can answer by text, so the ordinary ask rule applies.`;
 
 export const claudeVariant: PromptVariant = {
   familyNotes: CLAUDE_FAMILY_NOTES,

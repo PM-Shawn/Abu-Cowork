@@ -35,6 +35,7 @@ import AgentAvatar from '@/components/common/AgentAvatar';
 import TeamAvatar from '@/components/team/TeamAvatar';
 import { isIntroductionMessage } from '@/core/team/expertContact';
 import { resumeTeamRunAfterRestart } from '@/core/team/resumeAfterRestart';
+import { runRequestText } from '@/utils/steeredTurn';
 
 // Regex to match [Attachment: `path`] patterns in user messages
 const ATTACHMENT_PATTERN = /\[Attachment:\s*`([^`]+)`\]/g;
@@ -235,7 +236,8 @@ function ThinkingBlock({ thinking }: { thinking: string }) {
 // Message action toolbar
 interface MessageActionsProps {
   message: Message;
-  onEdit: () => void;
+  /** Absent: the message offers no edit (a message steered into a run). */
+  onEdit?: () => void;
   onRegenerate: () => void;
   isUser: boolean;
   conversationId?: string;
@@ -298,7 +300,7 @@ function MessageActions({ message, onEdit, onRegenerate, isUser, conversationId 
       />
 
       {/* Edit button - only for user messages */}
-      {isUser && (
+      {isUser && onEdit && (
         <IconButton icon={AppIcons.rename} label={t.chat.edit} size="sm" onClick={onEdit} />
       )}
 
@@ -430,7 +432,7 @@ export default function MessageBubble({
   // (handleTeamResume), so the row keeps its state; the offer belongs only to
   // the last request, and disappears once the continuation is sent.
   const teamResumeOffered = closedMidway && Boolean(activeConv?.teamId)
-    && [...(activeConv?.messages ?? [])].reverse().find((m) => m.role === 'user' && !m.isSystem)?.id === message.id;
+    && [...(activeConv?.messages ?? [])].reverse().find((m) => m.role === 'user' && !m.isSystem && !m.steered)?.id === message.id;
   // #549: an oversize turn can never succeed by retrying — the only way forward
   // is a fresh conversation, so the row swaps Retry for 「新建对话」.
   const isOversizeFailure = hasRunFailure && message.runErrorKind === 'payload_too_large';
@@ -541,9 +543,10 @@ export default function MessageBubble({
     let userMsgToRegenerate: Message | undefined;
 
     if (message.loopId) {
-      // Find user message with the same loopId
+      // Find the request of the run (a message steered into the run shares its
+      // loopId but is not where the run starts)
       userMsgToRegenerate = messages.find(
-        (m) => m.role === 'user' && m.loopId === message.loopId
+        (m) => m.role === 'user' && m.loopId === message.loopId && !m.steered
       );
     }
 
@@ -554,13 +557,15 @@ export default function MessageBubble({
         userMsgToRegenerate = messages
           .slice(0, idx)
           .reverse()
-          .find((m) => m.role === 'user');
+          .find((m) => m.role === 'user' && !m.steered);
       }
     }
 
     if (userMsgToRegenerate) {
       const targetUserMsg = userMsgToRegenerate;
-      const userContent = getTextContent(targetUserMsg.content);
+      // The cut below removes the messages steered into the run as well, so
+      // the run is asked again with the request and everything steered into it.
+      const userContent = runRequestText(messages, targetUserMsg, getTextContent(targetUserMsg.content));
       // Re-attach the original @expert / /skill prefix so the regenerated
       // turn stays on the same route — the user message stored content is
       // post-routing cleanInput, so the prefix is otherwise lost.
@@ -659,7 +664,9 @@ export default function MessageBubble({
           )}
           {isEditing ? (
             <EditInput
-              initialContent={textContent}
+              // Sending the edit cuts the run's steered messages too: the
+              // editor starts from the request and what was steered into it.
+              initialContent={runRequestText(activeConv?.messages ?? [], message, textContent)}
               delegateAgentName={message.delegateAgent?.name}
               skillName={message.skill?.name}
               onSave={handleSaveEdit}
@@ -783,7 +790,9 @@ export default function MessageBubble({
                 {!isConvRunning && (
                   <MessageActions
                     message={message}
-                    onEdit={handleEdit}
+                    // A steered message has no edit: the run it joined cannot be
+                    // replayed up to that step; edit the run's request instead.
+                    onEdit={message.steered ? undefined : handleEdit}
                     onRegenerate={handleRegenerate}
                     isUser={true}
                   />

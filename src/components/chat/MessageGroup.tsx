@@ -557,8 +557,10 @@ export function streamingTurnHasRenderableContent(msg: Message | undefined): boo
  */
 export default function MessageGroup({ conversationId, messages, isLastGroup: isLastGroupProp = false, isLastGroupOfLoop = false, highlightMessageId = null, expandedCompactIds, onToggleCompactSummary }: MessageGroupProps) {
   const { t } = useI18n();
-  // Separate user and assistant messages
-  const userMsg = messages.find((m) => m.role === 'user');
+  // The run's own request leads the group. A user message later in the group
+  // was steered into the run and is a 'user' segment at its step, so it is
+  // never taken for the request (a goal round's group starts with a step).
+  const userMsg = messages[0]?.role === 'user' ? messages[0] : undefined;
   const assistantMsgs = messages.filter((m) => m.role === 'assistant');
   const activeConv = useActiveConversation();
   const activeConversationId = activeConv?.id ?? null;

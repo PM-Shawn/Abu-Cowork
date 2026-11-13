@@ -25,7 +25,7 @@ import {
   removeElectronDataRoot,
   type ElectronDataRoot,
 } from './electronHelpers';
-import { CHAT_PLACEHOLDER, READY_TIMEOUT, classifyMockRequestPurpose } from './openAiMock';
+import { CHAT_PLACEHOLDER, READY_TIMEOUT, answerTitleRequest, classifyMockRequestPurpose } from './openAiMock';
 
 const LONG = 'SWITCH_LONG';
 const SHORT = 'SWITCH_SHORT';
@@ -104,6 +104,8 @@ async function startSwitchMock(): Promise<{ baseUrl: string; close: () => Promis
       res.end(JSON.stringify({ error: 'unexpected route' }));
       return;
     }
+    // The title call that follows a first reply is not a task turn (src/core/session/titleGen.ts).
+    if (answerTitleRequest(JSON.parse(body), res)) return;
     res.writeHead(200, {
       'cache-control': 'no-cache',
       connection: 'keep-alive',

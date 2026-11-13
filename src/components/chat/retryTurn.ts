@@ -6,6 +6,7 @@ import { announceChatTurnScrollIntent } from './chatTurnScrollIntent';
 import { rebuildImageAttachments } from './imageAttachmentRebuild';
 import type { RedoOutcome, RedoRequest } from './redoTurn';
 import { ensureConversationModelUsable } from './sendModelGuard';
+import { runRequestText } from '@/utils/steeredTurn';
 
 /**
  * Re-attach the original routing prefix (`@expert` or `/skill`) to user text
@@ -48,7 +49,12 @@ export async function retryTurn({ conversation, userMessage, entry, redo, chatTe
   if (!ensureConversationModelUsable(conversation, chatText)) return;
   const conversationId = conversation.id;
   const images = rebuildImageAttachments(userMessage.content, `run-retry-${Date.now()}`);
-  const routedContent = reattachRoutingPrefix(textOf(userMessage), userMessage);
+  // The cut removes the messages steered into the run as well, so the run is
+  // asked again with its request and everything steered into it.
+  const routedContent = reattachRoutingPrefix(
+    runRequestText(conversation.messages, userMessage, textOf(userMessage)),
+    userMessage,
+  );
 
   await redo({
     conversationId,

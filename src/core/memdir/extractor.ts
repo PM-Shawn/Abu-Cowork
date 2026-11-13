@@ -31,6 +31,7 @@ import { settingsForConversation } from '../agent/conversationSettings';
 import { selectChatAdapter } from '../llm/selectChatAdapter';
 import { adapterKindFor } from '../llm/adapterKind';
 import { providerChatOptions } from '../llm/providerChatOptions';
+import { internalCallOptions } from '../llm/internalCall';
 import type { LLMAdapter } from '../llm/adapter';
 import type { StreamEvent } from '../../types';
 import type { Message } from '../../types';
@@ -262,8 +263,13 @@ export async function extractMemoriesFromConversation(
         apiKey: activeApiKey,
         baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
         systemPrompt: EXTRACTION_SYSTEM_PROMPT,
-        maxTokens: 1024,
         ...providerChatOptions(getActiveProvider(settings), getEffectiveModel(settings)),
+        ...internalCallOptions({
+          provider: getActiveProvider(settings),
+          modelId: getEffectiveModel(settings),
+          baseUrl: getActiveProvider(settings)?.baseUrl || undefined,
+          answerTokens: 1024,
+        }),
         accounting: {
           source: 'memory' as const,
           conversationId,

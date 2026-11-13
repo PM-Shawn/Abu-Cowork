@@ -18,6 +18,7 @@ import { getModelUnavailableReason } from '../../utils/settingsSelectors';
 import { getSettingsReader } from '../agent/ports/settingsReader';
 import { settingsForConversation } from '../agent/conversationSettings';
 import { resolveEffectiveLlmCreds } from '../enterprise/llm-resolver';
+import { internalCallOptions } from './internalCall';
 
 export interface LLMCallOptions {
   /** System prompt */
@@ -117,8 +118,14 @@ export async function llmCall(options: LLMCallOptions): Promise<LLMCallResult> {
     baseUrl: effectiveCreds.baseUrl,
     systemPrompt: options.system,
     tools: options.tools,
-    maxTokens: options.maxTokens ?? 4096,
     ...providerChatOptions(getActiveProvider(settings), getEffectiveModel(settings)),
+    // An internal one-shot call: the answer gets the budget, not the model's thinking.
+    ...internalCallOptions({
+      provider: getActiveProvider(settings),
+      modelId: getEffectiveModel(settings),
+      baseUrl: effectiveCreds.baseUrl,
+      answerTokens: options.maxTokens ?? 4096,
+    }),
     signal: options.signal,
     // 这条路径是技能与内部工具的单轮调用（test_skill_trigger、
     // improve_skill_description 等），页面上归到「系统辅助」那一组。

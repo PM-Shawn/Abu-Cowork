@@ -89,6 +89,11 @@
  *     after `agentLoop.ts` drains or clears queued inputs, naming exactly
  *     the ids it consumed. `agentLoopRunner.ts` removes the same system ids
  *     from the shell queue. Unknown runId silent drop.
+ *   - `input.steeringEnded` → `{ runId }` — the same shim sends this when
+ *     `agentLoop.ts` stops reading steering messages (an `@expert` run, a
+ *     Stop, the end of the run). `agentLoopRunner.ts` turns the messages
+ *     typed into that run into entries for after the task. Unknown runId
+ *     silent drop.
  * Reverse requests sidecar→shell (see rpcClient.ts, subagentRunner.ts):
  *   - `tool.invoke` → `{ runId, toolName, input, context }`, response = the
  *     tool's `ToolResult`

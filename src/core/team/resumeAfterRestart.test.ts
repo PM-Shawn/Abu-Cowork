@@ -49,3 +49,39 @@ describe('resumeTeamRunAfterRestart', () => {
     expect(runAgentLoopDispatched).not.toHaveBeenCalled();
   });
 });
+
+// Tester additions (P7): a team run the user steered, closed by an app exit.
+describe('resumeTeamRunAfterRestart after a steered run (tester)', () => {
+  beforeEach(() => { initLanguage('zh-CN'); vi.clearAllMocks(); });
+
+  const steeredRun = (request: string) => conversation({
+    teamId: 't1',
+    messages: [
+      { id: 'u1', role: 'user', content: request, timestamp: 1, loopId: 'L', runState: 'interrupted', runInterruptCause: 'app_exit' },
+      { id: 'a1', role: 'assistant', content: '', timestamp: 2, loopId: 'L', toolCalls: [{ id: 't1', name: 'delegate_to_agent', input: {}, result: '财务同事已开始' }] },
+      { id: 'steer-q1', role: 'user', content: '只看第三季度', timestamp: 3, loopId: 'L', steered: true },
+    ],
+  });
+
+  it('continues with the request and what was steered into it, never with the steered message alone', async () => {
+    useChatStore.setState({ conversations: { c1: steeredRun('出一版周报') } } as never);
+    await resumeTeamRunAfterRestart('c1');
+    const text = runAgentLoopDispatched.mock.calls[0][1] as string;
+    expect(text).toContain('出一版周报');
+    expect(text).toContain('只看第三季度');
+    expect(text.indexOf('出一版周报')).toBeLessThan(text.indexOf('只看第三季度'));
+  });
+
+  // Found by the tester: the continuation quotes at most 500 characters of
+  // "the request" (MAX_REQUEST_CHARS), and the steered text was appended after
+  // the request before the cut, so a long request lost the user's correction
+  // and the team resumed the uncorrected task. Each part is cut on its own.
+  it('keeps the steered correction when the request itself is long', async () => {
+    useChatStore.setState({ conversations: { c1: steeredRun(`请整理以下要求：${'细节'.repeat(260)}`) } } as never);
+    await resumeTeamRunAfterRestart('c1');
+    const text = runAgentLoopDispatched.mock.calls[0][1] as string;
+    expect(text).toContain('只看第三季度');
+    // The request is still cut, so the quote stays bounded.
+    expect(text).not.toContain('细节'.repeat(260));
+  });
+});

@@ -92,6 +92,7 @@ import {
   type SemanticToolLoopReason,
   type ToolLoopObservation,
 } from './loopGuards';
+import { stepBudgetNote } from './stepBudget';
 import { createMaxTurnsNoticeMessage, deriveMaxTurnsStreak } from './maxTurnsNotice';
 import { createMalformedToolCallGuard, MALFORMED_TOOL_CALL_NUDGE } from './malformedToolCallGuard';
 import {
@@ -99,6 +100,13 @@ import {
   enqueueUserInput,
   hasSystemQueuedInputs,
   pauseUserInputQueue,
+  restoreSteeringInputs,
+  steeredMessageId,
+  takeSteeringInputs,
+  beginSteeringRun,
+  endSteeringRun,
+  requeueUserInput,
+  type QueuedInput,
 } from './userInputQueue';
 import { snapshotExecutionSteps } from './executionSnapshot';
 import { emitHook } from './lifecycleHooks';
@@ -518,6 +526,7 @@ export function buildVolatileContextTail(parts: {
   todoState?: string;
   relevantMemoriesSection?: string;
   compressionApplied?: boolean;
+  stepBudgetNote?: string;
 }): string | undefined {
   const body: string[] = [];
   if (parts.compressionApplied) {
@@ -526,6 +535,7 @@ export function buildVolatileContextTail(parts: {
   if (parts.goalState) body.push(parts.goalState);
   if (parts.todoState) body.push(parts.todoState);
   if (parts.relevantMemoriesSection) body.push(parts.relevantMemoriesSection);
+  if (parts.stepBudgetNote) body.push(parts.stepBudgetNote);
   if (body.length === 0) return undefined;
   return [
     '<runtime-context>',
@@ -561,6 +571,15 @@ export interface AgentLoopOptions {
   continuesTeamTask?: boolean;
   /** Shell-resolved team task, handed to the in-process loop only. Never sent to the sidecar. */
   teamTaskId?: string;
+  /**
+   * Trusted, renderer-only: this run starts a queued entry as its own turn
+   * (the dispatcher's hand-off after a run, or 「继续队列」). When a run is
+   * already live in the conversation, the entry goes back to the queue for
+   * after that run (`requeueUserInput`) instead of being staged into it as a
+   * message typed there, so it never steers a run it was not typed into.
+   * Never sent to the sidecar.
+   */
+  queuedHandoff?: QueuedInput;
   /**
    * The hold a redo took on this conversation while it restored files. The
    * dispatch that carries it passes the hold's wait; the hold is released once
@@ -882,10 +901,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             messageTaken: false,
           };
         }
-        // The message lives in the cancellable queue strip until the current
-        // run reaches a terminal state. The shell dispatcher then starts it as
-        // an independent run with its own loopId.
-        if (options?.imageEditRequest) {
+        // The message lives in the cancellable queue strip: plain text is
+        // read by the running loop at its next step boundary (steering); what
+        // the loop never takes is started by the shell dispatcher as an
+        // independent run with its own loopId once this run ends. A queued
+        // hand-off was typed for an earlier run: it waits for this one's end.
+        if (options?.queuedHandoff) requeueUserInput(conversationId, options.queuedHandoff);
+        else if (options?.imageEditRequest) {
           enqueueUserInput(conversationId, userMessage, false, undefined, undefined, options.imageEditRequest);
           options.onMessageTaken?.(options.imageEditRequest.messageId);
         } else enqueueUserInput(conversationId, userMessage);
@@ -1325,6 +1347,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
 
   // ── Handle @agent direct delegation ──
   if (route.type === 'delegate' && route.delegateAgent) {
+    // The expert runs the whole turn and this loop takes no step of its own,
+    // so nothing typed meanwhile can join one: it waits for the end of the
+    // turn. Told now, because the shell opened a watched sidecar run for
+    // steering when it registered it (userInputQueue.ts).
+    endSteeringRun(conversationId, loopId);
     const delegateAgent = route.delegateAgent;
     const taskText = route.cleanInput;
 
@@ -1646,6 +1673,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
     return { reason: 'completed' };
   }
 
+  // Steering (see `toolStepJustFinished` below): from here a run the user is
+  // watching reads what is typed into it, and a message typed now is bound to
+  // this run. Ended where the loop stops (the abort branch, the end below).
+  if (runInteractionMode === 'foreground') beginSteeringRun(conversationId, loopId);
+
   // Emit agentStart hook
   await emitHook({
     type: 'agentStart',
@@ -1687,6 +1719,13 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
   // the model a chance to recover.
   let consecutiveNoProgress = 0;
   const semanticToolHistory: ToolLoopObservation[] = [];
+  // Steering: a message the user typed while this run works is taken at the
+  // first model step after a tool step (the tool's result is in, the model has
+  // not answered yet). A step that ended in plain text ends the run instead,
+  // and what was typed meanwhile starts its own turn (agentLoopRunner.ts).
+  // Only a run the user is watching takes it: a scheduled, triggered or IM run
+  // leaves it in the queue for after the run, as before.
+  let toolStepJustFinished = false;
   // The last request whose usage the provider returned (contextMeasure.ts).
   let usageAnchor: UsageAnchor | null = null;
   let maxOutputTokensRecoveryCount = 0;
@@ -1836,6 +1875,37 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         clearCheckpointForLoop(conversationId, loopId);
       }).catch(() => {});
       break;
+    }
+
+    // Steering (see `toolStepJustFinished`). Taken after the turn-cap check, so
+    // a message is never shown as delivered to a run that stops right here.
+    // A Stop that lands during the take puts the entries back; the abort path
+    // then ends this run's steering, so they wait as chips for after the task.
+    // A conversation deleted meanwhile gets nothing back: its queue is gone.
+    const atSteeringBoundary = toolStepJustFinished;
+    toolStepJustFinished = false;
+    if (atSteeringBoundary && runInteractionMode === 'foreground') {
+      const steered = await takeSteeringInputs(conversationId, loopId);
+      if (steered.length > 0 && abortController.signal.aborted) {
+        if (getConversationReader().getConversation(conversationId)) {
+          restoreSteeringInputs(conversationId, steered);
+        }
+      } else if (steered.length > 0) {
+        for (const qi of steered) {
+          chatDelta.addMessage(conversationId, {
+            id: steeredMessageId(qi.id),
+            role: 'user',
+            content: qi.text,
+            timestamp: qi.timestamp,
+            loopId,
+            steered: true,
+          });
+        }
+        // A new instruction from the user: the no-progress guards count from it.
+        consecutiveNoProgress = 0;
+        semanticToolHistory.length = 0;
+        logger.info('Steered user input delivered', { conversationId, loopId, count: steered.length });
+      }
     }
 
     // Create a placeholder assistant message for streaming with loopId.
@@ -1989,7 +2059,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       const discoveredCaps = activeProvider
         ? getCapsPort().get(activeProvider.id, effectiveModelId)
         : undefined;
-      const { effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, requestedMaxOutputTokens, requestedContextLength, localServer, outputCeiling: effectiveModelCeiling } = resolveRequestBudget(
+      const { effectiveCaps, contextWindowSize, reserveWindowSize, reasoningParams, thinkingPick, requestedMaxOutputTokens, requestedContextLength, localServer, outputCeiling: effectiveModelCeiling } = resolveRequestBudget(
         effectiveModelId, modelCaps, activeProvider, freshSettings, discoveredCaps, runProbedContextWindow,
       );
       let maxOutputTokens = reasoningParams.maxTokens;
@@ -2082,6 +2152,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         todoState,
         relevantMemoriesSection,
         compressionApplied: view !== historyMessages,
+        stepBudgetNote: stepBudgetNote(turnCount, maxTurns),
       });
       // The local estimate of a request over `sentMessages`, by the categories
       // the context ring shows. One pass over prompt, tools and history; a
@@ -2589,6 +2660,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
             effectiveCaps,
             requestedMaxOutputTokens,
             recoveryReserveWindowSize,
+            thinkingPick,
           );
           const recoveryMaxOutputTokens = recoveryReasoningParams.maxTokens;
           const recoveryRequestOptions = {
@@ -2758,6 +2830,7 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
           settingsReader: entrySettingsReader,
           parallelToolCalls: modelProfile.capabilities.parallelToolCalls,
         });
+        toolStepJustFinished = true;
         if (batchResult.requiresUserRecovery) {
           awaitingUserRecovery = true;
           continueLoop = false;
@@ -3164,8 +3237,11 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
         // Clear loop context and any pending confirmation/permission dialogs
         clearLoopContext(loopId);
         // Stop pauses staged user follow-ups instead of turning them into
-        // transcript bubbles owned by the aborted run. Internal system wake-ups
+        // transcript bubbles owned by the aborted run. What was typed into
+        // this run becomes an entry for after the task first, so it is paused
+        // with the rest and never joins a later run. Internal system wake-ups
         // are discarded because their parent task no longer exists.
+        endSteeringRun(conversationId, loopId);
         pauseUserInputQueue(conversationId);
         drainSystemQueuedInputs(conversationId);
         drainConfirmationQueue();
@@ -3360,6 +3436,8 @@ export async function runAgentLoop(conversationId: string, userMessage: string, 
       if (streamFlushTimer) clearInterval(streamFlushTimer);
     }
   }
+  // What was typed into this run and never taken starts its own turn after it.
+  endSteeringRun(conversationId, loopId);
   if (!options?.teamTaskId) clearRunBounds(loopId);
   abortController.signal.removeEventListener('abort', endComputerUseTaskOnAbort);
   if (options?.authorizationScopeId !== undefined && !abortController.signal.aborted) {

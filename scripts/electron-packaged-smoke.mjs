@@ -741,6 +741,24 @@ function completionObject(content) {
   };
 }
 
+// The side call that names a new conversation once its first reply has ended
+// (src/core/session/titleGen.ts). It is answered with the opening words of the
+// first message, as tests/e2e/openAiMock.ts does, so the steps that find the
+// task in the sidebar read the same text as before titles were model-written.
+function isTitleRequest(body) {
+  return Array.isArray(body?.messages) && body.messages.some((message) =>
+    message?.role === 'system' &&
+    typeof message.content === 'string' &&
+    message.content.startsWith('You name chat conversations.'));
+}
+
+function mockTitleFor(body) {
+  const user = body.messages.find((message) => message?.role === 'user');
+  const content = typeof user?.content === 'string' ? user.content : '';
+  const first = /<first_message>\n([\s\S]*?)\n<\/first_message>/.exec(content)?.[1] ?? '';
+  return first.slice(0, 30) || 'Packaged smoke title';
+}
+
 function toolCallsForFixture(fixture) {
   const definitions = typeof fixture === 'string'
     ? [{
@@ -817,6 +835,16 @@ async function startOpenAiMock(responseText, toolTasks = new Map()) {
         ? 'text/event-stream; charset=utf-8'
         : 'application/json; charset=utf-8',
     });
+    if (isTitleRequest(body)) {
+      const title = mockTitleFor(body);
+      if (!streaming) {
+        response.end(JSON.stringify(completionObject(title)));
+        return;
+      }
+      response.write(sseChunk(title, 'stop'));
+      response.end('data: [DONE]\n\n');
+      return;
+    }
     const serializedBody = JSON.stringify(body);
     const toolTask = Array.from(toolTasks.entries()).find(([taskPrompt]) =>
       !servedToolTasks.has(taskPrompt) && serializedBody.includes(taskPrompt)
@@ -2151,7 +2179,9 @@ async function main() {
     { file: path.join(runtimeArtifactsDir, 'smoke.pdf'), sentinel: 'Abu packaged PDF sentinel' },
   ];
   const officeArtifactPaths = officeArtifacts.map((artifact) => artifact.file);
-  const recentTitle = `${prompt.slice(0, 30)}...`;
+  // Both the provisional title (the first 30 characters and "...") and the
+  // title the mock writes (the first 30 characters) hold this text.
+  const recentTitle = prompt.slice(0, 30);
   const mock = await startOpenAiMock(responseText, new Map([
     [
       stopPrompt,

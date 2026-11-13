@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generateImageTool } from './mediaTools';
+import { getI18n } from '../../../i18n';
 import { useSettingsStore } from '../../../stores/settingsStore';
 import type { ImageGenBackend } from '../../../types/provider';
 
@@ -287,6 +288,89 @@ describe('generateImageTool', () => {
 
     expect(result as string).toContain('401');
     expect(result as string).toContain('doubao-seedream');
+  });
+
+  describe('Volcengine Ark error codes', () => {
+    const tm = () => getI18n().toolResult.media;
+    const arkError = (status: number, code: string, message: string) => {
+      mockFetch.mockImplementation(async (input: RequestInfo | URL) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.startsWith('data:')) return realFetch(url);
+        return new Response(JSON.stringify({ error: { code, message, param: '', type: 'X' } }), { status });
+      });
+    };
+    const run = async () => generateImageTool.execute({ prompt: 'test', save_path: '/tmp/abu-test/out.png' }) as Promise<string>;
+
+    it('explains SetLimitExceeded as 安心体验 mode or a usage cap, keeping the raw error', async () => {
+      arkError(429, 'SetLimitExceeded', 'Your account has reached the set usage limit for the model');
+      const result = await run();
+      expect(result).toContain('429');
+      expect(result).toContain('SetLimitExceeded');
+      expect(result).toContain(tm().hintVolcLimitModel);
+    });
+
+    it('tells a model usage cap from one endpoint cap by Ark\'s own message, and names both places when only the code is known', async () => {
+      arkError(429, 'SetLimitExceeded', 'Your account [2100001234] has reached the set usage limit for the [doubao-seedream-4-0] model, and the model service has been paused. Request id: abc');
+      const model = await run();
+      expect(model).toContain(tm().hintVolcLimitModel);
+      expect(model).not.toContain(tm().hintVolcLimitEndpoint);
+
+      arkError(429, 'SetLimitExceeded', 'Your account [2100001234] has reached the set usage limit for the [ep-20260101000000-abcde] endpoint, and the endpoint service has been paused. Request id: abc');
+      const endpoint = await run();
+      expect(endpoint).toContain(tm().hintVolcLimitEndpoint);
+      expect(endpoint).not.toContain(tm().hintVolcLimitModel);
+
+      arkError(429, 'SetLimitExceeded', '');
+      const unknown = await run();
+      expect(unknown).toContain(tm().hintVolcLimit);
+      expect(unknown).not.toContain(tm().hintVolcLimitModel);
+      expect(unknown).not.toContain(tm().hintVolcLimitEndpoint);
+    });
+
+    it('does not read a model name that contains the word endpoint as the endpoint cap', async () => {
+      arkError(429, 'SetLimitExceeded', 'Your account [1] has reached the set usage limit for the [my-endpoint-model] model, and the model service has been paused.');
+      const result = await run();
+      expect(result).toContain(tm().hintVolcLimitModel);
+      expect(result).not.toContain(tm().hintVolcLimitEndpoint);
+    });
+
+    it('explains blocked input text (InputTextRiskDetection) as a moderation rejection', async () => {
+      arkError(400, 'InputTextRiskDetection', 'The request could not be processed because the input text includes sensitive content');
+      const result = await run();
+      expect(result).toContain('InputTextRiskDetection');
+      expect(result).toContain(tm().hintVolcSensitive);
+      expect(result).not.toContain(tm().hintCheckImageBackend);
+    });
+
+    it('names the model to activate on ModelNotOpen instead of the generic check-backend hint', async () => {
+      arkError(404, 'ModelNotOpen', 'Your account has not activated the model.');
+      const result = await run();
+      expect(result).toContain(tm().hintVolcModelNotOpen.replace('{model}', imageGenBackend().model));
+      expect(result).not.toContain(tm().hintCheckImageBackend);
+    });
+
+    it('points a wrong key at the Ark console instead of the generic hint', async () => {
+      arkError(401, 'AuthenticationError', 'The API key in the request is missing or invalid.');
+      const result = await run();
+      expect(result).toContain(tm().hintVolcBadKey);
+      expect(result).not.toContain(tm().hintCheckImageBackend);
+    });
+
+    it('explains an overdue account and a moderation rejection', async () => {
+      arkError(403, 'AccountOverdueError', 'Your account has an overdue balance.');
+      expect(await run()).toContain(tm().hintVolcOverdue);
+      arkError(400, 'InputImageSensitiveContentDetected', 'The input image may contain sensitive information.');
+      expect(await run()).toContain(tm().hintVolcSensitive);
+    });
+
+    it('adds nothing for an Ark code it does not know', async () => {
+      arkError(500, 'InternalServiceError', 'boom');
+      const result = await run();
+      expect(result).toContain('InternalServiceError');
+      for (const hint of [tm().hintVolcLimit, tm().hintVolcLimitModel, tm().hintVolcLimitEndpoint, tm().hintVolcOverdue, tm().hintVolcSensitive, tm().hintVolcBadKey, tm().hintCheckImageBackend]) {
+        expect(result).not.toContain(hint);
+      }
+    });
   });
 
   it('decodes a b64_json response WITHOUT fetching a data: URL (CSP-blocked in the packaged WKWebView build)', async () => {

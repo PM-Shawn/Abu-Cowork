@@ -5309,6 +5309,13 @@ export interface TranslationDict {
       /** Generic hint appended to 404/401 errors: check baseUrl, image model
        *  (doubao-seedream series for Volcengine), and API key. */
       hintCheckImageBackend: string;
+      hintVolcLimit: string;
+      hintVolcLimitModel: string;
+      hintVolcLimitEndpoint: string;
+      hintVolcModelNotOpen: string;
+      hintVolcOverdue: string;
+      hintVolcSensitive: string;
+      hintVolcBadKey: string;
     };
     // create_todo
     todo: {

@@ -4,7 +4,7 @@ import type { ToolDefinition } from '../../../types';
 import { joinPath, ensureParentDir } from '../../../utils/pathUtils';
 import { getTauriFetch } from '../../llm/tauriFetch';
 import { normalizeImageGenerationsUrl } from '../../llm/urlUtils';
-import { buildImageRequest, parseImageResponse, resolveImageVendor, isVolcengineChatEndpoint, VOLCENGINE_IMAGE_BASE_URL } from '../../llm/imageGen';
+import { buildImageRequest, parseImageResponse, resolveImageVendor, isVolcengineChatEndpoint, classifyVolcengineError, VOLCENGINE_IMAGE_BASE_URL } from '../../llm/imageGen';
 import { getUsableImageBackend } from '../../../stores/settingsStore';
 import { getSettingsReader } from '../../agent/ports/settingsReader';
 import { useWorkspaceStore } from '../../../stores/workspaceStore';
@@ -110,8 +110,21 @@ export const generateImageTool: ToolDefinition = {
         // and the user without pointing at the actual setting to fix. The
         // V41-migrated Volcengine chat endpoint is detected explicitly; other
         // 404/401s get the generic "check baseUrl/model/key" nudge.
+        const volcError = vendor === 'volcengine' ? classifyVolcengineError(errorText) : undefined;
         if (isVolcengineChatEndpoint(backend.baseUrl, backend.vendor)) {
           msg += `\n${format(tm.hintVolcChatEndpoint, { url: VOLCENGINE_IMAGE_BASE_URL })}`;
+        } else if (volcError) {
+          // Ark names what is wrong in its own error code; say how to fix it in the console.
+          const hints = {
+            limit: tm.hintVolcLimit,
+            limitModel: tm.hintVolcLimitModel,
+            limitEndpoint: tm.hintVolcLimitEndpoint,
+            notOpen: format(tm.hintVolcModelNotOpen, { model: modelId }),
+            overdue: tm.hintVolcOverdue,
+            sensitive: tm.hintVolcSensitive,
+            badKey: tm.hintVolcBadKey,
+          } as const;
+          msg += `\n${hints[volcError]}`;
         } else if (response.status === 404 || response.status === 401) {
           msg += `\n${tm.hintCheckImageBackend}`;
         }

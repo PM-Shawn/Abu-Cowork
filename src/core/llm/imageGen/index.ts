@@ -9,6 +9,8 @@ export type { ImageGenVendor, ImageGenParsedResult, ImageGenRequestBody, ImageGe
 export { resolveImageVendor } from './vendorResolve';
 export { isVolcengineChatEndpoint, VOLCENGINE_IMAGE_BASE_URL } from './endpointHints';
 export { normalizeSeedreamSize, normalizeOpenAiSize } from './sizePolicy';
+export { classifyVolcengineError } from './vendors/volcengine';
+export type { VolcengineErrorKind } from './vendors/volcengine';
 
 /**
  * Build the `/images/generations` request body for the given vendor

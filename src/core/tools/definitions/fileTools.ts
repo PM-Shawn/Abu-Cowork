@@ -642,7 +642,7 @@ async function dropClosedPaths(lines: string[], pathOf: (line: string) => string
   return kept;
 }
 
-/** `path:12:text` (grep -n, Select-String); the path may hold a drive colon. */
+/** `path:12:text` (grep -n, or the Windows command's explicit format); the path may hold a drive colon. */
 function grepLinePath(line: string): string | null {
   const match = /^(.*?):\d+:/.exec(line);
   return match ? match[1] : null;
@@ -702,7 +702,10 @@ export const searchFilesTool: ToolDefinition = {
       const includeFilter = include
         ? ` -Include '${include.replace(/'/g, "''")}'`
         : '';
-      command = `Get-ChildItem -Path '${psPath}' -Recurse -File${includeFilter} | Select-String -Pattern '${psPattern}' | Select-Object -First ${safeMaxResults}`;
+      // Select-String's default text prints a path relative to the shell's
+      // current directory when the file lies under it. Build each line from the
+      // match object's own full Path so every hit names an absolute file.
+      command = `Get-ChildItem -Path '${psPath}' -Recurse -File${includeFilter} | Select-String -Pattern '${psPattern}' | Select-Object -First ${safeMaxResults} | ForEach-Object { '{0}:{1}:{2}' -f $_.Path, $_.LineNumber, $_.Line }`;
     } else {
       command = `grep -rn --color=never '${safePattern}' '${safePath}'`;
       if (include) {

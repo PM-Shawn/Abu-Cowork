@@ -102,6 +102,18 @@ describe('askUserQuestionTool', () => {
       ).rejects.toThrow(/options length/);
     });
 
+    it.each([
+      ['an empty list', { options: [] }],
+      ['no options at all', {}],
+    ])('refuses a free-value question (an unknown date) with %s: the ask rule sends it to a plain message', async (_label, extra) => {
+      await expect(
+        askUserQuestionTool.execute(
+          { questions: [{ header: 'Date', question: 'Which date should the contract carry?', multiSelect: false, ...extra }] },
+          VALID_CONTEXT,
+        ),
+      ).rejects.toThrow(/options length/);
+    });
+
     it('throws when a question has more than 4 options', async () => {
       const input = {
         questions: [{

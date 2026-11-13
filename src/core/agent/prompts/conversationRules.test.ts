@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildConversationRuleSections } from './conversationRules';
+import { ASK_BEFORE_GUESSING, buildConversationRuleSections } from './conversationRules';
 import { getDefaultSoul } from './defaultSoul';
 import { DEFAULT_PLANNING } from './variants/default';
 import { gptVariant } from './variants/gpt';
@@ -17,6 +17,16 @@ describe('buildConversationRuleSections', () => {
     const sections = buildConversationRuleSections({ unattended: true });
     expect(sections.at(-1)?.name).toBe('unattended-run');
     expect(sections.at(-1)?.text).toContain('what was not done and why');
+  });
+});
+
+describe('asking for a free value', () => {
+  const rule = ASK_BEFORE_GUESSING;
+
+  it('sends a question with no reasonable options (an unknown date) to a plain message, not to a tool call that would be refused', () => {
+    expect(rule).toContain('an unknown date');
+    expect(rule).toMatch(/ask for the value in a plain message and end your turn/);
+    expect(rule).not.toContain('rely on the "Other" answer');
   });
 });
 

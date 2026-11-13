@@ -21,8 +21,9 @@ ${windows
   from another toolchain: \`notepad\` resolves to a Git-bundled script, not
   Notepad, and launching it silently does nothing. Measured here, it cost five
   shell calls and 45 seconds before the model recovered
-- If launch_app reports the app is not installed, ask the user; do not go
-  looking for it yourself`
+- If launch_app reports the app is not installed, do not go looking for it
+  yourself: tell the user it is missing (ask only if someone can answer; in an
+  unattended run just say what is missing and what was not done)`
   : `- Use run_command: open -a "AppName"; if unsure of the English name, first run ls /Applications | grep -i to find it
 - Do not use open URL as a substitute for opening a desktop app`}`;
 }

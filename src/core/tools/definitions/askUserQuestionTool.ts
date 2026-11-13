@@ -16,14 +16,15 @@ export const askUserQuestionTool: ToolDefinition = {
   description:
     'Show the user a structured choice card and wait for their answer before continuing.' +
     '\n\n**When to use**:' +
-    '\n- Multiple equivalent paths exist and user preference is needed to decide' +
-    '\n- Critical decisions that cannot be inferred from context (e.g. output format, deployment target)' +
-    '\n- Implicit assumptions that need user confirmation' +
+    '\n- A wrong guess would be costly (sending, deleting, overwriting, spending, committing the user to a figure or a date, or redoing most of the work) and the answer is not in the files, memory, the conversation or a quick search' +
     '\n\n**When NOT to use**:' +
-    '\n- When a reasonable default is available (just use the default, do not disturb the user)' +
-    '\n- Simple yes/no confirmations (ask directly in a confirm tone)' +
+    '\n- The answer can be found with tools (look it up instead)' +
+    '\n- A wrong guess is cheap to fix (take the most likely option and state the assumption in your reply)' +
+    '\n- Something already answered in this conversation, or what the user already asked you to do (do not ask permission for it)' +
+    '\n- Asking whether to continue partway through a task' +
     '\n- Dangerous operations (use the permission confirmation mechanism, not this tool)' +
-    '\n\nConstraints: 1–4 questions; 2–4 options per question; header ≤ 12 characters.' +
+    '\n\nAsk once, early, with one or two questions and a recommended option first; do the work that does not depend on the answer meanwhile.' +
+    '\n\nConstraints: 1–4 questions (prefer 1–2); 2–4 options per question; header ≤ 12 characters.' +
     ' Each question automatically appends an "Other…" free-text option so users can provide answers outside the given choices.',
   inputSchema: {
     type: 'object',

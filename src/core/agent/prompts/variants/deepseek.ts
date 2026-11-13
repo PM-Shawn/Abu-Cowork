@@ -1,3 +1,4 @@
+import { PARALLEL_TOOL_CALLS_LINE } from './default';
 import type { PromptVariant } from './types';
 
 /**
@@ -19,16 +20,15 @@ const DEEPSEEK_FAMILY_NOTES = `
 - Keep the thinking before the first tool call short: decide which tool, then call it.
 
 ### Files
-- Read a file before editing it, unless you created or edited it earlier in this session.
-- edit_file for a targeted change, with old_content copied exactly from read_file output; write_file only for a new file or when the user asked to replace the whole file.
+- edit_file for a targeted change; write_file only for a new file or when the user asked to replace the whole file.
 - Read a text file with read_file, with offset and limit for a long one; do not cat it through run_command.
 
 ### Commands
 - Check the exit code and the output of every run_command result; investigate a failure before moving on instead of repeating the same command.
-- Independent tool calls go out together in one response; dependent ones run in order.
+${PARALLEL_TOOL_CALLS_LINE}
 
 ### Replies
-- Reply in the user's language, lead with the result, and keep explanations short. Thoroughness belongs in the actions and the verification, not in the prose.`;
+- Thoroughness belongs in the actions and the verification, not in the prose.`;
 
 export const deepseekVariant: PromptVariant = {
   familyNotes: DEEPSEEK_FAMILY_NOTES,

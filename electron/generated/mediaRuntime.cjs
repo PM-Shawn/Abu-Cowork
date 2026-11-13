@@ -51434,7 +51434,28 @@ var zhCN = {
     durationAlways: "始终允许",
     durationLabel: "授权时效",
     allowSessionButton: "允许到关闭应用",
-    allowAlwaysButton: "始终允许"
+    allowAlwaysButton: "始终允许",
+    rules: {
+      governmentReason: "这是政务网站，点击和填写可能会以你的身份办理事项。允许后，本任务接下来在这个网站上的点击和填写不再询问。",
+      connectorSendAction: "通过{connector}发给别人",
+      connectorSendToAction: "通过{connector}发给 {recipients}",
+      connectorRecipientSeparator: "、",
+      connectorRecipientsMore: " 等 {count} 个",
+      connectorContentPreview: "，内容：「{preview}」",
+      connectorPluginGrantNote: "允许后，本次对话里这个插件的其他工具也不再询问。",
+      connectorDestructiveAction: "通过{connector}删除或改掉内容",
+      connectorChangeAction: "通过{connector}新建、修改或运行",
+      connectorMoneyAction: "通过{connector}付款或转账",
+      connectorNamed: "连接器「{name}」",
+      connectorUnnamed: "连接器",
+      connectorSendReason: "这会以你的名义发给别人，发出后收不回。",
+      connectorChangeReason: "这会在连接的服务里新建、修改或运行内容。",
+      connectorSendGrantNote: "允许后，本任务接下来用它发给同样的人时不再询问。",
+      connectorChangeGrantNote: "同一个任务里，对同一个对象只问这一次。",
+      connectorDestructiveReason: "这会删除或改掉连接的服务里的内容，可能无法恢复。",
+      connectorMoneyReason: "这会动用资金（付款、转账或退款）。",
+      connectorDenied: "这一步需要你确认，但现在没有人可以确认，已跳过"
+    }
   },
   media: {
     compareOriginal: "比较原图",
@@ -55998,7 +56019,28 @@ var enUS = {
     durationAlways: "Always allow",
     durationLabel: "Duration",
     allowSessionButton: "Allow Until I Quit",
-    allowAlwaysButton: "Always Allow"
+    allowAlwaysButton: "Always Allow",
+    rules: {
+      governmentReason: "This is a government site, where clicking and filling in forms may act in your name. Once allowed, clicks and form filling on this site are not asked about again for the rest of this task.",
+      connectorSendAction: "Send to other people through {connector}",
+      connectorSendToAction: "Send to {recipients} through {connector}",
+      connectorRecipientSeparator: ", ",
+      connectorRecipientsMore: " and {count} more",
+      connectorContentPreview: ", with the content “{preview}”",
+      connectorPluginGrantNote: " Once allowed, the other tools of this plugin are not asked about again in this conversation either.",
+      connectorDestructiveAction: "Delete or change content through {connector}",
+      connectorChangeAction: "Create, update or run something through {connector}",
+      connectorMoneyAction: "Pay or transfer money through {connector}",
+      connectorNamed: "the connector “{name}”",
+      connectorUnnamed: "a connector",
+      connectorSendReason: "This sends something to other people in your name, and it cannot be called back.",
+      connectorChangeReason: "This creates, updates or runs something in the connected service.",
+      connectorSendGrantNote: " Once allowed, sending with it to the same people is not asked about again for the rest of this task.",
+      connectorChangeGrantNote: " It is asked once per task for the same target.",
+      connectorDestructiveReason: "This deletes or changes content in the connected service, and it may not be recoverable.",
+      connectorMoneyReason: "This moves money (a payment, transfer or refund).",
+      connectorDenied: "This step needs your confirmation, but nobody is available to confirm it, so it was skipped"
+    }
   },
   media: {
     compareOriginal: "Compare with original",

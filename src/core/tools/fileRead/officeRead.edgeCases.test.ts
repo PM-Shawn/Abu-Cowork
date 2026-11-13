@@ -7,7 +7,7 @@ import type { ToolExecutionContext, ToolResultContent } from '@/types';
 import type { ToolFileAccess } from '@/core/tools/fileOperation';
 import { readOfficeManifest } from './officeManifest';
 import { readOffice } from './officeRead';
-import { readSheetRows } from './sheetRows';
+import { readSheetRows, SheetStructureError } from './sheetRows';
 import type { DocumentReadParams } from './readParams';
 
 // Edge cases of read_file's Office reading: files that hold something else, pictures outside the body, the text budget.
@@ -326,14 +326,13 @@ describe('the XML sheet reader against SheetJS on odd workbooks', () => {
     expect(bytes.length).toBeLessThan(2000);
   });
 
-  it('scans a large malformed row once: unclosed cells give a bounded result without a quadratic search', () => {
+  it('hands a large malformed row over at once: unclosed cells are not a structure it reads, and are not searched for a way through', () => {
     const unclosed = '<c r="A1">'.repeat(40_000);
-    const [sheet] = rowsOf(sheetEntries(`<row r="1">${unclosed}</row>`));
-    expect(sheet.rows).toEqual([]);
+    expect(() => rowsOf(sheetEntries(`<row r="1">${unclosed}</row>`))).toThrow(SheetStructureError);
     const unterminated = '<c r="A1"'.repeat(40_000);
     expect(rowsOf(sheetEntries(`<row r="1">${unterminated}</row>`))[0].rows).toEqual([]);
     const half = '<c r="A1"><v>3</v><c r="B1"><v>4</v>'.repeat(20_000);
-    expect(rowsOf(sheetEntries(`<row r="1">${half}</row>`))[0].rows[0].slice(0, 2)).toEqual(['3', '4']);
+    expect(() => rowsOf(sheetEntries(`<row r="1">${half}</row>`))).toThrow(SheetStructureError);
   });
 
   it('keeps reading the cells of a well-formed row the same way after the rewrite', () => {
@@ -351,6 +350,23 @@ describe('a sheet whose data starts far down', () => {
     expect(text).toContain("'S' 3 rows");
     expect(text).not.toContain('left out');
     expect(text).toContain('600\n601\n602');
+  });
+});
+
+describe('a sheet written another valid way', () => {
+  it('shows the same cells as the usual form: a single-quoted boolean is TRUE and a CDATA string is there', async () => {
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([[123, true, 'alpha']]), 'Data');
+    const entries = unzipSync(new Uint8Array(XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer));
+    const sheet = new TextDecoder().decode(entries['xl/worksheets/sheet1.xml']);
+    const usual = (await readAt('/d/a.xlsx', zipSync(entries))).text;
+    expect(usual).toContain('123\tTRUE\talpha');
+    for (const rewritten of [
+      sheet.replace(/<c ([^>]*)>/g, (_all, attributes: string) => `<c ${attributes.replace(/="([^"]*)"/g, "='$1'")}>`),
+      sheet.replace('<v>alpha</v>', '<v><![CDATA[alpha]]></v>'),
+    ]) {
+      expect((await readAt('/d/a.xlsx', zipSync({ ...entries, 'xl/worksheets/sheet1.xml': strToU8(rewritten) }))).text).toBe(usual);
+    }
   });
 });
 

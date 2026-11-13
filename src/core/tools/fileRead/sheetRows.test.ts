@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { strToU8, unzipSync } from 'fflate';
 import * as XLSX from 'xlsx';
 import { readOfficeManifest } from './officeManifest';
-import { readSheetRows } from './sheetRows';
+import { readSheetRows, SheetStructureError } from './sheetRows';
+import { zipSync } from 'fflate';
 
 const MAIN = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main';
 
@@ -110,5 +111,44 @@ describe('readSheetRows', () => {
       expect(ours.rows).toEqual(theirs);
       expect(ours.totalRows).toBe(5);
     }
+  });
+});
+
+describe('readSheetRows on a workbook SheetJS wrote, with its XML rewritten another valid way', () => {
+  const bytes = () => {
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([[123, true, 'alpha']]), 'Data');
+    return new Uint8Array(XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer);
+  };
+  const rowsAfter = (rewrite: (xml: string) => string) => {
+    const entries = unzipSync(bytes());
+    entries['xl/worksheets/sheet1.xml'] = strToU8(rewrite(new TextDecoder().decode(entries['xl/worksheets/sheet1.xml'])));
+    const manifest = readOfficeManifest(unzipSync(zipSync(entries)))!;
+    return readSheetRows(unzipSync(zipSync(entries)), manifest.sheets!, manifest.sharedStrings, 500)[0].rows;
+  };
+  const usual = [['123', 'TRUE', 'alpha']];
+
+  it('reads it as SheetJS does when nothing is rewritten', () => {
+    expect(rowsAfter((xml) => xml)).toEqual(usual);
+  });
+
+  it('reads cell attributes in single quotes: a boolean stays TRUE, not 1', () => {
+    expect(rowsAfter((xml) => xml.replace(/<c ([^>]*)>/g, (_all, attributes: string) => `<c ${attributes.replace(/="([^"]*)"/g, "='$1'")}>`))).toEqual(usual);
+  });
+
+  it('reads a value written as a CDATA section: the cell is there', () => {
+    expect(rowsAfter((xml) => xml.replace('<v>alpha</v>', '<v><![CDATA[alpha]]></v>'))).toEqual(usual);
+  });
+
+  it('reads spaces around = and a character written as a reference', () => {
+    expect(rowsAfter((xml) => xml.replace(/ t="b"/, ' t = "b" ').replace('<v>alpha</v>', '<v>&#97;lpha</v>'))).toEqual(usual);
+  });
+
+  it('refuses, for another reader to take over, a cell type it has no rule for', () => {
+    expect(() => rowsAfter((xml) => xml.replace(' t="b"', ' t="zz"'))).toThrow(SheetStructureError);
+  });
+
+  it('refuses a part that is no worksheet', () => {
+    expect(() => read('<?xml version="1.0"?><html><body/></html>')).toThrow(SheetStructureError);
   });
 });
